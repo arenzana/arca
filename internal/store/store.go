@@ -33,9 +33,17 @@ type Secret struct {
 	Tags            []string          `json:"tags,omitempty"`             // free-form labels for filtering
 	Description     string            `json:"description,omitempty"`      // human note
 	RotateAfter     *time.Time        `json:"rotate_after,omitempty"`     // rotation due date (drives `stale`)
+	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`       // hard expiry: reads/use refuse the value after this
 	NoPrint         bool              `json:"no_print,omitempty"`         // exec-only: never reveal to stdout
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
 	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
+}
+
+// Expired reports whether the secret has a hard expiry that has already passed as of now.
+// Unlike RotateAfter (a soft "should rotate" surfaced by `stale`), an expired secret is
+// refused by every access path — it cannot be read, injected, or exec-injected.
+func (s *Secret) Expired(now time.Time) bool {
+	return s.ExpiresAt != nil && now.After(*s.ExpiresAt)
 }
 
 // Store is the whole document. path is where it loads from / saves to (not serialized).

@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -283,8 +284,64 @@ func approverWho() string {
 
 // gate runs the approval check for a secret if it requires one. A no-op otherwise.
 func gate(sec *store.Secret, name string) error {
+	// Hard expiry is checked first: an expired secret is refused on every access path
+	// (get / inject / exec / env / MCP), before any approval prompt or decryption.
+	if sec.Expired(time.Now()) {
+		return fmt.Errorf("%s expired at %s", name, sec.ExpiresAt.UTC().Format(time.RFC3339))
+	}
 	if sec.RequireApproval {
 		return approve(name, approverWho())
+	}
+	return nil
+}
+
+// parseTTL parses a relative duration for --ttl. It extends Go's time.ParseDuration (ns…h)
+// with 'd' (days) and 'w' (weeks) suffixes, the units people actually reach for with secrets.
+func parseTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if n := len(s); n >= 2 {
+		switch s[n-1] {
+		case 'd', 'w':
+			num, err := strconv.ParseFloat(s[:n-1], 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid duration %q", s)
+			}
+			hours := 24.0
+			if s[n-1] == 'w' {
+				hours = 24 * 7
+			}
+			return time.Duration(num * hours * float64(time.Hour)), nil
+		}
+	}
+	return time.ParseDuration(s)
+}
+
+// applyExpiry sets sec.ExpiresAt from the mutually-exclusive --ttl (relative) and
+// --expires-at (absolute RFC3339 or YYYY-MM-DD) flags. It is a no-op when neither is given,
+// so re-setting a secret without the flags preserves any existing expiry.
+func applyExpiry(sec *store.Secret, ttl, expiresAt string) error {
+	switch {
+	case ttl != "" && expiresAt != "":
+		return fmt.Errorf("use either --ttl or --expires-at, not both")
+	case ttl != "":
+		d, err := parseTTL(ttl)
+		if err != nil {
+			return fmt.Errorf("ttl: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("ttl must be positive")
+		}
+		t := time.Now().UTC().Add(d)
+		sec.ExpiresAt = &t
+	case expiresAt != "":
+		t, err := time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			if t, err = time.Parse("2006-01-02", expiresAt); err != nil {
+				return fmt.Errorf("expires-at: want RFC3339 or YYYY-MM-DD, got %q", expiresAt)
+			}
+		}
+		t = t.UTC()
+		sec.ExpiresAt = &t
 	}
 	return nil
 }
@@ -347,7 +404,7 @@ func newInit() *cobra.Command {
 // existing secret it preserves CreatedAt and only touches the fields the user supplied.
 func newSet() *cobra.Command {
 	var tags []string
-	var desc, rotate string
+	var desc, rotate, ttl, expiresAt string
 	var meta map[string]string
 	var noPrint, requireApproval bool
 	c := &cobra.Command{
@@ -394,6 +451,9 @@ func newSet() *cobra.Command {
 				}
 				sec.RotateAfter = &t
 			}
+			if err := applyExpiry(sec, ttl, expiresAt); err != nil {
+				return err
+			}
 			if len(meta) > 0 {
 				if sec.Meta == nil {
 					sec.Meta = map[string]string{}
@@ -423,6 +483,8 @@ func newSet() *cobra.Command {
 	c.Flags().StringSliceVar(&tags, "tag", nil, "tags (repeatable or comma-separated)")
 	c.Flags().StringVar(&desc, "desc", "", "description")
 	c.Flags().StringVar(&rotate, "rotate-after", "", "rotation date (YYYY-MM-DD)")
+	c.Flags().StringVar(&ttl, "ttl", "", "expire after a relative duration (e.g. 30m, 12h, 7d, 2w)")
+	c.Flags().StringVar(&expiresAt, "expires-at", "", "expire at an absolute time (RFC3339 or YYYY-MM-DD)")
 	c.Flags().StringToStringVar(&meta, "meta", nil, "extra metadata key=value (repeatable)")
 	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
 	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
@@ -579,6 +641,13 @@ func newShow() *cobra.Command {
 			}
 			if sec.RotateAfter != nil {
 				fmt.Printf("rotate after: %s\n", sec.RotateAfter.Format("2006-01-02"))
+			}
+			if sec.ExpiresAt != nil {
+				state := "valid"
+				if sec.Expired(time.Now()) {
+					state = "EXPIRED"
+				}
+				fmt.Printf("expires:      %s (%s)\n", sec.ExpiresAt.Local().Format(time.RFC3339), state)
 			}
 			for k, v := range sec.Meta {
 				fmt.Printf("meta.%s: %s\n", k, v)
@@ -897,7 +966,7 @@ func newLog() *cobra.Command {
 // change as a distinct "rotate" event (vs the initial "set"). Optionally advances the next
 // rotation date.
 func newRotate() *cobra.Command {
-	var rotate string
+	var rotate, ttl, expiresAt string
 	c := &cobra.Command{
 		Use:   "rotate NAME",
 		Short: "Replace an existing secret's value (keeps created_at; logs a rotation)",
@@ -933,6 +1002,9 @@ func newRotate() *cobra.Command {
 				}
 				sec.RotateAfter = &t
 			}
+			if err := applyExpiry(sec, ttl, expiresAt); err != nil {
+				return err
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -944,6 +1016,8 @@ func newRotate() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&rotate, "rotate-after", "", "set the next rotation date (YYYY-MM-DD)")
+	c.Flags().StringVar(&ttl, "ttl", "", "refresh expiry to a relative duration (e.g. 30m, 12h, 7d, 2w)")
+	c.Flags().StringVar(&expiresAt, "expires-at", "", "refresh expiry to an absolute time (RFC3339 or YYYY-MM-DD)")
 	return c
 }
 
@@ -976,20 +1050,38 @@ func newStale() *cobra.Command {
 				return nil
 			}
 
-			// cutoff = now (+within days): include anything due on or before it.
+			// cutoff = now (+within days): surface anything whose rotation is due or whose hard
+			// expiry falls on or before it. With the default --within 0 that means overdue
+			// rotations and already-expired secrets; a larger window looks ahead.
 			cutoff := now.AddDate(0, 0, within)
-			fmt.Fprintln(w, "NAME\tROTATE AFTER\tSTATUS")
+			fmt.Fprintln(w, "NAME\tROTATE AFTER\tEXPIRES\tSTATUS")
 			for _, name := range s.Names() {
 				sec := s.Secrets[name]
-				if sec.RotateAfter == nil || sec.RotateAfter.After(cutoff) {
+				rotDue := sec.RotateAfter != nil && !sec.RotateAfter.After(cutoff)
+				expSoon := sec.ExpiresAt != nil && !sec.ExpiresAt.After(cutoff)
+				if !rotDue && !expSoon {
 					continue
 				}
-				days := int(now.Sub(*sec.RotateAfter).Hours() / 24)
-				status := fmt.Sprintf("%dd overdue", days)
-				if days < 0 { // due in the future but within the window
-					status = fmt.Sprintf("due in %dd", -days)
+				ra, ex := "-", "-"
+				var status []string
+				if rotDue {
+					ra = sec.RotateAfter.Format("2006-01-02")
+					days := int(now.Sub(*sec.RotateAfter).Hours() / 24)
+					if days < 0 { // due in the future but within the window
+						status = append(status, fmt.Sprintf("rotate in %dd", -days))
+					} else {
+						status = append(status, fmt.Sprintf("%dd overdue", days))
+					}
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", name, sec.RotateAfter.Format("2006-01-02"), status)
+				if expSoon {
+					ex = sec.ExpiresAt.Local().Format("2006-01-02 15:04")
+					if now.After(*sec.ExpiresAt) {
+						status = append(status, "EXPIRED")
+					} else {
+						status = append(status, "expiring")
+					}
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, ra, ex, strings.Join(status, ", "))
 			}
 			return nil
 		},
