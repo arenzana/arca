@@ -54,3 +54,8 @@ signs:
 
 release:
   prerelease: auto
+  # Create as a draft so every asset (archives, checksums, signatures, SBOMs) is
+  # attached BEFORE the release is published. With immutable releases enabled, a
+  # release locks on publish — the CI workflow flips the draft to published only
+  # after all uploads + attestations complete.
+  draft: true
