@@ -207,17 +207,27 @@ func TestDetectIdentityGenericNoVersion(t *testing.T) {
 	}
 }
 
-// TestApproverWho covers the actor and fallback branches of the approval prompt descriptor
-// (the agent branch is covered when the suite runs under an AI agent).
+// TestApproverWho covers all three branches of the approval-prompt descriptor deterministically
+// (so coverage doesn't depend on whether the suite happens to run under an AI agent).
 func TestApproverWho(t *testing.T) {
+	// agent branch — name/version/session formatting
+	t.Setenv("ARCA_ACTOR", "")
+	t.Setenv("AI_AGENT", "")
+	t.Setenv("CURSOR_TRACE_ID", "")
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "abcdef1234567890")
+	t.Setenv("CLAUDE_CODE_EXECPATH", "/x/claude-code/9.9.9/claude")
+	if w := approverWho(); !strings.Contains(w, "claude-code/9.9.9") || !strings.Contains(w, "abcdef12") {
+		t.Fatalf("agent descriptor = %q", w)
+	}
+	// actor branch
 	t.Setenv("CLAUDECODE", "")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
-	t.Setenv("CURSOR_TRACE_ID", "")
-	t.Setenv("AI_AGENT", "")
 	t.Setenv("ARCA_ACTOR", "alice")
 	if w := approverWho(); w != "alice" {
 		t.Fatalf("actor descriptor = %q", w)
 	}
+	// fallback branch
 	t.Setenv("ARCA_ACTOR", "")
 	if w := approverWho(); w != "this process" {
 		t.Fatalf("fallback descriptor = %q", w)

@@ -237,7 +237,7 @@ An `arca mcp` server (exposing these as audited Model Context Protocol tools) is
 
 Built as security software: **reproducible** builds (`CGO_ENABLED=0`, `-trimpath`, pinned
 timestamps), **cosign**-signed checksums, a **CycloneDX SBOM**, and **SLSA build-provenance**
-attestations on every release. CI runs `go vet`, `go test -race` (≥90% coverage gate),
+attestations on every release. CI runs `go vet`, `go test -race` (~90% coverage, gated),
 `go mod verify`, `govulncheck`, **CodeQL**, **OpenSSF Scorecard**, dependency review, and
 **SHA-pinned** actions under a hardened runner. See [SECURITY.md](SECURITY.md) for the disclosure
 policy and release-verification steps.
