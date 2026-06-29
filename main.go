@@ -1,4 +1,17 @@
-// arca — an age-encrypted secret store with cleartext metadata and a local audit log.
+// Command arca is an age-encrypted secret store with cleartext metadata and a local audit log,
+// designed to sit safely in front of AI agents.
+//
+// The CLI is intentionally split into three "access shapes" with different trust levels:
+//
+//   - get / env    — reveal a value to stdout (blocked for --no-print secrets);
+//   - inject       — resolve arca://NAME references in a template to stdout (also blocked for
+//     --no-print secrets);
+//   - exec         — inject values into a subprocess's environment, so a command can *use* a
+//     secret while the value never appears on arca's stdout or in an agent's
+//     context. This is the sanctioned path for --no-print secrets.
+//
+// Every access is written to the audit log with the calling AI agent's name/version/session
+// (auto-detected) plus an explicit $ARCA_ACTOR, so `arca log` can answer who touched what.
 package main
 
 import (
@@ -26,29 +39,36 @@ import (
 var version = "dev"
 
 func main() {
+	// Cobra prints the error itself (SilenceErrors=false); we just set the exit code.
 	if err := newRoot().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
+// newRoot builds the command tree. It's a constructor (not a package-level var) so tests can
+// get a fresh, isolated command instance per invocation.
 func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "arca",
 		Short:         "age-encrypted secrets with metadata and an audit log",
 		Long:          "arca stores secrets as age-encrypted values with cleartext metadata in a JSON\nstore, and records every access in a local SQLite audit log.",
 		Version:       version,
-		SilenceUsage:  true,
+		SilenceUsage:  true, // don't dump usage on every runtime error
 		SilenceErrors: false,
 	}
 	root.AddCommand(
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
-		newRm(), newImport(), newExec(), newEnv(), newLog(),
+		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(),
 	)
 	return root
 }
 
-// ---- paths -----------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Paths. All three locations are overridable via env so the store can be pointed at a
+// dotfiles repo (git-synced) while the audit DB stays local, and tests can sandbox everything.
+// ----------------------------------------------------------------------------
 
+// xdgHome returns $env if set, else $HOME/def — an XDG-with-fallback helper.
 func xdgHome(env, def string) string {
 	if v := os.Getenv(env); v != "" {
 		return v
@@ -60,6 +80,7 @@ func xdgHome(env, def string) string {
 func configDir() string { return filepath.Join(xdgHome("XDG_CONFIG_HOME", ".config"), "arca") }
 func stateDir() string  { return filepath.Join(xdgHome("XDG_STATE_HOME", ".local/state"), "arca") }
 
+// storePath is the JSON store (git-syncable). Override with $ARCA_STORE.
 func storePath() string {
 	if p := os.Getenv("ARCA_STORE"); p != "" {
 		return p
@@ -67,6 +88,7 @@ func storePath() string {
 	return filepath.Join(configDir(), "store.json")
 }
 
+// auditPath is the local SQLite audit DB (do not sync). Override with $ARCA_AUDIT.
 func auditPath() string {
 	if p := os.Getenv("ARCA_AUDIT"); p != "" {
 		return p
@@ -74,6 +96,8 @@ func auditPath() string {
 	return filepath.Join(stateDir(), "audit.db")
 }
 
+// identityPath is the age private key. It defaults to reusing the caller's existing
+// $SOPS_AGE_KEY_FILE so arca shares one key with sops; override with $ARCA_IDENTITY.
 func identityPath() string {
 	if p := os.Getenv("ARCA_IDENTITY"); p != "" {
 		return p
@@ -84,11 +108,15 @@ func identityPath() string {
 	return filepath.Join(configDir(), "identity.txt")
 }
 
-// ---- helpers ---------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Shared helpers.
+// ----------------------------------------------------------------------------
 
 func openStore() (*store.Store, error) { return store.Load(storePath()) }
 func loadIDs() ([]age.Identity, error) { return crypto.LoadIdentities(identityPath()) }
 
+// logAudit records one access event, best-effort (audit failures must never break a real
+// operation, so errors are swallowed). The accessing identity is auto-detected here.
 func logAudit(op, name, caller string) {
 	a, err := audit.Open(auditPath())
 	if err != nil {
@@ -99,19 +127,24 @@ func logAudit(op, name, caller string) {
 }
 
 // detectIdentity figures out who/what is accessing a secret: the explicit $ARCA_ACTOR plus an
-// auto-detected AI agent (name, version, session) from well-known environment variables.
+// auto-detected AI agent (name, version, session) from well-known environment variables. This
+// is what lets `arca log` attribute access to a specific agent session without the user
+// having to configure anything.
 func detectIdentity() audit.Identity {
 	id := audit.Identity{Actor: os.Getenv("ARCA_ACTOR")}
 	switch {
 	case envSet("CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
 		id.Agent = "claude-code"
 		id.Session = os.Getenv("CLAUDE_CODE_SESSION_ID")
+		// Claude Code's binary lives under .../<version>/claude, so the version falls out of
+		// the exec path.
 		id.Version = firstSemver(os.Getenv("CLAUDE_CODE_EXECPATH"))
 	case envSet("CURSOR_TRACE_ID"):
 		id.Agent = "cursor"
 		id.Session = os.Getenv("CURSOR_TRACE_ID")
 	}
-	// Generic fallback: AI_AGENT="name_version_agent" (e.g. claude-code_2-1-181_agent).
+	// Generic fallback for other agents: AI_AGENT="name_version_agent"
+	// (e.g. "claude-code_2-1-181_agent"); the version uses '-' for '.'.
 	if id.Agent == "" {
 		if ai := os.Getenv("AI_AGENT"); ai != "" {
 			parts := strings.SplitN(ai, "_", 3)
@@ -124,6 +157,7 @@ func detectIdentity() audit.Identity {
 	return id
 }
 
+// envSet reports whether any of the named environment variables is non-empty.
 func envSet(keys ...string) bool {
 	for _, k := range keys {
 		if os.Getenv(k) != "" {
@@ -135,8 +169,10 @@ func envSet(keys ...string) bool {
 
 var semverRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
 
+// firstSemver pulls the first "X.Y.Z" out of s (e.g. a version embedded in a path), or "".
 func firstSemver(s string) string { return semverRe.FindString(s) }
 
+// shortID truncates long ids (e.g. session UUIDs) for compact table display.
 func shortID(s string) string {
 	if len(s) > 8 {
 		return s[:8]
@@ -144,7 +180,8 @@ func shortID(s string) string {
 	return s
 }
 
-// readValue reads a secret from a TTY (no echo) or from piped stdin.
+// readValue reads a secret from a TTY without echo, or from piped stdin. Secrets are NEVER
+// taken as command-line arguments (which would leak via shell history / `ps`).
 func readValue(prompt string) ([]byte, error) {
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprint(os.Stderr, prompt)
@@ -156,6 +193,8 @@ func readValue(prompt string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Strip a single trailing newline (from `echo`/editors) but preserve internal newlines,
+	// so multi-line secrets like PEM keys round-trip intact.
 	return []byte(strings.TrimRight(string(b), "\r\n")), nil
 }
 
@@ -168,10 +207,15 @@ func contains(ss []string, x string) bool {
 	return false
 }
 
+// shellQuote single-quotes a value for safe `eval` in a POSIX shell (used by `env`).
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// ---- commands --------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Commands.
+// ----------------------------------------------------------------------------
 
+// newInit creates the store, deriving the recipient from the caller's existing age key (or
+// generating one if none exists). It refuses to clobber an existing store without --force.
 func newInit() *cobra.Command {
 	var force bool
 	c := &cobra.Command{
@@ -185,6 +229,7 @@ func newInit() *cobra.Command {
 			idPath := identityPath()
 			var recips []string
 			if _, err := os.Stat(idPath); err == nil {
+				// Reuse the existing identity (e.g. the sops age key).
 				ids, err := crypto.LoadIdentities(idPath)
 				if err != nil {
 					return err
@@ -194,6 +239,7 @@ func newInit() *cobra.Command {
 				}
 				fmt.Fprintf(os.Stderr, "using identity %s\n", idPath)
 			} else {
+				// No key yet: generate one and persist it 0600.
 				idStr, rec, err := crypto.GenerateIdentity()
 				if err != nil {
 					return err
@@ -218,15 +264,18 @@ func newInit() *cobra.Command {
 	return c
 }
 
+// newSet adds or updates a secret. The value comes from a TTY/stdin (never an arg). On an
+// existing secret it preserves CreatedAt and only touches the fields the user supplied.
 func newSet() *cobra.Command {
 	var tags []string
 	var desc, rotate string
 	var meta map[string]string
+	var noPrint bool
 	c := &cobra.Command{
 		Use:   "set NAME",
 		Short: "Add or update a secret (value from TTY or stdin)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			s, err := openStore()
 			if err != nil {
@@ -244,9 +293,10 @@ func newSet() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
 			now := time.Now().UTC()
 			sec := s.Secrets[name]
-			if sec == nil {
+			if sec == nil { // new secret
 				sec = &store.Secret{CreatedAt: now}
 				s.Secrets[name] = sec
 			}
@@ -273,6 +323,11 @@ func newSet() *cobra.Command {
 					sec.Meta[k] = v
 				}
 			}
+			// Only change the policy when the flag was actually given, so re-setting a secret
+			// doesn't silently clear its no-print bit.
+			if cmd.Flags().Changed("no-print") {
+				sec.NoPrint = noPrint
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -285,9 +340,12 @@ func newSet() *cobra.Command {
 	c.Flags().StringVar(&desc, "desc", "", "description")
 	c.Flags().StringVar(&rotate, "rotate-after", "", "rotation date (YYYY-MM-DD)")
 	c.Flags().StringToStringVar(&meta, "meta", nil, "extra metadata key=value (repeatable)")
+	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
 	return c
 }
 
+// newGet decrypts and prints one secret. It refuses --no-print secrets (the whole point of
+// that flag is that the value must not reach stdout) and records a "read" in the audit log.
 func newGet() *cobra.Command {
 	var nl, noLog bool
 	c := &cobra.Command{
@@ -304,6 +362,9 @@ func newGet() *cobra.Command {
 			if sec == nil {
 				return fmt.Errorf("no such secret: %s", name)
 			}
+			if sec.NoPrint {
+				return fmt.Errorf("%s is marked --no-print; use `exec` instead", name)
+			}
 			ids, err := loadIDs()
 			if err != nil {
 				return err
@@ -312,7 +373,7 @@ func newGet() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("decrypt %s: %w", name, err)
 			}
-			os.Stdout.Write(plain)
+			os.Stdout.Write(plain) // raw, no trailing newline unless -n
 			if nl {
 				fmt.Println()
 			}
@@ -327,6 +388,8 @@ func newGet() *cobra.Command {
 	return c
 }
 
+// newLs lists secrets and their metadata. It never decrypts; with --reads it joins the audit
+// DB for last-read/count, which is why that data lives outside the store.
 func newLs() *cobra.Command {
 	var tag string
 	var reads bool
@@ -379,6 +442,8 @@ func newLs() *cobra.Command {
 	return c
 }
 
+// newShow prints one secret's metadata (never the value), enriched with last-read info from
+// the audit DB.
 func newShow() *cobra.Command {
 	return &cobra.Command{
 		Use:   "show NAME",
@@ -408,6 +473,9 @@ func newShow() *cobra.Command {
 			} else {
 				fmt.Printf("last read:    %s (%d total)\n", lr.Local().Format(time.RFC3339), cnt)
 			}
+			if sec.NoPrint {
+				fmt.Printf("policy:       no-print (exec-only)\n")
+			}
 			if len(sec.Tags) > 0 {
 				fmt.Printf("tags:         %s\n", strings.Join(sec.Tags, ", "))
 			}
@@ -425,6 +493,7 @@ func newShow() *cobra.Command {
 	}
 }
 
+// newRm deletes a secret from the store and logs the removal.
 func newRm() *cobra.Command {
 	return &cobra.Command{
 		Use:     "rm NAME",
@@ -451,6 +520,8 @@ func newRm() *cobra.Command {
 	}
 }
 
+// newImport reads dotenv-style KEY=value lines from stdin and stores each, e.g. to migrate
+// from a sops file: `sops -d secrets.env | arca import`.
 func newImport() *cobra.Command {
 	return &cobra.Command{
 		Use:   "import",
@@ -466,7 +537,7 @@ func newImport() *cobra.Command {
 				return err
 			}
 			sc := bufio.NewScanner(os.Stdin)
-			sc.Buffer(make([]byte, 1<<20), 1<<20)
+			sc.Buffer(make([]byte, 1<<20), 1<<20) // allow long values (up to 1 MiB/line)
 			now := time.Now().UTC()
 			n := 0
 			for sc.Scan() {
@@ -480,7 +551,7 @@ func newImport() *cobra.Command {
 					continue
 				}
 				k = strings.TrimSpace(k)
-				v = strings.Trim(strings.TrimSpace(v), `"'`)
+				v = strings.Trim(strings.TrimSpace(v), `"'`) // drop surrounding quotes
 				armored, err := crypto.Encrypt([]byte(v), recips)
 				if err != nil {
 					return err
@@ -506,6 +577,70 @@ func newImport() *cobra.Command {
 	}
 }
 
+var refRe = regexp.MustCompile(`arca://[A-Za-z_][A-Za-z0-9_]*`)
+
+// newInject resolves arca://NAME references on stdin and writes the result to stdout — so an
+// agent can put references in a config/template and have them filled in at render time,
+// manipulating references rather than secrets. no-print secrets are refused (use exec); every
+// resolved secret is audited.
+func newInject() *cobra.Command {
+	return &cobra.Command{
+		Use:   "inject",
+		Short: "Resolve arca://NAME references on stdin, writing the result to stdout",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			ids, err := loadIDs()
+			if err != nil {
+				return err
+			}
+			data, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+			// ReplaceAllStringFunc can't return an error, so we capture the first failure in a
+			// closure variable and surface it after the scan (leaving the reference untouched).
+			var firstErr error
+			out := refRe.ReplaceAllStringFunc(string(data), func(m string) string {
+				name := strings.TrimPrefix(m, "arca://")
+				sec := s.Secrets[name]
+				switch {
+				case sec == nil:
+					if firstErr == nil {
+						firstErr = fmt.Errorf("no such secret: %s", name)
+					}
+					return m
+				case sec.NoPrint:
+					if firstErr == nil {
+						firstErr = fmt.Errorf("%s is marked --no-print; use `exec`, not inject", name)
+					}
+					return m
+				}
+				plain, err := crypto.Decrypt(sec.Value, ids)
+				if err != nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("decrypt %s: %w", name, err)
+					}
+					return m
+				}
+				logAudit("inject", name, "")
+				return string(plain)
+			})
+			if firstErr != nil {
+				return firstErr
+			}
+			fmt.Print(out)
+			return nil
+		},
+	}
+}
+
+// newExec runs a command with selected secrets injected as environment variables. This is the
+// "use without revealing" path: the command can read $NAME, but the value never lands on
+// arca's stdout or in an agent's context. It's also the only way to use a --no-print secret.
 func newExec() *cobra.Command {
 	var only []string
 	c := &cobra.Command{
@@ -524,10 +659,10 @@ func newExec() *cobra.Command {
 				return err
 			}
 			names := s.Names()
-			if len(only) > 0 {
+			if len(only) > 0 { // least privilege: inject just what was asked for
 				names = only
 			}
-			caller := filepath.Base(args[0])
+			caller := filepath.Base(args[0]) // recorded as the audit "caller"
 			env := os.Environ()
 			for _, name := range names {
 				sec := s.Secrets[name]
@@ -545,6 +680,7 @@ func newExec() *cobra.Command {
 			cmd.Env = env
 			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 			if err := cmd.Run(); err != nil {
+				// Propagate the child's exit code so `arca exec -- foo` behaves like `foo`.
 				if ee, ok := err.(*exec.ExitError); ok {
 					os.Exit(ee.ExitCode())
 				}
@@ -554,10 +690,15 @@ func newExec() *cobra.Command {
 		},
 	}
 	c.Flags().StringSliceVar(&only, "only", nil, "subset of secrets to inject (default: all)")
-	c.Flags().SetInterspersed(false) // arca flags before the command; everything after is the command
+	// Stop flag parsing at the first positional arg so the wrapped command's own flags
+	// (e.g. `-auto-approve`) aren't interpreted by arca.
+	c.Flags().SetInterspersed(false)
 	return c
 }
 
+// newEnv dumps all secrets as shell assignments for `eval "$(arca env)"`. This is a bulk
+// convenience path and is NOT per-read audited; it also skips --no-print secrets so they can't
+// be revealed this way.
 func newEnv() *cobra.Command {
 	var noExport bool
 	c := &cobra.Command{
@@ -574,6 +715,10 @@ func newEnv() *cobra.Command {
 				return err
 			}
 			for _, name := range s.Names() {
+				if s.Secrets[name].NoPrint {
+					fmt.Fprintf(os.Stderr, "skip %s (--no-print)\n", name)
+					continue
+				}
 				plain, err := crypto.Decrypt(s.Secrets[name].Value, ids)
 				if err != nil {
 					return fmt.Errorf("decrypt %s: %w", name, err)
@@ -592,6 +737,7 @@ func newEnv() *cobra.Command {
 	return c
 }
 
+// newLog prints the access history, including the attributed AI agent and session.
 func newLog() *cobra.Command {
 	var limit int
 	c := &cobra.Command{
@@ -630,6 +776,9 @@ func newLog() *cobra.Command {
 	return c
 }
 
+// newRotate replaces an existing secret's value while preserving CreatedAt, and logs the
+// change as a distinct "rotate" event (vs the initial "set"). Optionally advances the next
+// rotation date.
 func newRotate() *cobra.Command {
 	var rotate string
 	c := &cobra.Command{
@@ -679,6 +828,8 @@ func newRotate() *cobra.Command {
 	return c
 }
 
+// newStale lists secrets due for rotation: those whose rotate_after is in the past (or within
+// --within days). With --missing it instead lists secrets that have no rotation policy at all.
 func newStale() *cobra.Command {
 	var within int
 	var missing bool
@@ -706,6 +857,7 @@ func newStale() *cobra.Command {
 				return nil
 			}
 
+			// cutoff = now (+within days): include anything due on or before it.
 			cutoff := now.AddDate(0, 0, within)
 			fmt.Fprintln(w, "NAME\tROTATE AFTER\tSTATUS")
 			for _, name := range s.Names() {
@@ -715,7 +867,7 @@ func newStale() *cobra.Command {
 				}
 				days := int(now.Sub(*sec.RotateAfter).Hours() / 24)
 				status := fmt.Sprintf("%dd overdue", days)
-				if days < 0 {
+				if days < 0 { // due in the future but within the window
 					status = fmt.Sprintf("due in %dd", -days)
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\n", name, sec.RotateAfter.Format("2006-01-02"), status)

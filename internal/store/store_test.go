@@ -7,10 +7,12 @@ import (
 	"time"
 )
 
+// TestSaveLoadRoundTrip checks that a store survives a Save/Load cycle with all metadata
+// intact, and — importantly for a secrets file — that it lands on disk as 0600.
 func TestSaveLoadRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "store.json")
 	s := New(p, []string{"age1xyz"})
-	now := time.Now().UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Second) // truncate so JSON time round-trips exactly
 	s.Secrets["FOO"] = &Secret{
 		Value:       "ciphertext",
 		CreatedAt:   now,
@@ -43,12 +45,15 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLoadMissing ensures a missing store is a clean error (the CLI turns this into the
+// friendly "run `arca init`" message), not a panic or empty store.
 func TestLoadMissing(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "nope.json")); err == nil {
 		t.Fatal("expected error for a missing store")
 	}
 }
 
+// TestNamesSorted verifies the deterministic ordering that keeps `ls`/`stale` output stable.
 func TestNamesSorted(t *testing.T) {
 	s := New("", nil)
 	s.Secrets["b"] = &Secret{}

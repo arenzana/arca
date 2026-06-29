@@ -44,6 +44,8 @@ printf '%s' "$TOKEN" | arca set GITHUB_TOKEN --tag github,ci --desc "classic PAT
 arca ls --reads                    # metadata + last-read/count (no decryption)
 arca get GITHUB_TOKEN              # decrypts just this one; logs the read
 arca exec -- terraform apply       # inject secrets as env into a subprocess (audited)
+echo 'token = "arca://GITHUB_TOKEN"' | arca inject    # resolve references in a config/template
+arca set DB_PASSWORD --no-print     # exec-only: get/env/inject refuse to reveal it
 arca rotate GITHUB_TOKEN --rotate-after 2026-12-01   # replace value; set next rotation
 arca stale                         # secrets past their rotate-after date
 arca log GITHUB_TOKEN              # who/what read it, and when
@@ -110,6 +112,11 @@ arca is a file-based secrets broker you can safely put in front of an AI agent:
 
 - **Use without revealing.** `arca exec -- <cmd>` injects secrets into a subprocess's environment —
   the command uses the value, but it never prints into the agent's context or transcript.
+- **References, not values.** Put `arca://NAME` in a config/template and `arca inject` resolves it
+  at render time, so an agent manipulates references rather than raw secrets.
+- **`--no-print` (exec-only) secrets.** Mark a secret so `get`, `env`, and `inject` refuse to
+  reveal it — it can only be injected into a subprocess via `exec`, so the value never reaches
+  stdout or the agent's context.
 - **Attributed audit.** Every access is logged with the calling **AI agent, its version, and
   session id** — auto-detected from the environment (Claude Code, Cursor, or a generic
   `AI_AGENT`), plus an explicit `ARCA_ACTOR` override — so `arca log` answers *which agent/session

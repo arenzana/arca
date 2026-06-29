@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// writeIdentity persists an age identity string to a temp file and returns its path, so the
+// tests can exercise LoadIdentities (which reads from disk) rather than poking internals.
 func writeIdentity(t *testing.T, idStr string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "id.txt")
@@ -15,6 +17,9 @@ func writeIdentity(t *testing.T, idStr string) string {
 	return p
 }
 
+// TestEncryptDecryptRoundTrip is the core guarantee: a value encrypted to a recipient is
+// recovered byte-for-byte by the matching identity (and the ciphertext is not the plaintext).
+// Uses a non-ASCII value to catch any encoding mishandling.
 func TestEncryptDecryptRoundTrip(t *testing.T) {
 	idStr, recStr, err := GenerateIdentity()
 	if err != nil {
@@ -46,18 +51,22 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDecryptWrongIdentityFails confirms a different key cannot read the ciphertext — i.e. the
+// encryption is actually targeted at the recipient, not trivially reversible.
 func TestDecryptWrongIdentityFails(t *testing.T) {
 	_, recStr, _ := GenerateIdentity()
 	recips, _ := ParseRecipients([]string{recStr})
 	armored, _ := Encrypt([]byte("x"), recips)
 
-	otherStr, _, _ := GenerateIdentity()
+	otherStr, _, _ := GenerateIdentity() // an unrelated key
 	ids, _ := LoadIdentities(writeIdentity(t, otherStr))
 	if _, err := Decrypt(armored, ids); err == nil {
 		t.Fatal("expected decrypt to fail with the wrong identity")
 	}
 }
 
+// TestRecipientsFromIdentities verifies init's "derive the recipient from the user's own key"
+// path: the public recipient extracted from an identity matches the one generated alongside it.
 func TestRecipientsFromIdentities(t *testing.T) {
 	idStr, recStr, _ := GenerateIdentity()
 	ids, _ := LoadIdentities(writeIdentity(t, idStr))
@@ -70,6 +79,8 @@ func TestRecipientsFromIdentities(t *testing.T) {
 	}
 }
 
+// TestParseRecipientsEmpty guards the obvious misuse: encrypting to nobody must error rather
+// than silently producing an unreadable blob.
 func TestParseRecipientsEmpty(t *testing.T) {
 	if _, err := ParseRecipients(nil); err == nil {
 		t.Fatal("expected error for no recipients")

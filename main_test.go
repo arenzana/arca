@@ -12,10 +12,17 @@ import (
 	"github.com/arenzana/arca/internal/store"
 )
 
-// runArca executes the root command with args, feeding stdin and capturing stdout.
-func runArca(t *testing.T, stdin string, args ...string) string {
-	t.Helper()
-
+// execArca runs the root command with args, feeding stdin and capturing stdout.
+//
+// The commands read os.Stdin directly (readValue, inject) and write secret output to os.Stdout
+// (get, inject, env, log), so to test them we temporarily swap those process globals around a
+// single Execute():
+//   - stdin  is a pipe pre-loaded with the supplied input (so non-TTY readValue gets the value);
+//   - stdout is a pipe drained by a goroutine started *before* Execute, to avoid deadlocking if
+//     the command writes more than a pipe buffer.
+//
+// Both globals are restored before returning. Tests therefore must not run in parallel.
+func execArca(stdin string, args ...string) (string, error) {
 	oldIn := os.Stdin
 	ir, iw, _ := os.Pipe()
 	go func() { io.WriteString(iw, stdin); iw.Close() }()
@@ -30,29 +37,46 @@ func runArca(t *testing.T, stdin string, args ...string) string {
 
 	root := newRoot()
 	root.SetArgs(args)
-	root.SetOut(io.Discard)
+	root.SetOut(io.Discard) // silence cobra's own usage/output; we only care about os.Stdout
 	root.SetErr(io.Discard)
 	err := root.Execute()
 
 	ow.Close()
 	os.Stdout = oldOut
-	out := <-done
+	return <-done, err
+}
+
+// runArca is execArca for the happy path: it fails the test on any command error.
+func runArca(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
+	out, err := execArca(stdin, args...)
 	if err != nil {
 		t.Fatalf("arca %s: %v", strings.Join(args, " "), err)
 	}
 	return out
 }
 
+// runArcaErr is for the cases where an error is the expected outcome (e.g. get on --no-print).
+func runArcaErr(stdin string, args ...string) error {
+	_, err := execArca(stdin, args...)
+	return err
+}
+
+// sandbox points every arca path at a temp dir and forces a freshly generated identity, so a
+// test never touches the developer's real store, audit db, or sops key.
 func sandbox(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("SOPS_AGE_KEY_FILE", "") // force a generated identity
+	t.Setenv("SOPS_AGE_KEY_FILE", "") // ignore any real sops key → init generates one
 	t.Setenv("ARCA_STORE", filepath.Join(dir, "store.json"))
 	t.Setenv("ARCA_AUDIT", filepath.Join(dir, "audit.db"))
 	t.Setenv("ARCA_IDENTITY", filepath.Join(dir, "id.txt"))
 	return dir
 }
 
+// TestEndToEnd walks the primary lifecycle through the real command tree: init → set → get →
+// rotate → get, asserting along the way that the stored value is encrypted (not cleartext),
+// that rotate preserves created_at, and that the audit log captured the rotation and the actor.
 func TestEndToEnd(t *testing.T) {
 	dir := sandbox(t)
 	t.Setenv("ARCA_ACTOR", "test-agent")
@@ -77,7 +101,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	created := sec.CreatedAt
 
-	// rotate keeps created_at, replaces the value
+	// rotate keeps created_at, replaces the value.
 	runArca(t, "newsecret", "rotate", "API_TOKEN")
 	s2, _ := store.Load(filepath.Join(dir, "store.json"))
 	if !s2.Secrets["API_TOKEN"].CreatedAt.Equal(created) {
@@ -87,7 +111,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("after rotate, get = %q", out)
 	}
 
-	// audit recorded the actor and a rotation
+	// The audit log must show a rotation and the explicit actor.
 	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
 	defer a.Close()
 	evs, _ := a.Recent("API_TOKEN", 50)
@@ -108,6 +132,8 @@ func TestEndToEnd(t *testing.T) {
 	}
 }
 
+// TestStale checks the rotation-due filter: a past rotate_after is listed, a far-future one is
+// not.
 func TestStale(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
@@ -120,6 +146,8 @@ func TestStale(t *testing.T) {
 	}
 }
 
+// TestDetectIdentityClaude verifies Claude Code is recognized from its env vars, with the
+// version parsed out of the exec path. (t.Setenv overrides whatever the test host has set.)
 func TestDetectIdentityClaude(t *testing.T) {
 	t.Setenv("ARCA_ACTOR", "")
 	t.Setenv("AI_AGENT", "")
@@ -133,6 +161,8 @@ func TestDetectIdentityClaude(t *testing.T) {
 	}
 }
 
+// TestDetectIdentityGeneric verifies the fallback parser for the generic AI_AGENT convention
+// (name_version_agent), used for agents arca doesn't special-case.
 func TestDetectIdentityGeneric(t *testing.T) {
 	t.Setenv("ARCA_ACTOR", "")
 	t.Setenv("CLAUDECODE", "")
@@ -142,5 +172,30 @@ func TestDetectIdentityGeneric(t *testing.T) {
 	id := detectIdentity()
 	if id.Agent != "myagent" || id.Version != "1.2.3" {
 		t.Fatalf("got %+v", id)
+	}
+}
+
+// TestNoPrintAndInject covers the AI-safety policy surface:
+//   - inject resolves a normal arca:// reference;
+//   - a --no-print secret is refused by both get and inject (it must not reach stdout);
+//   - but exec can still inject it into a subprocess (here we only echo its length, never the
+//     value — "secretval" is 9 chars).
+func TestNoPrintAndInject(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "plainval", "set", "NORMAL")
+	runArca(t, "secretval", "set", "LOCKED", "--no-print")
+
+	if out := runArca(t, "endpoint=arca://NORMAL\n", "inject"); !strings.Contains(out, "endpoint=plainval") {
+		t.Fatalf("inject = %q", out)
+	}
+	if err := runArcaErr("", "get", "LOCKED"); err == nil {
+		t.Fatal("expected get on --no-print to fail")
+	}
+	if err := runArcaErr("x=arca://LOCKED", "inject"); err == nil {
+		t.Fatal("expected inject of --no-print to fail")
+	}
+	if out := runArca(t, "", "exec", "--only", "LOCKED", "--", "sh", "-c", "echo got=${#LOCKED}"); !strings.Contains(out, "got=9") {
+		t.Fatalf("exec no-print = %q", out)
 	}
 }
