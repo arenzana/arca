@@ -161,15 +161,28 @@ func TestDetectIdentityCursorAndNone(t *testing.T) {
 	}
 }
 
-// TestLogAuditOpenError covers logAudit's swallow-the-error branch: with a corrupt audit db,
-// a `set` still succeeds (audit failures must never break a real operation).
-func TestLogAuditOpenError(t *testing.T) {
+// TestAuditFailureModes covers fail-closed (default) vs best-effort auditing. With a corrupt
+// audit db, operations abort by default (and a read won't disclose); opting out via
+// ARCA_STRICT_AUDIT=0 lets them proceed despite the broken log.
+func TestAuditFailureModes(t *testing.T) {
 	dir := sandbox(t)
 	runArca(t, "", "init")
 	if err := os.WriteFile(filepath.Join(dir, "audit.db"), []byte("not a database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runArca(t, "v", "set", "K") // must not error despite the broken audit log
+	// Default: fail-closed — abort when the access can't be audited.
+	if err := runArcaErr("v", "set", "K"); err == nil {
+		t.Fatal("expected set to fail under default (strict) auditing")
+	}
+	if err := runArcaErr("", "get", "K"); err == nil {
+		t.Fatal("expected get to fail-closed under default auditing")
+	}
+	// Opt out → best-effort: the broken audit log is swallowed and the op proceeds.
+	t.Setenv("ARCA_STRICT_AUDIT", "0")
+	runArca(t, "v", "set", "K2")
+	if out := runArca(t, "", "get", "K2"); out != "v" {
+		t.Fatalf("best-effort get = %q", out)
+	}
 }
 
 // TestImportScannerError covers the scanner-error branch: a line longer than the 1 MiB buffer.

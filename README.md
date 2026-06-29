@@ -121,6 +121,9 @@ arca is a file-based secrets broker you can safely put in front of an AI agent:
   session id** — auto-detected from the environment (Claude Code, Cursor, or a generic
   `AI_AGENT`), plus an explicit `ARCA_ACTOR` override — so `arca log` answers *which agent/session
   touched which secret, and when*.
+- **Fail-closed auditing.** By default, if an access can't be recorded the operation is
+  **aborted** — and for reads, aborted *before* the value is revealed, so a secret an agent
+  accesses is never disclosed without an audit trail. Opt into best-effort with `ARCA_STRICT_AUDIT=0`.
 - **Least privilege.** `--only` injects just the secrets a task needs, not the whole store.
 - **Metadata without secrets.** `ls` / `show` let an agent discover what exists (names, tags,
   descriptions) and reason about it without ever decrypting a value.

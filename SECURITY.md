@@ -15,7 +15,9 @@ Do **not** open public issues for vulnerabilities. We aim to acknowledge within 
 - Values are read from a TTY (no echo) or piped stdin — **never** passed as command-line
   arguments (which would leak via shell history / `ps`).
 - Store and audit files are created `0600`; store writes are atomic (temp + rename).
-- The audit log records access **metadata only** (op, name, time, actor, caller) — never values.
+- The audit log records access **metadata only** (op, name, time, actor, agent, session, caller) — never values.
+- Auditing is **fail-closed by default**: if an access cannot be recorded the operation is
+  aborted (reads abort before disclosing the value). Override with `ARCA_STRICT_AUDIT=0`.
 
 ## Supply-chain integrity
 

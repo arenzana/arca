@@ -115,15 +115,40 @@ func identityPath() string {
 func openStore() (*store.Store, error) { return store.Load(storePath()) }
 func loadIDs() ([]age.Identity, error) { return crypto.LoadIdentities(identityPath()) }
 
-// logAudit records one access event, best-effort (audit failures must never break a real
-// operation, so errors are swallowed). The accessing identity is auto-detected here.
-func logAudit(op, name, caller string) {
+// logAudit records one access event. Auditing is fail-closed by DEFAULT: if the audit log
+// cannot be written, the operation is aborted (the error is returned). For reads, callers log
+// *before* revealing the secret, so a secret that cannot be audited is never disclosed.
+//
+// Set ARCA_STRICT_AUDIT to a falsey value (0/false/off/no) to opt into best-effort auditing,
+// where a failed audit write is swallowed and never breaks the operation.
+func logAudit(op, name, caller string) error {
+	if err := recordAudit(op, name, caller); err != nil {
+		if strictAudit() {
+			return fmt.Errorf("audit failed (fail-closed; set ARCA_STRICT_AUDIT=0 to override): %w", err)
+		}
+		// best-effort: swallow
+	}
+	return nil
+}
+
+// recordAudit opens the audit log and writes one event with the auto-detected identity.
+func recordAudit(op, name, caller string) error {
 	a, err := audit.Open(auditPath())
 	if err != nil {
-		return
+		return err
 	}
 	defer a.Close()
-	_ = a.Record(op, name, caller, detectIdentity())
+	return a.Record(op, name, caller, detectIdentity())
+}
+
+// strictAudit reports whether fail-closed auditing is in effect. It is the DEFAULT; set
+// ARCA_STRICT_AUDIT to a falsey value (0/false/off/no/lax) to opt into best-effort auditing.
+func strictAudit() bool {
+	switch strings.ToLower(os.Getenv("ARCA_STRICT_AUDIT")) {
+	case "0", "false", "off", "no", "lax", "best-effort":
+		return false
+	}
+	return true
 }
 
 // detectIdentity figures out who/what is accessing a secret: the explicit $ARCA_ACTOR plus an
@@ -331,7 +356,9 @@ func newSet() *cobra.Command {
 			if err := s.Save(); err != nil {
 				return err
 			}
-			logAudit("set", name, "")
+			if err := logAudit("set", name, ""); err != nil {
+				return err
+			}
 			fmt.Fprintf(os.Stderr, "stored %s\n", name)
 			return nil
 		},
@@ -373,12 +400,16 @@ func newGet() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("decrypt %s: %w", name, err)
 			}
+			// Log before revealing: under fail-closed auditing, a read that cannot be
+			// recorded must not disclose the value.
+			if !noLog {
+				if err := logAudit("read", name, ""); err != nil {
+					return err
+				}
+			}
 			os.Stdout.Write(plain) // raw, no trailing newline unless -n
 			if nl {
 				fmt.Println()
-			}
-			if !noLog {
-				logAudit("read", name, "")
 			}
 			return nil
 		},
@@ -513,7 +544,9 @@ func newRm() *cobra.Command {
 			if err := s.Save(); err != nil {
 				return err
 			}
-			logAudit("rm", name, "")
+			if err := logAudit("rm", name, ""); err != nil {
+				return err
+			}
 			fmt.Fprintf(os.Stderr, "removed %s\n", name)
 			return nil
 		},
@@ -626,7 +659,12 @@ func newInject() *cobra.Command {
 					}
 					return m
 				}
-				logAudit("inject", name, "")
+				if err := logAudit("inject", name, ""); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					return m
+				}
 				return string(plain)
 			})
 			if firstErr != nil {
@@ -674,7 +712,9 @@ func newExec() *cobra.Command {
 					return fmt.Errorf("decrypt %s: %w", name, err)
 				}
 				env = append(env, name+"="+string(plain))
-				logAudit("exec", name, caller)
+				if err := logAudit("exec", name, caller); err != nil {
+					return err
+				}
 			}
 			cmd := exec.Command(args[0], args[1:]...)
 			cmd.Env = env
@@ -696,14 +736,13 @@ func newExec() *cobra.Command {
 	return c
 }
 
-// newEnv dumps all secrets as shell assignments for `eval "$(arca env)"`. This is a bulk
-// convenience path and is NOT per-read audited; it also skips --no-print secrets so they can't
-// be revealed this way.
+// newEnv dumps all secrets as shell assignments for `eval "$(arca env)"`. Each secret is
+// audited (op "env"), and --no-print secrets are skipped so they can't be revealed this way.
 func newEnv() *cobra.Command {
 	var noExport bool
 	c := &cobra.Command{
 		Use:   "env",
-		Short: `Print shell assignments for eval "$(arca env)" (bulk; NOT per-read audited)`,
+		Short: `Print shell assignments for eval "$(arca env)" (audited per secret)`,
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			s, err := openStore()
@@ -723,12 +762,14 @@ func newEnv() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("decrypt %s: %w", name, err)
 				}
+				if err := logAudit("env", name, ""); err != nil {
+					return err
+				}
 				if noExport {
 					fmt.Printf("%s=%s\n", name, shellQuote(string(plain)))
 				} else {
 					fmt.Printf("export %s=%s\n", name, shellQuote(string(plain)))
 				}
-				logAudit("env", name, "")
 			}
 			return nil
 		},
@@ -819,7 +860,9 @@ func newRotate() *cobra.Command {
 			if err := s.Save(); err != nil {
 				return err
 			}
-			logAudit("rotate", name, "")
+			if err := logAudit("rotate", name, ""); err != nil {
+				return err
+			}
 			fmt.Fprintf(os.Stderr, "rotated %s\n", name)
 			return nil
 		},
