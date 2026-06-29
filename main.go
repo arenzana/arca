@@ -57,10 +57,13 @@ func newRoot() *cobra.Command {
 		SilenceUsage:  true, // don't dump usage on every runtime error
 		SilenceErrors: false,
 	}
-	root.AddCommand(
+	cmds := []*cobra.Command{
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
-	)
+		newRecipients(), newReencrypt(),
+	}
+	root.AddCommand(cmds...)
+	registerCompletions(cmds)
 	return root
 }
 
@@ -546,7 +549,7 @@ func newGet() *cobra.Command {
 // DB for last-read/count, which is why that data lives outside the store.
 func newLs() *cobra.Command {
 	var tag string
-	var reads bool
+	var reads, jsonOut bool
 	c := &cobra.Command{
 		Use:     "ls",
 		Aliases: []string{"list"},
@@ -558,10 +561,26 @@ func newLs() *cobra.Command {
 				return err
 			}
 			var a *audit.Log
-			if reads {
+			if reads || jsonOut { // --json always enriches with last-read when available
 				if a, err = audit.Open(auditPath()); err == nil {
 					defer a.Close()
 				}
+			}
+			if jsonOut {
+				views := []secretView{}
+				for _, name := range s.Names() {
+					sec := s.Secrets[name]
+					if tag != "" && !contains(sec.Tags, tag) {
+						continue
+					}
+					var lr time.Time
+					var cnt int
+					if a != nil {
+						lr, cnt, _ = a.LastRead(name)
+					}
+					views = append(views, viewOf(name, sec, lr, cnt))
+				}
+				return emitJSON(views)
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 			defer w.Flush()
@@ -593,13 +612,15 @@ func newLs() *cobra.Command {
 	}
 	c.Flags().StringVar(&tag, "tag", "", "filter by tag")
 	c.Flags().BoolVar(&reads, "reads", false, "include last-read / read-count from the audit log")
+	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
 	return c
 }
 
 // newShow prints one secret's metadata (never the value), enriched with last-read info from
 // the audit DB.
 func newShow() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	c := &cobra.Command{
 		Use:   "show NAME",
 		Short: "Show metadata for a secret (no decryption)",
 		Args:  cobra.ExactArgs(1),
@@ -618,6 +639,9 @@ func newShow() *cobra.Command {
 			if a, err := audit.Open(auditPath()); err == nil {
 				lr, cnt, _ = a.LastRead(name)
 				a.Close()
+			}
+			if jsonOut {
+				return emitJSON(viewOf(name, sec, lr, cnt))
 			}
 			fmt.Printf("name:         %s\n", name)
 			fmt.Printf("created:      %s\n", sec.CreatedAt.Local().Format(time.RFC3339))
@@ -655,6 +679,8 @@ func newShow() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
+	return c
 }
 
 // newRm deletes a secret from the store and logs the removal.
@@ -926,6 +952,7 @@ func newEnv() *cobra.Command {
 // newLog prints the access history, including the attributed AI agent and session.
 func newLog() *cobra.Command {
 	var limit int
+	var jsonOut bool
 	c := &cobra.Command{
 		Use:   "log [NAME]",
 		Short: "Show access history",
@@ -944,6 +971,16 @@ func newLog() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if jsonOut {
+				views := []eventView{}
+				for _, e := range evs {
+					views = append(views, eventView{
+						Time: e.TS, Op: e.Op, Name: e.Name, Agent: e.Agent,
+						Version: e.Version, Session: e.Session, Actor: e.Actor, Caller: e.Caller,
+					})
+				}
+				return emitJSON(views)
+			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 			defer w.Flush()
 			fmt.Fprintln(w, "TIME\tOP\tNAME\tAGENT\tSESSION\tACTOR\tCALLER")
@@ -959,6 +996,7 @@ func newLog() *cobra.Command {
 		},
 	}
 	c.Flags().IntVar(&limit, "limit", 50, "max events")
+	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
 	return c
 }
 
@@ -1025,7 +1063,7 @@ func newRotate() *cobra.Command {
 // --within days). With --missing it instead lists secrets that have no rotation policy at all.
 func newStale() *cobra.Command {
 	var within int
-	var missing bool
+	var missing, jsonOut bool
 	c := &cobra.Command{
 		Use:   "stale",
 		Short: "List secrets due for rotation (rotate_after past, or within --within days)",
@@ -1040,12 +1078,23 @@ func newStale() *cobra.Command {
 			defer w.Flush()
 
 			if missing {
-				fmt.Fprintln(w, "NAME\tTAGS\tUPDATED")
+				views := []secretView{}
+				if !jsonOut {
+					fmt.Fprintln(w, "NAME\tTAGS\tUPDATED")
+				}
 				for _, name := range s.Names() {
 					sec := s.Secrets[name]
-					if sec.RotateAfter == nil {
+					if sec.RotateAfter != nil {
+						continue
+					}
+					if jsonOut {
+						views = append(views, viewOf(name, sec, time.Time{}, 0))
+					} else {
 						fmt.Fprintf(w, "%s\t%s\t%s\n", name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02"))
 					}
+				}
+				if jsonOut {
+					return emitJSON(views)
 				}
 				return nil
 			}
@@ -1054,7 +1103,10 @@ func newStale() *cobra.Command {
 			// expiry falls on or before it. With the default --within 0 that means overdue
 			// rotations and already-expired secrets; a larger window looks ahead.
 			cutoff := now.AddDate(0, 0, within)
-			fmt.Fprintln(w, "NAME\tROTATE AFTER\tEXPIRES\tSTATUS")
+			views := []staleView{}
+			if !jsonOut {
+				fmt.Fprintln(w, "NAME\tROTATE AFTER\tEXPIRES\tSTATUS")
+			}
 			for _, name := range s.Names() {
 				sec := s.Secrets[name]
 				rotDue := sec.RotateAfter != nil && !sec.RotateAfter.After(cutoff)
@@ -1081,12 +1133,20 @@ func newStale() *cobra.Command {
 						status = append(status, "expiring")
 					}
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, ra, ex, strings.Join(status, ", "))
+				if jsonOut {
+					views = append(views, staleView{Name: name, RotateAfter: sec.RotateAfter, ExpiresAt: sec.ExpiresAt, Status: status})
+				} else {
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, ra, ex, strings.Join(status, ", "))
+				}
+			}
+			if jsonOut {
+				return emitJSON(views)
 			}
 			return nil
 		},
 	}
 	c.Flags().IntVar(&within, "within", 0, "also include secrets due within N days")
 	c.Flags().BoolVar(&missing, "missing", false, "instead, list secrets with no rotation policy")
+	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
 	return c
 }
