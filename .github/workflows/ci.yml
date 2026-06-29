@@ -39,7 +39,7 @@ jobs:
         with:
           version: latest
           args: mod -licenses -json -output arca.cdx.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: arca.cdx.json
