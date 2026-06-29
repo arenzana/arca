@@ -42,6 +42,9 @@ signs:
   - cmd: cosign
     artifacts: checksum
     output: true
+    # Tell goreleaser the cert filename so the Fulcio certificate is uploaded
+    # alongside the signature — needed for `cosign verify-blob` of checksums.txt.
+    certificate: '${artifact}.pem'
     args:
       - sign-blob
       - --yes
