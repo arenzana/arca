@@ -6,6 +6,7 @@ on:
     - cron: '27 3 * * 1'   # weekly Monday
   push:
     branches: [main]
+  workflow_dispatch:        # allow on-demand runs (e.g. right after a release)
 
 permissions: read-all
 
