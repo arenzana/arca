@@ -157,6 +157,7 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `exec -- CMD` | Run CMD with secrets injected as env (audited) | `--only a,b` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
 | `log [NAME]` | Access history (agent/session/actor) | `--limit N` |
+| `mcp` | Run an MCP server exposing arca to AI agents (stdio) | — |
 
 Values are always read from a TTY (no echo) or piped stdin — **never** passed as arguments.
 
@@ -229,7 +230,30 @@ arca is a file-based secrets broker you can safely put in front of an AI agent:
   reads, aborted *before* disclosing the value.
 - **Least privilege.** `exec --only a,b` injects just the secrets a task needs.
 
-An `arca mcp` server (exposing these as audited Model Context Protocol tools) is on the roadmap.
+---
+
+## MCP server
+
+`arca mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so
+an agent accesses secrets through controlled, **audited tools** instead of raw shell — the same
+`--no-print` / `--require-approval` / fail-closed-audit policies apply.
+
+| Tool | What it does |
+|---|---|
+| `list_secrets` | Names + metadata (tags, policy, last read) — **never values** |
+| `show_secret` | Metadata for one secret |
+| `run_with_secrets` | Run a command with named secrets injected as env; returns the command's **output**, not the values |
+| `read_secret` | Reveal a value (refused for `--no-print`, gated by `--require-approval`, audited) — the escape hatch |
+| `audit_log` | Recent access events |
+
+The intended flow is *use, don't reveal*: an agent calls `run_with_secrets` so a command can use a
+secret, reserving `read_secret` for when the value genuinely must enter the model context.
+
+Register it with Claude Code:
+
+```sh
+claude mcp add arca -- arca mcp
+```
 
 ---
 

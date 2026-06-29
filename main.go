@@ -58,7 +58,7 @@ func newRoot() *cobra.Command {
 	}
 	root.AddCommand(
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
-		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(),
+		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 	)
 	return root
 }
