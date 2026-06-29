@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/arca-light.png" alt="arca logo" width="160">
+</p>
+
 # arca
 
 > *arca* (Latin): a strongbox or chest for keeping valuables under lock.
@@ -32,7 +36,9 @@ printf '%s' "$TOKEN" | arca set GITHUB_TOKEN --tag github,ci --desc "classic PAT
 arca ls --reads                    # metadata + last-read/count (no decryption)
 arca get GITHUB_TOKEN              # decrypts just this one; logs the read
 arca exec -- terraform apply       # inject secrets as env into a subprocess (audited)
-arca log GITHUB_TOKEN              # who read it, and when
+arca rotate GITHUB_TOKEN --rotate-after 2026-12-01   # replace value; set next rotation
+arca stale                         # secrets past their rotate-after date
+arca log GITHUB_TOKEN              # who/what read it, and when
 ```
 
 Migrate an existing sops dotenv:
@@ -83,6 +89,22 @@ Point `ARCA_STORE` at your dotfiles to version the store; leave the audit DB loc
   for anything you want tracked.
 - The age private key is your single decrypt root — back it up (e.g. to a password manager).
 
+## Designed for AI agents
+
+arca is a file-based secrets broker you can safely put in front of an AI agent:
+
+- **Use without revealing.** `arca exec -- <cmd>` injects secrets into a subprocess's environment —
+  the command uses the value, but it never prints into the agent's context or transcript.
+- **Attributed audit.** Set `ARCA_ACTOR` (e.g. the agent/session name) and every access is logged
+  with it, so `arca log` answers *which agent touched which secret, and when*.
+- **Least privilege.** `--only` injects just the secrets a task needs, not the whole store.
+- **Metadata without secrets.** `ls` / `show` let an agent discover what exists (names, tags,
+  descriptions) and reason about it without ever decrypting a value.
+
+More agent controls — per-secret access policies, human approval gates, JSON output, and an MCP
+server — are on the roadmap.
+
 ## License
 
 MIT
+

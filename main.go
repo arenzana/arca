@@ -36,7 +36,7 @@ func newRoot() *cobra.Command {
 		SilenceErrors: false,
 	}
 	root.AddCommand(
-		newInit(), newSet(), newGet(), newLs(), newShow(),
+		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newImport(), newExec(), newEnv(), newLog(),
 	)
 	return root
@@ -90,7 +90,7 @@ func logAudit(op, name, caller string) {
 		return
 	}
 	defer a.Close()
-	_ = a.Record(op, name, caller)
+	_ = a.Record(op, name, caller, os.Getenv("ARCA_ACTOR"))
 }
 
 // readValue reads a secret from a TTY (no echo) or from piped stdin.
@@ -563,14 +563,112 @@ func newLog() *cobra.Command {
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 			defer w.Flush()
-			fmt.Fprintln(w, "TIME\tOP\tNAME\tCALLER\tPPID")
+			fmt.Fprintln(w, "TIME\tOP\tNAME\tACTOR\tCALLER\tPPID")
 			for _, e := range evs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
-					e.TS.Local().Format("2006-01-02 15:04:05"), e.Op, e.Name, e.Caller, e.PPID)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
+					e.TS.Local().Format("2006-01-02 15:04:05"), e.Op, e.Name, e.Actor, e.Caller, e.PPID)
 			}
 			return nil
 		},
 	}
 	c.Flags().IntVar(&limit, "limit", 50, "max events")
+	return c
+}
+
+func newRotate() *cobra.Command {
+	var rotate string
+	c := &cobra.Command{
+		Use:   "rotate NAME",
+		Short: "Replace an existing secret's value (keeps created_at; logs a rotation)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			name := args[0]
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			sec := s.Secrets[name]
+			if sec == nil {
+				return fmt.Errorf("no such secret: %s (use `set` to create)", name)
+			}
+			recips, err := crypto.ParseRecipients(s.Recipients)
+			if err != nil {
+				return err
+			}
+			val, err := readValue("New value: ")
+			if err != nil {
+				return err
+			}
+			armored, err := crypto.Encrypt(val, recips)
+			if err != nil {
+				return err
+			}
+			sec.Value = armored
+			sec.UpdatedAt = time.Now().UTC()
+			if rotate != "" {
+				t, err := time.Parse("2006-01-02", rotate)
+				if err != nil {
+					return fmt.Errorf("rotate-after: %w", err)
+				}
+				sec.RotateAfter = &t
+			}
+			if err := s.Save(); err != nil {
+				return err
+			}
+			logAudit("rotate", name, "")
+			fmt.Fprintf(os.Stderr, "rotated %s\n", name)
+			return nil
+		},
+	}
+	c.Flags().StringVar(&rotate, "rotate-after", "", "set the next rotation date (YYYY-MM-DD)")
+	return c
+}
+
+func newStale() *cobra.Command {
+	var within int
+	var missing bool
+	c := &cobra.Command{
+		Use:   "stale",
+		Short: "List secrets due for rotation (rotate_after past, or within --within days)",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			now := time.Now()
+			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+			defer w.Flush()
+
+			if missing {
+				fmt.Fprintln(w, "NAME\tTAGS\tUPDATED")
+				for _, name := range s.Names() {
+					sec := s.Secrets[name]
+					if sec.RotateAfter == nil {
+						fmt.Fprintf(w, "%s\t%s\t%s\n", name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02"))
+					}
+				}
+				return nil
+			}
+
+			cutoff := now.AddDate(0, 0, within)
+			fmt.Fprintln(w, "NAME\tROTATE AFTER\tSTATUS")
+			for _, name := range s.Names() {
+				sec := s.Secrets[name]
+				if sec.RotateAfter == nil || sec.RotateAfter.After(cutoff) {
+					continue
+				}
+				days := int(now.Sub(*sec.RotateAfter).Hours() / 24)
+				status := fmt.Sprintf("%dd overdue", days)
+				if days < 0 {
+					status = fmt.Sprintf("due in %dd", -days)
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\n", name, sec.RotateAfter.Format("2006-01-02"), status)
+			}
+			return nil
+		},
+	}
+	c.Flags().IntVar(&within, "within", 0, "also include secrets due within N days")
+	c.Flags().BoolVar(&missing, "missing", false, "instead, list secrets with no rotation policy")
 	return c
 }
