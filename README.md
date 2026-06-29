@@ -65,6 +65,9 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default |
 | **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human gate), least-privilege `exec --only` |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
+| **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
+| **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
+| **Completion** | `completion bash\|zsh\|fish` with dynamic secret-name + tag suggestions |
 | **Migration** | `import` from a sops/dotenv stream; `env` for shell `eval` |
 | **Supply chain** | Reproducible builds, SBOM, cosign-signed + SLSA-provenanced releases, govulncheck, CodeQL |
 
@@ -99,6 +102,11 @@ arca set TMP_TOKEN --ttl 1h                  # ephemeral: refused everywhere aft
 arca rotate GITHUB_TOKEN --rotate-after 2026-12-01
 arca stale                                  # secrets past their rotate-after date, or expired
 arca log GITHUB_TOKEN                        # who/what accessed it, and when
+
+arca ls --json | jq '.[].name'              # structured output for agents/scripts
+
+arca recipients add age1teammate...         # share with a teammate's key
+arca reencrypt                              # re-wrap every secret to the new recipient set
 ```
 
 Migrate an existing sops dotenv:
@@ -167,16 +175,19 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `set NAME` | Add/update a secret (value from TTY or stdin) | `--tag --desc --rotate-after --ttl --expires-at --meta k=v --no-print --require-approval` |
 | `get NAME` | Decrypt and print one secret (records a read) | `-n` (newline), `--no-log` |
 | `rotate NAME` | Replace value, keep `created_at`, log a rotation | `--rotate-after --ttl --expires-at` |
-| `ls` | List secrets + metadata (no decryption) | `--tag`, `--reads` |
-| `show NAME` | Show one secret's metadata (no value) | — |
-| `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing` |
+| `ls` | List secrets + metadata (no decryption) | `--tag`, `--reads`, `--json` |
+| `show NAME` | Show one secret's metadata (no value) | `--json` |
+| `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing`, `--json` |
 | `rm NAME` | Remove a secret | — |
+| `recipients` | List age recipients; `add`/`rm` subcommands manage the set | — |
+| `reencrypt` | Re-encrypt every secret to the current recipient set | — |
 | `import` | Load `KEY=value` (dotenv) lines from stdin | — |
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
 | `exec -- CMD` | Run CMD with secrets injected as env (audited) | `--only a,b` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
-| `log [NAME]` | Access history (agent/session/actor) | `--limit N` |
+| `log [NAME]` | Access history (agent/session/actor) | `--limit N`, `--json` |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) | — |
+| `completion SHELL` | Shell completion script (bash/zsh/fish/powershell) | — |
 
 Values are always read from a TTY (no echo) or piped stdin — **never** passed as arguments.
 

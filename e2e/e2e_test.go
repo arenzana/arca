@@ -223,6 +223,27 @@ func TestTTL(t *testing.T) {
 	}
 }
 
+func TestJSONAndRecipients(t *testing.T) {
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "v", "set", "API", "--tag", "demo")
+
+	var ls []map[string]any
+	if err := json.Unmarshal([]byte(b.must(t, "", "ls", "--json")), &ls); err != nil {
+		t.Fatalf("ls --json: %v", err)
+	}
+	if len(ls) != 1 || ls[0]["name"] != "API" {
+		t.Fatalf("ls --json = %v", ls)
+	}
+
+	if out := b.must(t, "", "recipients"); strings.TrimSpace(out) == "" {
+		t.Fatal("recipients listing was empty")
+	}
+	if _, _, code := b.run(t, "", "recipients", "add", "not-a-key"); code == 0 {
+		t.Fatal("expected an invalid recipient to be rejected")
+	}
+}
+
 func TestMCPServer(t *testing.T) {
 	needsSh(t)
 	b := sandbox(t)
