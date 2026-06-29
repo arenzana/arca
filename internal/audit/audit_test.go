@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -67,5 +68,29 @@ func TestLastReadNever(t *testing.T) {
 	}
 	if !lr.IsZero() || cnt != 0 {
 		t.Fatalf("expected zero/0 for an unseen secret, got %v/%d", lr, cnt)
+	}
+}
+
+// TestOpenBadPath fails to open when the parent of the db path is a regular file, exercising
+// the directory-creation error branch.
+func TestOpenBadPath(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(f, "audit.db")); err == nil {
+		t.Fatal("expected Open to fail when the parent path is a file")
+	}
+}
+
+// TestOpenCorruptDB covers the schema-setup error path: opening a non-SQLite file fails on the
+// first PRAGMA/statement.
+func TestOpenCorruptDB(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "corrupt.db")
+	if err := os.WriteFile(p, []byte("this is not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(p); err == nil {
+		t.Fatal("expected Open to fail on a corrupt database")
 	}
 }

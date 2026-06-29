@@ -4,14 +4,17 @@ on:
   push:
     tags: ['v*']
 
+# Least privilege at the top level; the release job elevates only what it needs.
 permissions:
-  contents: write      # publish the GitHub release
-  id-token: write      # cosign keyless signing + provenance (OIDC)
-  attestations: write  # SLSA build-provenance attestations
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # publish the GitHub release
+      id-token: write      # cosign keyless signing + provenance (OIDC)
+      attestations: write  # SLSA build-provenance attestations
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
         with:

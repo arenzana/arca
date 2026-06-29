@@ -25,7 +25,12 @@ jobs:
           check-latest: true
       - run: go mod verify
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test -race -covermode=atomic -coverprofile=cover.out ./...
+      - name: coverage gate (>= 90%)
+        run: |
+          total=$(go tool cover -func=cover.out | awk '/^total:/{print $3}' | tr -d '%')
+          echo "total coverage: ${total}%"
+          awk -v c="$total" 'BEGIN { if (c+0 < 90) { print "coverage below 90% gate"; exit 1 } }'
       - run: go build ./...
 
   govulncheck:
@@ -38,7 +43,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
 
   sbom:
     runs-on: ubuntu-latest
@@ -50,7 +55,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
-      - run: go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest mod -licenses -json -output arca.cdx.json
+      - run: go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0 mod -licenses -json -output arca.cdx.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sbom

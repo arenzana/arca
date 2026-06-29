@@ -6,7 +6,7 @@ export CGO_ENABLED := 0
 GOFLAGS := -trimpath
 LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
 
-.PHONY: all build test vet vuln sbom tidy verify clean
+.PHONY: all build test cover vet vuln sbom tidy verify clean
 
 all: verify build
 
@@ -16,16 +16,21 @@ build:
 test:
 	go test -race ./...
 
+# Coverage report + total (matches the CI gate).
+cover:
+	go test -race -covermode=atomic -coverprofile=cover.out ./...
+	go tool cover -func=cover.out | tail -1
+
 vet:
 	go vet ./...
 
 # Official Go vulnerability scanner.
 vuln:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
 
 # CycloneDX SBOM of the module (with licenses).
 sbom:
-	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest mod -licenses -json -output arca.cdx.json
+	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0 mod -licenses -json -output arca.cdx.json
 	@echo "wrote arca.cdx.json"
 
 tidy:

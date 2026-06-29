@@ -70,3 +70,81 @@ func TestNamesSorted(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadBadJSON ensures a corrupt store yields a parse error rather than a panic.
+func TestLoadBadJSON(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(p, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected a parse error for corrupt JSON")
+	}
+}
+
+// TestSaveError exercises the failure path: when the parent path is a regular file, the
+// directory creation inside Save must fail.
+func TestSaveError(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(filepath.Join(f, "store.json"), nil)
+	if err := s.Save(); err == nil {
+		t.Fatal("expected Save to fail when the parent path is a file")
+	}
+}
+
+// TestLoadNullSecrets covers Load's branch that initializes a nil secrets map (a store whose
+// JSON has "secrets": null).
+func TestLoadNullSecrets(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	if err := os.WriteFile(p, []byte(`{"version":1,"recipients":[],"secrets":null}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Secrets == nil {
+		t.Fatal("expected an initialized secrets map")
+	}
+}
+
+// TestLoadDirectory covers the non-"not exist" read error branch (reading a directory).
+func TestLoadDirectory(t *testing.T) {
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("expected an error loading a directory as a store")
+	}
+}
+
+// TestSaveCreateTempError covers the temp-file creation error path: the target directory
+// exists but is read-only, so CreateTemp inside Save fails. (Skipped when running as root,
+// which bypasses permission checks.)
+func TestSaveCreateTempError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700) // allow t.TempDir cleanup
+	s := New(filepath.Join(dir, "store.json"), nil)
+	if err := s.Save(); err == nil {
+		t.Fatal("expected Save to fail writing into a read-only directory")
+	}
+}
+
+// TestSaveRenameError covers the final atomic-rename error branch: the target path is itself a
+// directory, so renaming the temp file over it fails.
+func TestSaveRenameError(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "store.json")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := New(target, nil)
+	if err := s.Save(); err == nil {
+		t.Fatal("expected Save to fail renaming over a directory")
+	}
+}

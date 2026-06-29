@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"filippo.io/age"
 )
 
 // writeIdentity persists an age identity string to a temp file and returns its path, so the
@@ -84,5 +86,60 @@ func TestRecipientsFromIdentities(t *testing.T) {
 func TestParseRecipientsEmpty(t *testing.T) {
 	if _, err := ParseRecipients(nil); err == nil {
 		t.Fatal("expected error for no recipients")
+	}
+}
+
+// TestParseRecipientsBad rejects a malformed recipient string.
+func TestParseRecipientsBad(t *testing.T) {
+	if _, err := ParseRecipients([]string{"not-an-age-recipient"}); err == nil {
+		t.Fatal("expected error for a bad recipient")
+	}
+}
+
+// TestLoadIdentitiesMissing surfaces a clear error when the key file is absent.
+func TestLoadIdentitiesMissing(t *testing.T) {
+	if _, err := LoadIdentities(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Fatal("expected error for a missing identity file")
+	}
+}
+
+// TestLoadIdentitiesEmpty errors when the file parses but contains no identities.
+func TestLoadIdentitiesEmpty(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "empty")
+	if err := os.WriteFile(p, []byte("# only a comment\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadIdentities(p); err == nil {
+		t.Fatal("expected error for a file with no identities")
+	}
+}
+
+// TestRecipientsFromIdentitiesNoX25519 covers the "no X25519 identities" branch by passing a
+// scrypt (passphrase) identity, which has no serializable public recipient.
+func TestRecipientsFromIdentitiesNoX25519(t *testing.T) {
+	si, err := age.NewScryptIdentity("pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecipientsFromIdentities([]age.Identity{si}); err == nil {
+		t.Fatal("expected error: no X25519 identities")
+	}
+}
+
+// TestEncryptNoRecipients covers Encrypt's age.Encrypt error branch (encrypting to nobody).
+func TestEncryptNoRecipients(t *testing.T) {
+	if _, err := Encrypt([]byte("x"), nil); err == nil {
+		t.Fatal("expected Encrypt to fail with no recipients")
+	}
+}
+
+// TestLoadIdentitiesMalformed covers the parse-error branch (a syntactically invalid key).
+func TestLoadIdentitiesMalformed(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bad")
+	if err := os.WriteFile(p, []byte("AGE-SECRET-KEY-1NOTVALID\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadIdentities(p); err == nil {
+		t.Fatal("expected a parse error for a malformed identity")
 	}
 }
