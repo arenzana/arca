@@ -235,6 +235,60 @@ func contains(ss []string, x string) bool {
 // shellQuote single-quotes a value for safe `eval` in a POSIX shell (used by `env`).
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
+// approve enforces a per-secret human approval gate before a value is released.
+//
+// ARCA_APPROVAL=allow|deny short-circuits the prompt (for trusted automation, tests, or
+// MCP-mediated approval). Otherwise it prompts on the controlling terminal (/dev/tty, so it
+// works even when stdin is piped). With no override and no terminal, access is DENIED — an
+// agent can't self-approve.
+func approve(name, who string) error {
+	switch strings.ToLower(os.Getenv("ARCA_APPROVAL")) {
+	case "allow", "yes", "1", "approve":
+		return nil
+	case "deny", "no", "0":
+		return fmt.Errorf("approval denied for %s", name)
+	}
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("%s requires approval, but no terminal is available to confirm", name)
+	}
+	defer tty.Close()
+	fmt.Fprintf(tty, "Release %q to %s? [y/N] ", name, who)
+	var resp string
+	fmt.Fscanln(tty, &resp)
+	if strings.EqualFold(strings.TrimSpace(resp), "y") {
+		return nil
+	}
+	return fmt.Errorf("approval declined for %s", name)
+}
+
+// approverWho returns a short human-readable descriptor of the requester for the prompt.
+func approverWho() string {
+	id := detectIdentity()
+	switch {
+	case id.Agent != "":
+		w := id.Agent
+		if id.Version != "" {
+			w += "/" + id.Version
+		}
+		if id.Session != "" {
+			w += " (" + shortID(id.Session) + ")"
+		}
+		return w
+	case id.Actor != "":
+		return id.Actor
+	}
+	return "this process"
+}
+
+// gate runs the approval check for a secret if it requires one. A no-op otherwise.
+func gate(sec *store.Secret, name string) error {
+	if sec.RequireApproval {
+		return approve(name, approverWho())
+	}
+	return nil
+}
+
 // ----------------------------------------------------------------------------
 // Commands.
 // ----------------------------------------------------------------------------
@@ -295,7 +349,7 @@ func newSet() *cobra.Command {
 	var tags []string
 	var desc, rotate string
 	var meta map[string]string
-	var noPrint bool
+	var noPrint, requireApproval bool
 	c := &cobra.Command{
 		Use:   "set NAME",
 		Short: "Add or update a secret (value from TTY or stdin)",
@@ -353,6 +407,9 @@ func newSet() *cobra.Command {
 			if cmd.Flags().Changed("no-print") {
 				sec.NoPrint = noPrint
 			}
+			if cmd.Flags().Changed("require-approval") {
+				sec.RequireApproval = requireApproval
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -368,6 +425,7 @@ func newSet() *cobra.Command {
 	c.Flags().StringVar(&rotate, "rotate-after", "", "rotation date (YYYY-MM-DD)")
 	c.Flags().StringToStringVar(&meta, "meta", nil, "extra metadata key=value (repeatable)")
 	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
+	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
 	return c
 }
 
@@ -391,6 +449,9 @@ func newGet() *cobra.Command {
 			}
 			if sec.NoPrint {
 				return fmt.Errorf("%s is marked --no-print; use `exec` instead", name)
+			}
+			if err := gate(sec, name); err != nil {
+				return err
 			}
 			ids, err := loadIDs()
 			if err != nil {
@@ -506,6 +567,9 @@ func newShow() *cobra.Command {
 			}
 			if sec.NoPrint {
 				fmt.Printf("policy:       no-print (exec-only)\n")
+			}
+			if sec.RequireApproval {
+				fmt.Printf("policy:       requires approval\n")
 			}
 			if len(sec.Tags) > 0 {
 				fmt.Printf("tags:         %s\n", strings.Join(sec.Tags, ", "))
@@ -652,6 +716,12 @@ func newInject() *cobra.Command {
 					}
 					return m
 				}
+				if err := gate(sec, name); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					return m
+				}
 				plain, err := crypto.Decrypt(sec.Value, ids)
 				if err != nil {
 					if firstErr == nil {
@@ -707,6 +777,9 @@ func newExec() *cobra.Command {
 				if sec == nil {
 					return fmt.Errorf("no such secret: %s", name)
 				}
+				if err := gate(sec, name); err != nil {
+					return err
+				}
 				plain, err := crypto.Decrypt(sec.Value, ids)
 				if err != nil {
 					return fmt.Errorf("decrypt %s: %w", name, err)
@@ -757,6 +830,9 @@ func newEnv() *cobra.Command {
 				if s.Secrets[name].NoPrint {
 					fmt.Fprintf(os.Stderr, "skip %s (--no-print)\n", name)
 					continue
+				}
+				if err := gate(s.Secrets[name], name); err != nil {
+					return err
 				}
 				plain, err := crypto.Decrypt(s.Secrets[name].Value, ids)
 				if err != nil {

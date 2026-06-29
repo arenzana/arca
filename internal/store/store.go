@@ -27,14 +27,15 @@ const Version = 1
 // Secret is one entry. Value is the armored age ciphertext; every other field is cleartext
 // metadata so the store can be listed and queried without the decryption key.
 type Secret struct {
-	Value       string            `json:"value"`                  // armored age ciphertext
-	CreatedAt   time.Time         `json:"created_at"`             // first set; preserved across rotate
-	UpdatedAt   time.Time         `json:"updated_at"`             // last value change
-	Tags        []string          `json:"tags,omitempty"`         // free-form labels for filtering
-	Description string            `json:"description,omitempty"`  // human note
-	RotateAfter *time.Time        `json:"rotate_after,omitempty"` // rotation due date (drives `stale`)
-	NoPrint     bool              `json:"no_print,omitempty"`     // exec-only: never reveal to stdout
-	Meta        map[string]string `json:"meta,omitempty"`         // open-ended extensibility bag
+	Value           string            `json:"value"`                      // armored age ciphertext
+	CreatedAt       time.Time         `json:"created_at"`                 // first set; preserved across rotate
+	UpdatedAt       time.Time         `json:"updated_at"`                 // last value change
+	Tags            []string          `json:"tags,omitempty"`             // free-form labels for filtering
+	Description     string            `json:"description,omitempty"`      // human note
+	RotateAfter     *time.Time        `json:"rotate_after,omitempty"`     // rotation due date (drives `stale`)
+	NoPrint         bool              `json:"no_print,omitempty"`         // exec-only: never reveal to stdout
+	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
+	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
 }
 
 // Store is the whole document. path is where it loads from / saves to (not serialized).

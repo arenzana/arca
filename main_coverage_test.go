@@ -207,6 +207,23 @@ func TestDetectIdentityGenericNoVersion(t *testing.T) {
 	}
 }
 
+// TestApproverWho covers the actor and fallback branches of the approval prompt descriptor
+// (the agent branch is covered when the suite runs under an AI agent).
+func TestApproverWho(t *testing.T) {
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CURSOR_TRACE_ID", "")
+	t.Setenv("AI_AGENT", "")
+	t.Setenv("ARCA_ACTOR", "alice")
+	if w := approverWho(); w != "alice" {
+		t.Fatalf("actor descriptor = %q", w)
+	}
+	t.Setenv("ARCA_ACTOR", "")
+	if w := approverWho(); w != "this process" {
+		t.Fatalf("fallback descriptor = %q", w)
+	}
+}
+
 // TestHelpers exercises the small pure helpers directly.
 func TestHelpers(t *testing.T) {
 	if !contains([]string{"a", "b"}, "b") || contains([]string{"a"}, "z") {
@@ -311,6 +328,38 @@ func TestInitReuseIdentity(t *testing.T) {
 	}
 	if len(s.Recipients) != 1 {
 		t.Fatalf("recipients = %v", s.Recipients)
+	}
+}
+
+// TestApprovalGate covers the --require-approval policy: show notes it, denial blocks every
+// release path (get/exec/inject/env), and ARCA_APPROVAL=allow lets it through. The interactive
+// /dev/tty prompt is exercised manually, not here.
+func TestApprovalGate(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "secret", "set", "GATED", "--require-approval")
+	if out := runArca(t, "", "show", "GATED"); !strings.Contains(out, "requires approval") {
+		t.Fatalf("show = %q", out)
+	}
+
+	t.Setenv("ARCA_APPROVAL", "deny")
+	for _, c := range []struct {
+		stdin string
+		args  []string
+	}{
+		{"", []string{"get", "GATED"}},
+		{"", []string{"exec", "--only", "GATED", "--", "true"}},
+		{"x=arca://GATED", []string{"inject"}},
+		{"", []string{"env"}},
+	} {
+		if err := runArcaErr(c.stdin, c.args...); err == nil {
+			t.Errorf("expected approval denial: arca %s", strings.Join(c.args, " "))
+		}
+	}
+
+	t.Setenv("ARCA_APPROVAL", "allow")
+	if out := runArca(t, "", "get", "GATED"); out != "secret" {
+		t.Fatalf("approved get = %q", out)
 	}
 }
 
