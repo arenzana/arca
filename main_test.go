@@ -119,3 +119,28 @@ func TestStale(t *testing.T) {
 		t.Fatalf("stale output = %q (want OLD present, NEW absent)", out)
 	}
 }
+
+func TestDetectIdentityClaude(t *testing.T) {
+	t.Setenv("ARCA_ACTOR", "")
+	t.Setenv("AI_AGENT", "")
+	t.Setenv("CURSOR_TRACE_ID", "")
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-123")
+	t.Setenv("CLAUDE_CODE_EXECPATH", "/opt/homebrew/Caskroom/claude-code/2.1.181/claude")
+	id := detectIdentity()
+	if id.Agent != "claude-code" || id.Session != "sess-123" || id.Version != "2.1.181" {
+		t.Fatalf("got %+v", id)
+	}
+}
+
+func TestDetectIdentityGeneric(t *testing.T) {
+	t.Setenv("ARCA_ACTOR", "")
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CURSOR_TRACE_ID", "")
+	t.Setenv("AI_AGENT", "myagent_1-2-3_agent")
+	id := detectIdentity()
+	if id.Agent != "myagent" || id.Version != "1.2.3" {
+		t.Fatalf("got %+v", id)
+	}
+}

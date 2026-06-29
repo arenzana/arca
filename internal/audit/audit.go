@@ -14,12 +14,23 @@ import (
 type Log struct{ db *sql.DB }
 
 type Event struct {
-	TS     time.Time
-	Op     string
-	Name   string
-	PPID   int
-	Caller string
-	Actor  string
+	TS      time.Time
+	Op      string
+	Name    string
+	PPID    int
+	Caller  string
+	Actor   string
+	Agent   string
+	Version string
+	Session string
+}
+
+// Identity describes who/what is accessing a secret.
+type Identity struct {
+	Actor   string // explicit $ARCA_ACTOR
+	Agent   string // detected AI agent, e.g. "claude-code"
+	Version string // agent version
+	Session string // agent session id
 }
 
 func Open(path string) (*Log, error) {
@@ -39,9 +50,12 @@ func Open(path string) (*Log, error) {
 		ts     TEXT    NOT NULL,
 		op     TEXT    NOT NULL,
 		name   TEXT    NOT NULL,
-		ppid   INTEGER,
-		caller TEXT,
-		actor  TEXT
+		ppid    INTEGER,
+		caller  TEXT,
+		actor   TEXT,
+		agent   TEXT,
+		version TEXT,
+		session TEXT
 	);`); err != nil {
 		db.Close()
 		return nil, err
@@ -56,11 +70,13 @@ func Open(path string) (*Log, error) {
 
 func (l *Log) Close() error { return l.db.Close() }
 
-// Record appends one access event. actor identifies the agent/session (e.g. $ARCA_ACTOR).
-func (l *Log) Record(op, name, caller, actor string) error {
+// Record appends one access event with the caller and the accessing identity.
+func (l *Log) Record(op, name, caller string, id Identity) error {
 	_, err := l.db.Exec(
-		`INSERT INTO events (ts, op, name, ppid, caller, actor) VALUES (?,?,?,?,?,?)`,
-		time.Now().UTC().Format(time.RFC3339), op, name, os.Getppid(), caller, actor,
+		`INSERT INTO events (ts, op, name, ppid, caller, actor, agent, version, session)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		time.Now().UTC().Format(time.RFC3339), op, name, os.Getppid(), caller,
+		id.Actor, id.Agent, id.Version, id.Session,
 	)
 	return err
 }
@@ -83,7 +99,7 @@ func (l *Log) LastRead(name string) (time.Time, int, error) {
 
 // Recent returns the latest events, optionally filtered by name.
 func (l *Log) Recent(name string, limit int) ([]Event, error) {
-	q := `SELECT ts, op, name, ppid, caller, actor FROM events`
+	q := `SELECT ts, op, name, ppid, caller, actor, agent, version, session FROM events`
 	args := []any{}
 	if name != "" {
 		q += ` WHERE name=?`
@@ -100,13 +116,16 @@ func (l *Log) Recent(name string, limit int) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var tsStr string
-		var caller, actor sql.NullString
-		if err := rows.Scan(&tsStr, &e.Op, &e.Name, &e.PPID, &caller, &actor); err != nil {
+		var caller, actor, agent, ver, session sql.NullString
+		if err := rows.Scan(&tsStr, &e.Op, &e.Name, &e.PPID, &caller, &actor, &agent, &ver, &session); err != nil {
 			return nil, err
 		}
 		e.TS, _ = time.Parse(time.RFC3339, tsStr)
 		e.Caller = caller.String
 		e.Actor = actor.String
+		e.Agent = agent.String
+		e.Version = ver.String
+		e.Session = session.String
 		out = append(out, e)
 	}
 	return out, rows.Err()

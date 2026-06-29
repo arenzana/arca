@@ -12,13 +12,14 @@ func TestRecordAndQuery(t *testing.T) {
 	}
 	defer l.Close()
 
-	if err := l.Record("set", "FOO", "", "tester"); err != nil {
+	if err := l.Record("set", "FOO", "", Identity{Actor: "tester"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Record("read", "FOO", "curl", "claude"); err != nil {
+	id := Identity{Actor: "claude", Agent: "claude-code", Version: "2.1.181", Session: "sess1"}
+	if err := l.Record("read", "FOO", "curl", id); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Record("read", "FOO", "curl", "claude"); err != nil {
+	if err := l.Record("read", "FOO", "curl", id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -40,7 +41,8 @@ func TestRecordAndQuery(t *testing.T) {
 	if len(evs) != 3 {
 		t.Fatalf("events = %d, want 3", len(evs))
 	}
-	if evs[0].Op != "read" || evs[0].Actor != "claude" || evs[0].Caller != "curl" {
+	if evs[0].Op != "read" || evs[0].Actor != "claude" || evs[0].Agent != "claude-code" ||
+		evs[0].Session != "sess1" || evs[0].Caller != "curl" {
 		t.Fatalf("latest event = %+v", evs[0])
 	}
 }

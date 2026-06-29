@@ -102,8 +102,10 @@ arca is a file-based secrets broker you can safely put in front of an AI agent:
 
 - **Use without revealing.** `arca exec -- <cmd>` injects secrets into a subprocess's environment —
   the command uses the value, but it never prints into the agent's context or transcript.
-- **Attributed audit.** Set `ARCA_ACTOR` (e.g. the agent/session name) and every access is logged
-  with it, so `arca log` answers *which agent touched which secret, and when*.
+- **Attributed audit.** Every access is logged with the calling **AI agent, its version, and
+  session id** — auto-detected from the environment (Claude Code, Cursor, or a generic
+  `AI_AGENT`), plus an explicit `ARCA_ACTOR` override — so `arca log` answers *which agent/session
+  touched which secret, and when*.
 - **Least privilege.** `--only` injects just the secrets a task needs, not the whole store.
 - **Metadata without secrets.** `ls` / `show` let an agent discover what exists (names, tags,
   descriptions) and reason about it without ever decrypting a value.

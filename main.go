@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -94,7 +95,53 @@ func logAudit(op, name, caller string) {
 		return
 	}
 	defer a.Close()
-	_ = a.Record(op, name, caller, os.Getenv("ARCA_ACTOR"))
+	_ = a.Record(op, name, caller, detectIdentity())
+}
+
+// detectIdentity figures out who/what is accessing a secret: the explicit $ARCA_ACTOR plus an
+// auto-detected AI agent (name, version, session) from well-known environment variables.
+func detectIdentity() audit.Identity {
+	id := audit.Identity{Actor: os.Getenv("ARCA_ACTOR")}
+	switch {
+	case envSet("CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
+		id.Agent = "claude-code"
+		id.Session = os.Getenv("CLAUDE_CODE_SESSION_ID")
+		id.Version = firstSemver(os.Getenv("CLAUDE_CODE_EXECPATH"))
+	case envSet("CURSOR_TRACE_ID"):
+		id.Agent = "cursor"
+		id.Session = os.Getenv("CURSOR_TRACE_ID")
+	}
+	// Generic fallback: AI_AGENT="name_version_agent" (e.g. claude-code_2-1-181_agent).
+	if id.Agent == "" {
+		if ai := os.Getenv("AI_AGENT"); ai != "" {
+			parts := strings.SplitN(ai, "_", 3)
+			id.Agent = parts[0]
+			if len(parts) > 1 {
+				id.Version = strings.ReplaceAll(parts[1], "-", ".")
+			}
+		}
+	}
+	return id
+}
+
+func envSet(keys ...string) bool {
+	for _, k := range keys {
+		if os.Getenv(k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+var semverRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
+
+func firstSemver(s string) string { return semverRe.FindString(s) }
+
+func shortID(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
 }
 
 // readValue reads a secret from a TTY (no echo) or from piped stdin.
@@ -567,10 +614,14 @@ func newLog() *cobra.Command {
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 			defer w.Flush()
-			fmt.Fprintln(w, "TIME\tOP\tNAME\tACTOR\tCALLER\tPPID")
+			fmt.Fprintln(w, "TIME\tOP\tNAME\tAGENT\tSESSION\tACTOR\tCALLER")
 			for _, e := range evs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
-					e.TS.Local().Format("2006-01-02 15:04:05"), e.Op, e.Name, e.Actor, e.Caller, e.PPID)
+				agent := e.Agent
+				if e.Version != "" {
+					agent += "/" + e.Version
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					e.TS.Local().Format("2006-01-02 15:04:05"), e.Op, e.Name, agent, shortID(e.Session), e.Actor, e.Caller)
 			}
 			return nil
 		},
