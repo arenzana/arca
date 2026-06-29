@@ -1,0 +1,6 @@
+/arca
+/dist/
+*.db
+store.json
+identity.txt
+*.tmp
