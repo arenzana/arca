@@ -117,7 +117,10 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 		RequireApproval bool     `json:"require_approval,omitempty"`
 		Updated         string   `json:"updated"`
 		LastRead        string   `json:"last_read,omitempty"`
+		ExpiresAt       string   `json:"expires_at,omitempty"`
+		Expired         bool     `json:"expired,omitempty"`
 	}
+	now := time.Now()
 	out := []meta{}
 	for _, name := range s.Names() {
 		sec := s.Secrets[name]
@@ -125,6 +128,10 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 			Name: name, Tags: sec.Tags, Description: sec.Description,
 			NoPrint: sec.NoPrint, RequireApproval: sec.RequireApproval,
 			Updated: sec.UpdatedAt.UTC().Format(time.RFC3339),
+		}
+		if sec.ExpiresAt != nil {
+			m.ExpiresAt = sec.ExpiresAt.UTC().Format(time.RFC3339)
+			m.Expired = sec.Expired(now)
 		}
 		if a != nil {
 			if lr, _, _ := a.LastRead(name); !lr.IsZero() {

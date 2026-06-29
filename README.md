@@ -61,6 +61,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Store** | Single JSON doc; cleartext metadata (tags, description, timestamps, policy), encrypted values |
 | **Metadata & query** | `ls`/`show` list and filter **without decrypting**; `--reads` joins usage from the audit log |
 | **Rotation** | `rotate` (keeps `created_at`), `--rotate-after` dates, `stale` to find overdue/missing policies |
+| **Expiry (TTL)** | `--ttl 30m\|12h\|7d\|2w` or `--expires-at`; expired secrets are **refused on every access path** and surfaced by `stale` |
 | **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default |
 | **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human gate), least-privilege `exec --only` |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
@@ -93,9 +94,10 @@ echo 'token = "arca://GITHUB_TOKEN"' | arca inject > config.toml   # resolve ref
 
 arca set DB_PASSWORD --no-print             # exec-only: get/env/inject refuse to reveal it
 arca set ROOT_KEY --require-approval         # human must approve each release
+arca set TMP_TOKEN --ttl 1h                  # ephemeral: refused everywhere after it expires
 
 arca rotate GITHUB_TOKEN --rotate-after 2026-12-01
-arca stale                                  # secrets past their rotate-after date
+arca stale                                  # secrets past their rotate-after date, or expired
 arca log GITHUB_TOKEN                        # who/what accessed it, and when
 ```
 
@@ -162,12 +164,12 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | Command | Purpose | Key flags |
 |---|---|---|
 | `init` | Create the store (reuse or generate an age key) | `--force` |
-| `set NAME` | Add/update a secret (value from TTY or stdin) | `--tag --desc --rotate-after --meta k=v --no-print --require-approval` |
+| `set NAME` | Add/update a secret (value from TTY or stdin) | `--tag --desc --rotate-after --ttl --expires-at --meta k=v --no-print --require-approval` |
 | `get NAME` | Decrypt and print one secret (records a read) | `-n` (newline), `--no-log` |
-| `rotate NAME` | Replace value, keep `created_at`, log a rotation | `--rotate-after` |
+| `rotate NAME` | Replace value, keep `created_at`, log a rotation | `--rotate-after --ttl --expires-at` |
 | `ls` | List secrets + metadata (no decryption) | `--tag`, `--reads` |
 | `show NAME` | Show one secret's metadata (no value) | — |
-| `stale` | Secrets overdue/soon for rotation | `--within N`, `--missing` |
+| `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing` |
 | `rm NAME` | Remove a secret | — |
 | `import` | Load `KEY=value` (dotenv) lines from stdin | — |
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |

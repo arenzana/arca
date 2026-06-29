@@ -193,6 +193,36 @@ func TestFailClosedAudit(t *testing.T) {
 	}
 }
 
+func TestTTL(t *testing.T) {
+	needsSh(t)
+	b := sandbox(t)
+	b.must(t, "", "init")
+
+	// a live TTL is usable
+	b.must(t, "live", "set", "EPH", "--ttl", "1h")
+	if out := b.must(t, "", "get", "EPH"); out != "live" {
+		t.Fatalf("get EPH = %q", out)
+	}
+
+	// an expired secret is refused on get and exec
+	b.must(t, "dead", "set", "OLD", "--expires-at", "2020-01-01")
+	if _, _, code := b.run(t, "", "get", "OLD"); code == 0 {
+		t.Fatal("expected get on an expired secret to fail")
+	}
+	if _, _, code := b.run(t, "", "exec", "--only", "OLD", "--", "true"); code == 0 {
+		t.Fatal("expected exec on an expired secret to fail")
+	}
+	if out := b.must(t, "", "stale"); !strings.Contains(out, "OLD") || !strings.Contains(out, "EXPIRED") {
+		t.Fatalf("stale = %q", out)
+	}
+
+	// rotate --ttl revives it
+	b.must(t, "fresh", "rotate", "OLD", "--ttl", "1h")
+	if out := b.must(t, "", "get", "OLD"); out != "fresh" {
+		t.Fatalf("after rotate --ttl get OLD = %q", out)
+	}
+}
+
 func TestMCPServer(t *testing.T) {
 	needsSh(t)
 	b := sandbox(t)
