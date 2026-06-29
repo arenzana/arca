@@ -1,0 +1,256 @@
+//go:build e2e
+
+// Package e2e exercises the built arca binary as a black box: it compiles arca, runs it as a
+// subprocess through the full CLI lifecycle and the MCP stdio server, and asserts real behavior
+// (exit codes, output, encryption at rest, policies). This is what proves a release actually
+// works. Run with:  go test -tags e2e ./e2e/...
+package e2e
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// bin is the path to the freshly built arca binary, set by TestMain.
+var bin string
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "arca-e2e")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	bin = filepath.Join(dir, "arca")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = ".." // module root (parent of e2e/)
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		os.Stderr.WriteString("e2e: build failed: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
+// box is a sandboxed arca invocation environment (its own store/audit/identity).
+type box struct {
+	env []string
+	dir string
+}
+
+func sandbox(t *testing.T) box {
+	d := t.TempDir()
+	return box{dir: d, env: []string{
+		"ARCA_STORE=" + filepath.Join(d, "store.json"),
+		"ARCA_AUDIT=" + filepath.Join(d, "audit.db"),
+		"ARCA_IDENTITY=" + filepath.Join(d, "id.txt"),
+	}}
+}
+
+func (b box) runEnv(t *testing.T, extra []string, stdin string, args ...string) (out, errOut string, code int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(append(os.Environ(), b.env...), extra...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var o, e bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &o, &e
+	err := cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("arca %v: %v\nstderr: %s", args, err, e.String())
+	}
+	return o.String(), e.String(), code
+}
+
+func (b box) run(t *testing.T, stdin string, args ...string) (string, string, int) {
+	return b.runEnv(t, nil, stdin, args...)
+}
+
+func (b box) must(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
+	out, errOut, code := b.run(t, stdin, args...)
+	if code != 0 {
+		t.Fatalf("arca %v exited %d\nstderr: %s", args, code, errOut)
+	}
+	return out
+}
+
+func needsSh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+}
+
+func TestVersion(t *testing.T) {
+	if out := sandbox(t).must(t, "", "--version"); !strings.Contains(out, "arca version") {
+		t.Fatalf("version = %q", out)
+	}
+}
+
+func TestLifecycle(t *testing.T) {
+	needsSh(t)
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "s3cr3t-value", "set", "API", "--tag", "demo", "--desc", "the api token", "--rotate-after", "2020-01-01")
+
+	// get returns the value; the store holds age ciphertext, not the plaintext.
+	if out := b.must(t, "", "get", "API"); out != "s3cr3t-value" {
+		t.Fatalf("get = %q", out)
+	}
+	store, _ := os.ReadFile(filepath.Join(b.dir, "store.json"))
+	if strings.Contains(string(store), "s3cr3t-value") {
+		t.Fatal("plaintext value found in store.json")
+	}
+	if !strings.Contains(string(store), "BEGIN AGE ENCRYPTED FILE") {
+		t.Fatal("store does not contain age ciphertext")
+	}
+
+	if out := b.must(t, "", "ls"); !strings.Contains(out, "API") {
+		t.Fatalf("ls = %q", out)
+	}
+	if out := b.must(t, "", "show", "API"); !strings.Contains(out, "the api token") {
+		t.Fatalf("show = %q", out)
+	}
+	if out := b.must(t, "", "stale"); !strings.Contains(out, "API") {
+		t.Fatalf("stale = %q", out)
+	}
+
+	// rotate keeps it usable
+	b.must(t, "rotated-value", "rotate", "API")
+	if out := b.must(t, "", "get", "API"); out != "rotated-value" {
+		t.Fatalf("after rotate get = %q", out)
+	}
+
+	// exec injects into a subprocess (value used, never printed by arca)
+	if out := b.must(t, "", "exec", "--only", "API", "--", "sh", "-c", "echo len=${#API}"); !strings.Contains(out, "len=13") {
+		t.Fatalf("exec = %q", out)
+	}
+	// inject resolves arca:// references
+	if out := b.must(t, "tok = \"arca://API\"\n", "inject"); !strings.Contains(out, `tok = "rotated-value"`) {
+		t.Fatalf("inject = %q", out)
+	}
+	// log shows the history
+	if out := b.must(t, "", "log", "API"); !strings.Contains(out, "API") || !strings.Contains(out, "exec") {
+		t.Fatalf("log = %q", out)
+	}
+	// rm
+	b.must(t, "", "rm", "API")
+	if _, _, code := b.run(t, "", "get", "API"); code == 0 {
+		t.Fatal("expected get to fail after rm")
+	}
+}
+
+func TestPolicies(t *testing.T) {
+	needsSh(t)
+	b := sandbox(t)
+	b.must(t, "", "init")
+
+	// --no-print: get refuses, exec works
+	b.must(t, "hidden", "set", "LOCKED", "--no-print")
+	if _, _, code := b.run(t, "", "get", "LOCKED"); code == 0 {
+		t.Fatal("expected get to refuse a --no-print secret")
+	}
+	if out := b.must(t, "", "exec", "--only", "LOCKED", "--", "sh", "-c", "echo len=${#LOCKED}"); !strings.Contains(out, "len=6") {
+		t.Fatalf("exec no-print = %q", out)
+	}
+
+	// --require-approval: denied with no terminal; allowed via ARCA_APPROVAL
+	b.must(t, "v", "set", "GATED", "--require-approval")
+	if _, _, code := b.run(t, "", "get", "GATED"); code == 0 {
+		t.Fatal("expected get to be denied (no terminal to approve)")
+	}
+	if out, _, code := b.runEnv(t, []string{"ARCA_APPROVAL=allow"}, "", "get", "GATED"); code != 0 || out != "v" {
+		t.Fatalf("approved get = %q code=%d", out, code)
+	}
+}
+
+func TestFailClosedAudit(t *testing.T) {
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "plain", "set", "PLAIN")
+
+	// corrupt the audit db
+	if err := os.WriteFile(filepath.Join(b.dir, "audit.db"), []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// default is fail-closed: get aborts when it can't audit
+	if _, _, code := b.run(t, "", "get", "PLAIN"); code == 0 {
+		t.Fatal("expected fail-closed get to abort with a broken audit log")
+	}
+	// opt out → best-effort: get proceeds
+	if out, _, code := b.runEnv(t, []string{"ARCA_STRICT_AUDIT=0"}, "", "get", "PLAIN"); code != 0 || out != "plain" {
+		t.Fatalf("best-effort get = %q code=%d", out, code)
+	}
+}
+
+func TestMCPServer(t *testing.T) {
+	needsSh(t)
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "topsecret", "set", "API") // 9 chars
+
+	cmd := exec.Command(bin, "mcp")
+	cmd.Env = append(os.Environ(), b.env...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_secrets","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"run_with_secrets","arguments":{"command":"sh","args":["-c","echo len=${#API}"],"secrets":["API"]}}}`,
+	} {
+		io.WriteString(stdin, m+"\n")
+	}
+	stdin.Close()
+	_ = cmd.Wait()
+
+	var sawTools, sawList, sawRun bool
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var resp struct {
+			ID     int             `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal([]byte(line), &resp) != nil {
+			continue
+		}
+		s := string(resp.Result)
+		switch resp.ID {
+		case 2:
+			sawTools = strings.Contains(s, "run_with_secrets") && strings.Contains(s, "list_secrets")
+		case 3:
+			sawList = strings.Contains(s, "API") && !strings.Contains(s, "topsecret")
+		case 4:
+			sawRun = strings.Contains(s, "len=9") && !strings.Contains(s, "topsecret")
+		}
+	}
+	if !sawTools {
+		t.Fatalf("tools/list missing expected tools:\n%s", out.String())
+	}
+	if !sawList {
+		t.Fatal("list_secrets wrong or leaked a value")
+	}
+	if !sawRun {
+		t.Fatal("run_with_secrets wrong or leaked a value")
+	}
+}

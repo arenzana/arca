@@ -21,6 +21,23 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 
 ---
 
+## Contents
+
+- [Why arca](#why-arca)
+- [Features](#features)
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [The model](#the-model)
+- [Command reference](#command-reference)
+- [Configuration (ops)](#configuration-ops)
+- [Storage model](#storage-model)
+- [Designed for AI agents](#designed-for-ai-agents)
+- [MCP server](#mcp-server)
+- [Security & supply chain](#security--supply-chain)
+- [License](#license)
+
+---
+
 ## Why arca
 
 - **Use secrets without revealing them.** A command can *use* a secret (`exec`) or a config can
