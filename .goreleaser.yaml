@@ -1,0 +1,49 @@
+version: 2
+project_name: arca
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  - id: arca
+    main: .
+    binary: arca
+    env:
+      - CGO_ENABLED=0          # pure Go (modernc sqlite) → static, reproducible
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -buildid= -X main.version={{ .Version }}
+    mod_timestamp: '{{ .CommitTimestamp }}'   # reproducible timestamps
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+# CycloneDX SBOM per released archive (uses syft).
+sboms:
+  - artifacts: archive
+
+# Keyless (Sigstore/Fulcio) signature over the checksums file; verifying it
+# verifies every artifact via the checksums.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    output: true
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+
+release:
+  prerelease: auto

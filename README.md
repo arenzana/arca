@@ -89,6 +89,13 @@ Point `ARCA_STORE` at your dotfiles to version the store; leave the audit DB loc
   for anything you want tracked.
 - The age private key is your single decrypt root — back it up (e.g. to a password manager).
 
+## Supply chain & releases
+
+Built as security software: **reproducible** builds (`CGO_ENABLED=0`, `-trimpath`, pinned
+timestamps), **cosign**-signed checksums, a **CycloneDX SBOM**, and **SLSA build-provenance**
+attestations on every release. CI runs `go vet`, `go test -race`, `go mod verify`, and
+`govulncheck`. See [SECURITY.md](SECURITY.md) for verification steps.
+
 ## Designed for AI agents
 
 arca is a file-based secrets broker you can safely put in front of an AI agent:

@@ -1,5 +1,6 @@
 /arca
 /dist/
+arca.cdx.json
 *.db
 store.json
 identity.txt

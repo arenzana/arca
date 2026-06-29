@@ -21,6 +21,9 @@ import (
 	"github.com/arenzana/arca/internal/store"
 )
 
+// version is set at build/release time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := newRoot().Execute(); err != nil {
 		os.Exit(1)
@@ -32,6 +35,7 @@ func newRoot() *cobra.Command {
 		Use:           "arca",
 		Short:         "age-encrypted secrets with metadata and an audit log",
 		Long:          "arca stores secrets as age-encrypted values with cleartext metadata in a JSON\nstore, and records every access in a local SQLite audit log.",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
