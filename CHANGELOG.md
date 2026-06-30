@@ -17,6 +17,11 @@ All notable changes to arca are documented here. The format follows
   and enforced by a `dco` CI check; `CONTRIBUTING.md` documents `git commit -s`.
 - `CONTRIBUTING.md` now documents how dependencies are selected, obtained, and tracked.
 
+### Changed
+- Increase the store-lock acquisition timeout from 5s to 15s, so heavily contended writes
+  (many concurrent processes, or a slow/networked filesystem) don't spuriously fail before
+  acquiring the lock.
+
 ## [0.3.0] - 2026-06-30
 
 ### Added

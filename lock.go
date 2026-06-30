@@ -13,8 +13,14 @@ import (
 // OSes); a lock older than staleLockAge is treated as abandoned by a crashed process and stolen.
 //
 // The timeouts are package vars so tests can shorten them.
+//
+// lockTimeout is generous on purpose: a write holds the lock for a full
+// load→encrypt→save→audit cycle, so under contention (many agents, or a slow /
+// networked filesystem) the last of N writers waits for the N-1 ahead of it.
+// 15s leaves headroom for that without masking a genuinely stuck lock, which the
+// staleLockAge steal handles separately.
 var (
-	lockTimeout  = 5 * time.Second
+	lockTimeout  = 15 * time.Second
 	staleLockAge = 30 * time.Second
 )
 
