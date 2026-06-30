@@ -26,14 +26,15 @@ jobs:
       - run: go mod verify
       - run: go vet ./...
       - run: go test -race -covermode=atomic -coverprofile=cover.out ./...
-      - name: coverage gate (>= 88%)
+      - name: coverage gate (>= 90%)
         run: |
-          # CI-reproducible coverage is ~90%; the remainder is interactive /dev/tty prompts,
-          # main(), and os.Exit lines that can't be exercised on a headless runner. Gate with
-          # a safety margin so small, legitimate fluctuations don't fail the build.
+          # CI-reproducible total is ~91.6% (main package 92.5%); the remainder is interactive
+          # /dev/tty prompts, main()/os.Exit, the blocking MCP server, and unreachable defensive
+          # error returns (writes to in-memory buffers, crypto/rand). Gate at 90% — below the
+          # real figure so legitimate fluctuations don't fail the build.
           total=$(go tool cover -func=cover.out | awk '/^total:/{print $3}' | tr -d '%')
           echo "total coverage: ${total}%"
-          awk -v c="$total" 'BEGIN { if (c+0 < 88) { print "coverage below 88% gate"; exit 1 } }'
+          awk -v c="$total" 'BEGIN { if (c+0 < 90) { print "coverage below 90% gate"; exit 1 } }'
       - run: go build ./...
 
   govulncheck:
