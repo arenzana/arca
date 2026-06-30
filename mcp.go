@@ -32,7 +32,7 @@ func newMCP() *cobra.Command {
 		Short: "Run an MCP server exposing arca to AI agents over stdio",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			s := server.NewMCPServer("arca", version)
+			s := server.NewMCPServer("arca", appVersion())
 			registerMCPTools(s)
 			return server.ServeStdio(s)
 		},
