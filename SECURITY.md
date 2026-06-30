@@ -44,10 +44,16 @@ not a hostile local user (who could bypass arca entirely). Specifically:
 - **Secret names** are restricted to `[A-Za-z_][A-Za-z0-9_]*` on write, and invalid names in a
   hand-edited / synced store are skipped by `env`/`exec`, to prevent shell-injection via
   `eval "$(arca env)"` or env-variable hijacking.
-- **Audit attribution is advisory.** The agent name/version/session and `ARCA_ACTOR` are read
-  from the environment, so the log records the *claimed* identity, not a cryptographically
-  verified one. `ARCA_AUDIT` likewise trusts the configured path; audit integrity assumes a
-  trusted `ARCA_AUDIT` / `ARCA_STRICT_AUDIT` environment.
+- **The audit log is tamper-evident.** Each event is hash-chained into the previous one and
+  signed with the recording session's Ed25519 key, so editing, deleting, or reordering past
+  events is detectable — run `arca log --verify`. This is tamper-*evident*, not tamper-proof:
+  arca runs as the user, so by default the session key is reachable by the machine owner, who
+  could still add new fake entries going forward (full non-repudiation needs the key in a TPM /
+  hardware token / remote signer). What the chain prevents is silent rewriting of *history*. See
+  [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+- **Identity *input* is still advisory.** The agent name/version/session and `ARCA_ACTOR` are
+  read from the environment, so the log records the *claimed* identity; signing binds each event
+  to a session key but doesn't independently verify that the environment's claim was truthful.
 
 ## Supply-chain integrity
 

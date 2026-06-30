@@ -57,13 +57,20 @@ out of `eval "$(arca env)"` or hijack an environment variable. *Addressed:* name
 are validated against `^[A-Za-z_][A-Za-z0-9_]*$` on write, and invalid names are
 skipped by `env`/`exec`.
 
-### T4 — Audit log is bypassed or made unreliable
+### T4 — Audit log is bypassed, rewritten, or made unreliable
 *Addressed (within scope):* auditing is fail-closed by default — a read aborts
 before disclosure if the access cannot be recorded; an agent cannot turn this
-off. *Residual / documented limitation:* attribution is **advisory** — the agent
-identity and `ARCA_ACTOR` are read from the environment, so the log records the
-*claimed* identity, and audit integrity assumes a trusted `ARCA_AUDIT` /
-`ARCA_STRICT_AUDIT` environment. This is stated in the trust model.
+off. The log is also **tamper-evident**: each event is hash-chained into the
+previous one (`hashᵢ = SHA-256(hashᵢ₋₁ ‖ canonical(eventᵢ))`) and signed with the
+recording session's Ed25519 key, so editing, deleting, or reordering past events
+breaks the chain or a signature and is caught by `arca log --verify`. *Residual /
+documented limitation:* it is tamper-*evident*, not tamper-proof — arca runs as
+the user, so by default the session signing key is reachable by the machine
+owner, who can add new fake entries going forward (full non-repudiation needs the
+key in a TPM / hardware token / remote signer). Identity *input* remains
+advisory: the agent name/`ARCA_ACTOR` come from the environment, so the log binds
+each event to a session key but records the *claimed* human/agent identity. Tail
+truncation is detectable only against the recorded head or an external anchor.
 
 ### T5 — Malformed or hostile store input
 A corrupted, oversized, or version-mismatched store file. *Addressed:* `Load`

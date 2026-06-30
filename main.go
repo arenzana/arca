@@ -156,6 +156,11 @@ func recordAudit(op, name, caller string) error {
 		return err
 	}
 	defer a.Close()
+	// Sign events with the session key so the log is tamper-evident and attributable. If the key
+	// can't be set up, still record (chained but unsigned) rather than dropping the audit entry.
+	if s, err := auditSigner(); err == nil {
+		a.UseSigner(s)
+	}
 	return a.Record(op, name, caller, detectIdentity())
 }
 
@@ -1257,10 +1262,10 @@ func newEnv() *cobra.Command {
 // newLog prints the access history, including the attributed AI agent and session.
 func newLog() *cobra.Command {
 	var limit int
-	var jsonOut bool
+	var jsonOut, verify bool
 	c := &cobra.Command{
 		Use:   "log [NAME]",
-		Short: "Show access history",
+		Short: "Show access history (--verify checks the log's integrity)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := ""
@@ -1272,6 +1277,9 @@ func newLog() *cobra.Command {
 				return err
 			}
 			defer a.Close()
+			if verify {
+				return verifyLog(a)
+			}
 			evs, err := a.Recent(name, limit)
 			if err != nil {
 				return err
@@ -1302,7 +1310,29 @@ func newLog() *cobra.Command {
 	}
 	c.Flags().IntVar(&limit, "limit", 50, "max events")
 	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
+	c.Flags().BoolVar(&verify, "verify", false, "verify the audit log's hash chain and signatures instead of printing it")
 	return c
+}
+
+// verifyLog runs an integrity check of the audit log and prints the result. It returns a non-zero
+// error when the chain or a signature is broken, so it can gate a cron/CI check.
+func verifyLog(a *audit.Log) error {
+	r, err := a.Verify()
+	if err != nil {
+		return err
+	}
+	if !r.OK {
+		if r.BrokenID != 0 {
+			return fmt.Errorf("audit log integrity FAILED at event %d: %s", r.BrokenID, r.Reason)
+		}
+		return fmt.Errorf("audit log integrity FAILED: %s", r.Reason)
+	}
+	fmt.Fprintf(os.Stderr, "audit log OK: %d event(s) chained, %d signed", r.Checked, r.Signed)
+	if r.Legacy > 0 {
+		fmt.Fprintf(os.Stderr, ", %d legacy (pre-chain, unverifiable)", r.Legacy)
+	}
+	fmt.Fprintln(os.Stderr)
+	return nil
 }
 
 // newRotate replaces an existing secret's value while preserving CreatedAt, and logs the
