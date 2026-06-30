@@ -7,6 +7,12 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Tamper-evident audit log.** Every event is hash-chained into the previous one and signed
+  with the recording session's Ed25519 key (generated and stored per session under the state
+  dir), so editing, deleting, reordering, or truncating the log is detectable. `arca log
+  --verify` walks the chain and signatures and exits non-zero on any inconsistency (cron/CI
+  friendly). The audit schema migrates existing DBs in place; pre-chain rows are reported as
+  legacy. It's tamper-*evident*, not tamper-proof — see SECURITY.md for the boundary.
 - **Output redaction on `exec`** — if a command prints an injected secret, arca replaces the
   value with `«arca:NAME»` in the captured stdout/stderr before it reaches whoever is reading
   (an AI agent, a log), and records the catch in the audit log (`op=redact`). It's streaming

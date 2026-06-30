@@ -66,7 +66,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Metadata & query** | `ls`/`show` list and filter **without decrypting**; `--reads` joins usage from the audit log |
 | **Rotation** | `rotate` (keeps `created_at`), `--rotate-after` dates, `stale` to find overdue/missing policies |
 | **Expiry (TTL)** | `--ttl 30m\|12h\|7d\|2w` or `--expires-at`; expired secrets are **refused on every access path** and surfaced by `stale` |
-| **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default |
+| **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default; **hash-chained + per-session signed** so tampering is detectable (`log --verify`) |
 | **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human approval), least-privilege `exec --only` |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
@@ -356,7 +356,7 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
 | `exec -- CMD` | Run CMD with secrets injected as env (audited); injected values are redacted from its output | `--only a,b`, `--redact auto\|on\|off`, `--reveal` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
-| `log [NAME]` | Access history (agent/session/actor) | `--limit N`, `--json` |
+| `log [NAME]` | Access history (agent/session/actor); `--verify` checks the log's integrity | `--limit N`, `--json`, `--verify` |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) | — |
 | `completion SHELL` | Shell completion script (bash/zsh/fish/powershell) | — |
 

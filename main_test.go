@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"io"
 	"os"
 	"path/filepath"
@@ -86,6 +87,7 @@ func sandbox(t *testing.T) string {
 	t.Setenv("ARCA_STORE", filepath.Join(dir, "store.json"))
 	t.Setenv("ARCA_AUDIT", filepath.Join(dir, "audit.db"))
 	t.Setenv("ARCA_IDENTITY", filepath.Join(dir, "id.txt"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state")) // keep session signing keys out of $HOME
 	return dir
 }
 
@@ -264,6 +266,35 @@ func TestExecRedaction(t *testing.T) {
 	// An invalid mode is rejected.
 	if err := runArcaErr("", "exec", "--redact", "bogus", "--only", "PASSWORD", "--", "true"); err == nil {
 		t.Fatal("expected an invalid --redact value to error")
+	}
+}
+
+// TestLogVerify drives the integrity check through the CLI: after real operations the signed,
+// chained log verifies clean; tampering with the DB makes `log --verify` fail.
+func TestLogVerify(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "get", "A")
+	runArca(t, "v2", "set", "B")
+
+	// A healthy log verifies (verify writes its summary to stderr and returns nil).
+	if err := runArcaErr("", "log", "--verify"); err != nil {
+		t.Fatalf("verify on a clean log should pass: %v", err)
+	}
+
+	// Editing an event out of band must be detected.
+	db, err := sql.Open("sqlite", filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE events SET name='TAMPERED' WHERE id=1"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if err := runArcaErr("", "log", "--verify"); err == nil {
+		t.Fatal("verify should fail on a tampered log")
 	}
 }
 
