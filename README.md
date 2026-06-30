@@ -28,6 +28,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 - [Features](#features)
 - [Install](#install)
 - [Quickstart](#quickstart)
+- [Importing & migrating](#importing--migrating)
 - [Recipes](#recipes)
 - [The model](#the-model)
 - [Command reference](#command-reference)
@@ -71,7 +72,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
 | **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
 | **Completion** | `completion bash\|zsh\|fish` with dynamic secret-name + tag suggestions |
-| **Migration** | `import` from a sops/dotenv stream; `env` for shell `eval` |
+| **Migration** | `import` a dotenv **or JSON** stream (audited); `set NAME < file` for blobs; `env` for shell `eval` |
 | **Supply chain** | Reproducible builds, SBOM, cosign-signed + SLSA-provenanced releases, govulncheck, CodeQL |
 
 ---
@@ -129,11 +130,49 @@ arca recipients add age1teammate...         # share with a teammate's key
 arca reencrypt                              # re-wrap every secret to the new recipient set
 ```
 
-Migrate an existing sops dotenv:
+---
+
+## Importing & migrating
+
+arca takes values on **stdin**, so anything that can emit secrets pipes straight in. There are
+three ingest shapes:
+
+| Shape | Command | Use it for |
+|-------|---------|-----------|
+| dotenv lines | `arca import` | `KEY=value` streams (`.env`, sops, `printenv`) |
+| JSON object | `arca import --json` | `{"KEY":"value"}` — what most secret stores emit |
+| a single value | `arca set NAME < file` | one secret, including multi-line blobs (PEM keys, a service-account JSON) |
+
+`import` validates every name (`[A-Za-z_][A-Za-z0-9_]*`) and **skips** anything else, and each
+imported secret is recorded in the audit log like any other write. With `--json`, string values
+pass through verbatim (a JSON-escaped multi-line key round-trips), numbers and booleans are
+stringified, and `null`/nested values are skipped.
 
 ```sh
+# dotenv — a plain file, or decrypted from sops
+arca import < .env
 sops -d ~/.dotfiles/secrets/secrets.env | arca import
+
+# JSON — straight from a cloud secret store, no jq gymnastics
+aws secretsmanager get-secret-value --secret-id prod/app --query SecretString --output text \
+  | arca import --json
+gcloud secrets versions access latest --secret=prod-app | arca import --json
+vault kv get -format=json secret/prod/app | jq '.data.data' | arca import --json
+op item get prod-app --format json | jq '[.fields[]|select(.value)|{(.label):.value}]|add' \
+  | arca import --json
+
+# any KEY=value source via dotenv
+pass show prod/env | arca import
+printenv | grep '^APP_' | arca import
+
+# one secret, multi-line, as a single value (not dotenv)
+arca set TLS_KEY < server.key
+arca set GCP_SA_JSON < service-account.json
 ```
+
+> A non-JSON source whose values span lines (a raw PEM, a certificate) doesn't fit dotenv —
+> import it as one named secret with `set NAME < file`, or wrap it in a JSON object and use
+> `--json`.
 
 ---
 
@@ -287,7 +326,7 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
 | `recipients` | List age recipients; `add`/`rm` subcommands manage the set | — |
 | `reencrypt` | Re-encrypt every secret to the current recipient set | — |
-| `import` | Load `KEY=value` (dotenv) lines from stdin | — |
+| `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) | `--json` |
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
 | `exec -- CMD` | Run CMD with secrets injected as env (audited) | `--only a,b` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |

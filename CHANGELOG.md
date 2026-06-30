@@ -16,8 +16,16 @@ All notable changes to arca are documented here. The format follows
 - Developer Certificate of Origin: a `Signed-off-by` trailer is now required on every commit
   and enforced by a `dco` CI check; `CONTRIBUTING.md` documents `git commit -s`.
 - `CONTRIBUTING.md` now documents how dependencies are selected, obtained, and tracked.
+- `import --json` reads a JSON object `{"KEY":"value"}` from stdin — the shape most secret
+  stores emit (AWS Secrets Manager, Vault, 1Password, gcloud) — so they pipe in without `jq`
+  reshaping. String values pass through (a JSON-escaped multi-line key round-trips), numbers and
+  booleans are stringified, and null/nested values are skipped.
+- An "Importing & migrating" guide in the README, with a source recipe matrix and `set NAME <
+  file` for single multi-line blobs (PEM keys, service-account JSON).
 
 ### Changed
+- `import` now records each imported secret in the audit log, so a bulk load is no longer a
+  blind spot — it was previously the only write that wrote nothing to the log.
 - Increase the store-lock acquisition timeout from 5s to 15s, so heavily contended writes
   (many concurrent processes, or a slow/networked filesystem) don't spuriously fail before
   acquiring the lock.
