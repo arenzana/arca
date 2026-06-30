@@ -10,6 +10,7 @@
   <a href="https://github.com/arenzana/arca/actions/workflows/ci.yml"><img src="https://github.com/arenzana/arca/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
   <a href="https://github.com/arenzana/arca/actions/workflows/codeql.yml"><img src="https://github.com/arenzana/arca/actions/workflows/codeql.yml/badge.svg" alt="codeql"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/arenzana/arca"><img src="https://api.scorecard.dev/projects/github.com/arenzana/arca/badge" alt="OpenSSF Scorecard"></a>
+  <a href="https://www.bestpractices.dev/projects/13446"><img src="https://www.bestpractices.dev/projects/13446/baseline" alt="OpenSSF Baseline"></a>
   <a href="https://goreportcard.com/report/github.com/arenzana/arca"><img src="https://goreportcard.com/badge/github.com/arenzana/arca" alt="Go Report Card"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
 </p>
