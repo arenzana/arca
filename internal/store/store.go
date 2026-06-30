@@ -71,7 +71,7 @@ func Load(path string) (*Store, error) {
 	if fi, err := os.Stat(path); err == nil && fi.Size() > maxStoreBytes {
 		return nil, fmt.Errorf("store %s is %d bytes, exceeding the %d-byte limit", path, fi.Size(), int64(maxStoreBytes))
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //#nosec G304 -- the store path is operator-controlled (config/env), not untrusted input
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("no store at %s (run `arca init`)", path)
@@ -127,6 +127,10 @@ func (s *Store) Save() error {
 		return err
 	}
 	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil { // flush to disk before the rename so a crash can't leave a truncated store
 		tmp.Close()
 		return err
 	}

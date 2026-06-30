@@ -37,6 +37,22 @@ jobs:
           awk -v c="$total" 'BEGIN { if (c+0 < 90) { print "coverage below the 90% minimum"; exit 1 } }'
       - run: go build ./...
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+      - name: gosec (medium+)
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -severity medium -confidence medium -quiet ./...
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:

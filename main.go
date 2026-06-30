@@ -410,8 +410,12 @@ func newInit() *cobra.Command {
 			}
 			idPath := identityPath()
 			var recips []string
-			if _, err := os.Stat(idPath); err == nil {
-				// Reuse the existing identity (e.g. the sops age key).
+			if fi, err := os.Stat(idPath); err == nil {
+				// Reuse the existing identity (e.g. the sops age key). Warn if its file is
+				// readable by group/other — the private key should be 0600.
+				if fi.Mode()&0o077 != 0 {
+					fmt.Fprintf(os.Stderr, "warning: identity %s is group/world-accessible (%#o); consider chmod 600\n", idPath, fi.Mode().Perm())
+				}
 				ids, err := crypto.LoadIdentities(idPath)
 				if err != nil {
 					return err
@@ -431,7 +435,7 @@ func newInit() *cobra.Command {
 				}
 				// O_EXCL: create exclusively (never follow a pre-planted symlink or clobber an
 				// existing file) so the private key can't be redirected to an attacker path.
-				f, err := os.OpenFile(idPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+				f, err := os.OpenFile(idPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //#nosec G304 -- idPath comes from config/env (ARCA_IDENTITY / XDG), not untrusted input
 				if err != nil {
 					return err
 				}
@@ -951,7 +955,7 @@ func newExec() *cobra.Command {
 					return err
 				}
 			}
-			cmd := exec.Command(args[0], args[1:]...)
+			cmd := exec.Command(args[0], args[1:]...) //#nosec G204 -- `arca exec` deliberately runs the user-specified command
 			cmd.Env = env
 			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 			if err := cmd.Run(); err != nil {

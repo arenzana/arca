@@ -230,7 +230,7 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 	}
-	cmd := exec.CommandContext(ctx, command, argStrings(req, "args")...)
+	cmd := exec.CommandContext(ctx, command, argStrings(req, "args")...) //#nosec G204 -- the command is the agent's explicit request; running it with injected secrets is this tool's purpose
 	cmd.Env = env
 	out, runErr := cmd.CombinedOutput()
 	exitCode := 0
