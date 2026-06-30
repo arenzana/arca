@@ -295,14 +295,17 @@ func approve(name, who string) error {
 		}
 		return fmt.Errorf("%s requires human approval; an AI agent cannot self-approve via ARCA_APPROVAL", name)
 	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	in, out, err := openTTY()
 	if err != nil {
 		return fmt.Errorf("%s requires approval, but no terminal is available to confirm", name)
 	}
-	defer tty.Close()
-	fmt.Fprintf(tty, "Release %q to %s? [y/N] ", name, who)
+	defer in.Close()
+	if out != in {
+		defer out.Close()
+	}
+	fmt.Fprintf(out, "Release %q to %s? [y/N] ", name, who)
 	var resp string
-	fmt.Fscanln(tty, &resp)
+	_, _ = fmt.Fscanln(in, &resp)
 	if strings.EqualFold(strings.TrimSpace(resp), "y") {
 		return nil
 	}
