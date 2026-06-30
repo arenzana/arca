@@ -33,6 +33,12 @@ not a hostile local user (who could bypass arca entirely). Specifically:
   `--require-approval` secret via `ARCA_APPROVAL=allow`, cannot disable fail-closed auditing
   (`ARCA_STRICT_AUDIT=0`), and cannot suppress its own read record (`get --no-log`). These
   overrides are honored only for a non-agent caller.
+- **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
+  pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
+  log), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it
+  enforces *intent* but can be sidestepped by an agent that controls argv — renaming a binary or
+  wrapping it in `sh -c`. Treat it as expressing and auditing "this secret is for this job," not as
+  a containment boundary; every grant, revoke, and use is recorded.
 - **`--no-print` blocks *disclosure*, not *use*.** It refuses `get`/`env`/`inject`, but `exec`
   / MCP `run_with_secrets` deliberately let a command **use** the secret. If the command prints
   an injected value, `arca exec` **redacts it from the captured output** (replacing it with

@@ -36,7 +36,7 @@ func newEdit() *cobra.Command {
 			if sec == nil {
 				return fmt.Errorf("no such secret: %s (use `set` to create)", name)
 			}
-			if err := gate(sec, name); err != nil {
+			if err := gate(sec, name, ""); err != nil {
 				return err
 			}
 			ids, err := loadIDs()

@@ -7,6 +7,13 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Command-scoped, just-in-time grants.** Mark a secret `--require-grant` and it becomes usable
+  only via `exec`/MCP `run_with_secrets`, and only when a matching `grant` is active. `arca grant
+  SECRET --command 'terraform *' --uses 3 --ttl 15m [--agent claude-code]` binds a secret to
+  *what* an agent does, how many times, and for how long; `grants` lists them and `revoke` removes
+  one. Use counts are derived from the tamper-evident audit log (op=exec since the grant), so they
+  can't be rolled back. The command match is argv-based — a guardrail expressing intent, not a
+  sandbox (see SECURITY.md).
 - **Canary (honeytoken) secrets.** `arca canary NAME --template stripe|github|aws|slack|generic`
   plants a realistic-looking decoy; `set`/`generate --canary` mark an existing secret. Any *use*
   of a canary (get/exec/env/inject/MCP) trips a loud stderr alert and a distinct, signed audit
