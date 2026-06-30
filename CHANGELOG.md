@@ -22,10 +22,14 @@ All notable changes to arca are documented here. The format follows
   booleans are stringified, and null/nested values are skipped.
 - An "Importing & migrating" guide in the README, with a source recipe matrix and `set NAME <
   file` for single multi-line blobs (PEM keys, service-account JSON).
+- `import` flags: `--dry-run` (preview without writing), `--overwrite` (replace existing
+  secrets), `--prefix` (namespace imported names), and `--tag` (attach tags on import).
 
 ### Changed
 - `import` now records each imported secret in the audit log, so a bulk load is no longer a
   blind spot — it was previously the only write that wrote nothing to the log.
+- `import` now **skips a name that already exists** by default instead of silently overwriting
+  it; pass `--overwrite` to restore the previous replace-in-place behavior.
 - Increase the store-lock acquisition timeout from 5s to 15s, so heavily contended writes
   (many concurrent processes, or a slow/networked filesystem) don't spuriously fail before
   acquiring the lock.

@@ -293,3 +293,42 @@ func TestImportJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestImportOptions covers the ergonomics flags: --dry-run writes nothing, an existing secret
+// is skipped unless --overwrite is given, --prefix namespaces the imported names, and --tag
+// attaches tags.
+func TestImportOptions(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+
+	// --dry-run must not create anything.
+	runArca(t, "DRY=1\n", "import", "--dry-run")
+	if err := runArcaErr("", "get", "DRY"); err == nil {
+		t.Fatal("--dry-run must not write a secret")
+	}
+
+	// First real import creates the secret.
+	runArca(t, "K=v1\n", "import")
+	if out := runArca(t, "", "get", "K"); out != "v1" {
+		t.Fatalf("K = %q, want v1", out)
+	}
+	// Re-importing without --overwrite leaves the existing value untouched.
+	runArca(t, "K=v2\n", "import")
+	if out := runArca(t, "", "get", "K"); out != "v1" {
+		t.Fatalf("without --overwrite K = %q, want unchanged v1", out)
+	}
+	// With --overwrite it is replaced.
+	runArca(t, "K=v2\n", "import", "--overwrite")
+	if out := runArca(t, "", "get", "K"); out != "v2" {
+		t.Fatalf("with --overwrite K = %q, want v2", out)
+	}
+
+	// --prefix namespaces the name; --tag attaches tags.
+	runArca(t, "TOKEN=abc\n", "import", "--prefix", "STRIPE_", "--tag", "billing,prod")
+	if out := runArca(t, "", "get", "STRIPE_TOKEN"); out != "abc" {
+		t.Fatalf("prefixed get = %q, want abc", out)
+	}
+	if show := runArca(t, "", "show", "STRIPE_TOKEN", "--json"); !strings.Contains(show, "billing") || !strings.Contains(show, "prod") {
+		t.Fatalf("expected tags in show output, got %q", show)
+	}
+}
