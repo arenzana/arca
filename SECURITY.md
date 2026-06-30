@@ -34,9 +34,13 @@ not a hostile local user (who could bypass arca entirely). Specifically:
   (`ARCA_STRICT_AUDIT=0`), and cannot suppress its own read record (`get --no-log`). These
   overrides are honored only for a non-agent caller.
 - **`--no-print` blocks *disclosure*, not *use*.** It refuses `get`/`env`/`inject`, but `exec`
-  / MCP `run_with_secrets` deliberately let a command **use** the secret. The command you run
-  could still print it — choose commands that consume the secret without echoing it. The value
-  itself is never returned by arca; the command's output is.
+  / MCP `run_with_secrets` deliberately let a command **use** the secret. If the command prints
+  an injected value, `arca exec` **redacts it from the captured output** (replacing it with
+  `«arca:NAME»` and auditing the catch), so a leak into an agent's context is caught at the
+  boundary rather than relied on not to happen. Redaction is best-effort defense in depth — it
+  matches the literal value, so a command that transforms the secret (encodes, splits, hashes it)
+  before printing can still emit it; `--redact` controls the behavior. The value itself is never
+  returned by arca; the command's output is.
 - **Secret names** are restricted to `[A-Za-z_][A-Za-z0-9_]*` on write, and invalid names in a
   hand-edited / synced store are skipped by `env`/`exec`, to prevent shell-injection via
   `eval "$(arca env)"` or env-variable hijacking.

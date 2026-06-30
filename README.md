@@ -200,6 +200,17 @@ arca exec -- terraform apply
 arca exec --only AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY -- terraform apply   # least privilege
 ```
 
+If the command itself prints an injected secret, arca **redacts it from the output** before it
+reaches whoever is reading — replacing the value with `«arca:NAME»` and recording the catch in the
+audit log. Redaction is automatic when output is captured (piped to an agent or a log) and steps
+aside for an interactive terminal; `--redact on|off` forces it, and `--reveal` shows a partial
+mask of long values instead of the name.
+
+```sh
+$ arca exec --only PASSWORD -- sh -c 'echo connecting with $PASSWORD'
+connecting with «arca:PASSWORD»          # the value never reaches the agent's context
+```
+
 **Render a config from a template** (the value only lands in the rendered file):
 
 ```sh
@@ -343,7 +354,7 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `reencrypt` | Re-encrypt every secret to the current recipient set | — |
 | `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) | `--json`, `--dry-run`, `--overwrite`, `--prefix P`, `--tag t` |
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
-| `exec -- CMD` | Run CMD with secrets injected as env (audited) | `--only a,b` |
+| `exec -- CMD` | Run CMD with secrets injected as env (audited); injected values are redacted from its output | `--only a,b`, `--redact auto\|on\|off`, `--reveal` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
 | `log [NAME]` | Access history (agent/session/actor) | `--limit N`, `--json` |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) | — |

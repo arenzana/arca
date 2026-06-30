@@ -215,6 +215,58 @@ func TestNoPrintAndInject(t *testing.T) {
 	}
 }
 
+// TestExecRedaction covers output redaction: a command that prints an injected secret has the
+// value replaced (default = the secret's name; --reveal = a partial mask), the catch is audited,
+// and --redact off restores the raw value.
+func TestExecRedaction(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "hunter2secret", "set", "PASSWORD") // 13 chars, above the scan floor
+
+	// Default: captured stdout (a temp file in the harness) is redacted to the name.
+	out := runArca(t, "", "exec", "--only", "PASSWORD", "--", "sh", "-c", "echo using hunter2secret now")
+	if strings.Contains(out, "hunter2secret") {
+		t.Fatalf("secret leaked into output: %q", out)
+	}
+	if !strings.Contains(out, "«arca:PASSWORD»") {
+		t.Fatalf("expected redaction marker, got %q", out)
+	}
+
+	// The catch is recorded as a potential leak.
+	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	evs, _ := a.Recent("PASSWORD", 50)
+	a.Close()
+	var sawRedact bool
+	for _, e := range evs {
+		if e.Op == "redact" {
+			sawRedact = true
+		}
+	}
+	if !sawRedact {
+		t.Fatal("a redacted secret was not audited")
+	}
+
+	// --reveal shows a partial mask but still never the whole value.
+	rev := runArca(t, "", "exec", "--reveal", "--only", "PASSWORD", "--", "sh", "-c", "echo using hunter2secret now")
+	if strings.Contains(rev, "hunter2secret") {
+		t.Fatalf("--reveal leaked the full value: %q", rev)
+	}
+	if !strings.Contains(rev, "hu") || !strings.Contains(rev, "ret") || !strings.Contains(rev, "*") {
+		t.Fatalf("--reveal output = %q, want a partial mask", rev)
+	}
+
+	// --redact off passes the value straight through.
+	off := runArca(t, "", "exec", "--redact", "off", "--only", "PASSWORD", "--", "sh", "-c", "echo using hunter2secret now")
+	if !strings.Contains(off, "hunter2secret") {
+		t.Fatalf("--redact off should not redact, got %q", off)
+	}
+
+	// An invalid mode is rejected.
+	if err := runArcaErr("", "exec", "--redact", "bogus", "--only", "PASSWORD", "--", "true"); err == nil {
+		t.Fatal("expected an invalid --redact value to error")
+	}
+}
+
 // TestImportDotenv covers the default (dotenv) import path: blanks/comments are skipped, the
 // `export ` prefix and surrounding quotes are stripped, an invalid name is refused, and every
 // imported secret is recorded in the audit log (a bulk load must not be a blind spot).

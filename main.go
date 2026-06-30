@@ -1076,6 +1076,8 @@ func newInject() *cobra.Command {
 // arca's stdout or in an agent's context. It's also the only way to use a --no-print secret.
 func newExec() *cobra.Command {
 	var only []string
+	var redactMode string
+	var reveal bool
 	c := &cobra.Command{
 		Use:   "exec [--only a,b] -- command [args...]",
 		Short: "Run a command with secrets injected as env (audited)",
@@ -1095,8 +1097,15 @@ func newExec() *cobra.Command {
 			if len(only) > 0 { // least privilege: inject just what was asked for
 				names = only
 			}
+			switch redactMode {
+			case "auto", "on", "off":
+			default:
+				return fmt.Errorf("--redact must be auto, on, or off (got %q)", redactMode)
+			}
+
 			caller := filepath.Base(args[0]) // recorded as the audit "caller"
 			env := os.Environ()
+			var injected []redactPattern
 			for _, name := range names {
 				sec := s.Secrets[name]
 				if sec == nil {
@@ -1116,24 +1125,77 @@ func newExec() *cobra.Command {
 					return fmt.Errorf("decrypt %s: %w", name, err)
 				}
 				env = append(env, name+"="+string(plain))
+				injected = append(injected, redactPattern{name: name, value: plain})
 				if err := logAudit("exec", name, caller); err != nil {
 					return err
 				}
 			}
+
 			cmd := exec.Command(args[0], args[1:]...) //#nosec G204 -- `arca exec` deliberately runs the user-specified command
 			cmd.Env = env
-			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-			if err := cmd.Run(); err != nil {
+			cmd.Stdin = os.Stdin
+
+			// Redact injected secret values from the child's output so a command that prints one
+			// doesn't leak it to whoever reads stdout/stderr (an AI agent, a log). Default `auto`
+			// redacts only a stream that isn't an interactive terminal — i.e. one being captured —
+			// and passes a real TTY straight through (a human at a prompt, no buffering latency).
+			pats := buildRedactPatterns(injected, reveal, os.Stderr)
+			redactStream := func(f *os.File) bool {
+				switch redactMode {
+				case "off":
+					return false
+				case "on":
+					return true
+				default:
+					return len(pats) > 0 && !term.IsTerminal(int(f.Fd()))
+				}
+			}
+			var redactors []*redactWriter
+			if cmd.Stdout = os.Stdout; len(pats) > 0 && redactStream(os.Stdout) {
+				rw := newRedactWriter(os.Stdout, pats)
+				cmd.Stdout = rw
+				redactors = append(redactors, rw)
+			}
+			if cmd.Stderr = os.Stderr; len(pats) > 0 && redactStream(os.Stderr) {
+				rw := newRedactWriter(os.Stderr, pats)
+				cmd.Stderr = rw
+				redactors = append(redactors, rw)
+			}
+
+			runErr := cmd.Run()
+			// Flush held-back tails and record any catches before honoring the exit code (which
+			// may os.Exit). A secret appearing in output is a potential leak, so it's audited.
+			for _, rw := range redactors {
+				if err := rw.Flush(); err != nil {
+					fmt.Fprintf(os.Stderr, "redact: flush failed: %v\n", err)
+				}
+			}
+			caught := map[string]int{}
+			for _, rw := range redactors {
+				for name, n := range rw.hits {
+					caught[name] += n
+				}
+			}
+			for name, n := range caught {
+				fmt.Fprintf(os.Stderr, "redact: caught %s in output (%d occurrence(s))\n", name, n)
+				if err := logAudit("redact", name, caller); err != nil {
+					fmt.Fprintf(os.Stderr, "redact: audit failed for %s: %v\n", name, err)
+				}
+			}
+
+			if runErr != nil {
 				// Propagate the child's exit code so `arca exec -- foo` behaves like `foo`.
-				if ee, ok := err.(*exec.ExitError); ok {
+				if ee, ok := runErr.(*exec.ExitError); ok {
 					os.Exit(ee.ExitCode())
 				}
-				return err
+				return runErr
 			}
 			return nil
 		},
 	}
 	c.Flags().StringSliceVar(&only, "only", nil, "subset of secrets to inject (default: all)")
+	c.Flags().StringVar(&redactMode, "redact", "auto", "redact injected secret values from output: auto (captured streams only), on, or off")
+	c.Flags().BoolVar(&reveal, "reveal", false, "when redacting, reveal a few characters of long secrets instead of the name (weaker)")
 	// Stop flag parsing at the first positional arg so the wrapped command's own flags
 	// (e.g. `-auto-approve`) aren't interpreted by arca.
 	c.Flags().SetInterspersed(false)
