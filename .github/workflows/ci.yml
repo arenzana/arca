@@ -13,9 +13,14 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
+      - if: runner.os == 'Linux' # harden-runner is Linux-only
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
         with:
           egress-policy: audit
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -25,16 +30,18 @@ jobs:
           check-latest: true
       - run: go mod verify
       - run: go vet ./...
-      - run: go test -race -covermode=atomic -coverprofile=cover.out ./...
-      - name: coverage threshold (>= 90%)
+      # Race detector + coverage threshold on Linux (the race detector needs a C toolchain on
+      # Windows, and statement coverage is OS-independent); a plain test on macOS/Windows.
+      - name: test (race) + coverage
+        if: runner.os == 'Linux'
         run: |
-          # CI-reproducible total is ~91.6% (main package 92.5%); the remainder is interactive
-          # /dev/tty prompts, main()/os.Exit, the blocking MCP server, and defensive error
-          # returns that can't occur in practice (writes to in-memory buffers, crypto/rand).
-          # The 90% minimum sits below the real figure so small fluctuations don't fail the build.
+          go test -race -covermode=atomic -coverprofile=cover.out ./...
           total=$(go tool cover -func=cover.out | awk '/^total:/{print $3}' | tr -d '%')
           echo "total coverage: ${total}%"
           awk -v c="$total" 'BEGIN { if (c+0 < 90) { print "coverage below the 90% minimum"; exit 1 } }'
+      - name: test
+        if: runner.os != 'Linux'
+        run: go test ./...
       - run: go build ./...
 
   lint:
@@ -82,9 +89,14 @@ jobs:
           path: arca.cdx.json
 
   e2e:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
+      - if: runner.os == 'Linux'
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
         with:
           egress-policy: audit
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -92,8 +104,9 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
-      # Builds the real binary and drives it as a black box: full CLI lifecycle,
-      # policy gates, fail-closed audit, and the MCP server over stdio.
+      # Builds the real binary and drives it as a black box across all shipped OSes: full CLI
+      # lifecycle, policy gates, fail-closed audit, and the MCP server over stdio. (sh-dependent
+      # cases self-skip on Windows.)
       - run: go test -tags e2e ./e2e/...
 
   crossbuild:
