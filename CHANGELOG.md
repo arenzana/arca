@@ -7,8 +7,12 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `generate NAME` creates a secret with a cryptographically-random value (`--length`,
+  `--charset alnum|hex|full|<custom>`, `--show`), so a password/token is never typed.
 - Homebrew install via a tap: `brew install arenzana/tap/arca` (the cask is published to
   `arenzana/homebrew-tap` on each release).
+- Scoop install on Windows (the manifest is published to `arenzana/scoop-bucket` on release).
+- `go install` builds now report the module version (from build info) instead of `dev`.
 - Windows support for the approval prompt: `--require-approval` now reads from the Windows
   console (`CONIN$`/`CONOUT$`) instead of `/dev/tty`, which does not exist on Windows.
 - Store-level locking: every mutation (`set`/`rotate`/`rm`/`import`/`reencrypt`/`recipients`)

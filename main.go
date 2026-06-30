@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -36,8 +37,20 @@ import (
 	"github.com/arenzana/arca/internal/store"
 )
 
-// version is set at build/release time via -ldflags "-X main.version=...".
+// version is set at release time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// appVersion returns the build version: the ldflags-injected value for a release build, the
+// module version from the build info for a `go install module@version` build, or "dev".
+func appVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
 
 func main() {
 	// Cobra prints the error itself (SilenceErrors=false); we just set the exit code.
@@ -53,14 +66,14 @@ func newRoot() *cobra.Command {
 		Use:           "arca",
 		Short:         "age-encrypted secrets with metadata and an audit log",
 		Long:          "arca stores secrets as age-encrypted values with cleartext metadata in a JSON\nstore, and records every access in a local SQLite audit log.",
-		Version:       version,
+		Version:       appVersion(),
 		SilenceUsage:  true, // don't dump usage on every runtime error
 		SilenceErrors: false,
 	}
 	cmds := []*cobra.Command{
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
-		newRecipients(), newReencrypt(),
+		newRecipients(), newReencrypt(), newGenerate(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)

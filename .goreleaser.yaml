@@ -73,6 +73,18 @@ homebrew_casks:
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/arca"]
           end
 
+scoops:
+  - repository:
+      owner: arenzana
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_GITHUB_TOKEN }}"
+    # Publish only when the bucket token is present; otherwise the manifest is built but not
+    # pushed, so a release missing the secret still succeeds.
+    skip_upload: '{{ if .Env.SCOOP_GITHUB_TOKEN }}false{{ else }}true{{ end }}'
+    homepage: "https://github.com/arenzana/arca"
+    description: "age-encrypted, file-based secrets manager built to sit safely in front of AI agents"
+    license: MIT
+
 release:
   prerelease: auto
   # Create as a draft so every asset (archives, checksums, signatures, SBOMs) is

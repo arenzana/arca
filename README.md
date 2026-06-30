@@ -81,6 +81,13 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 brew install arenzana/tap/arca
 ```
 
+**Scoop** (Windows):
+
+```powershell
+scoop bucket add arenzana https://github.com/arenzana/scoop-bucket
+scoop install arca
+```
+
 **`go install`:**
 
 ```sh
@@ -183,6 +190,7 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 |---|---|---|
 | `init` | Create the store (reuse or generate an age key) | `--force` |
 | `set NAME` | Add/update a secret (value from TTY or stdin) | `--tag --desc --rotate-after --ttl --expires-at --meta k=v --no-print --require-approval` |
+| `generate NAME` | Create a secret with a random value | `-l/--length --charset --tag --desc --ttl --no-print --show` |
 | `get NAME` | Decrypt and print one secret (records a read) | `-n` (newline), `--no-log` |
 | `rotate NAME` | Replace value, keep `created_at`, log a rotation | `--rotate-after --ttl --expires-at` |
 | `ls` | List secrets + metadata (no decryption) | `--tag`, `--reads`, `--json` |
