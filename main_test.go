@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,36 +13,52 @@ import (
 
 // execArca runs the root command with args, feeding stdin and capturing stdout.
 //
-// The commands read os.Stdin directly (readValue, inject) and write secret output to os.Stdout
-// (get, inject, env, log), so to test them we temporarily swap those process globals around a
-// single Execute():
-//   - stdin  is a pipe pre-loaded with the supplied input (so non-TTY readValue gets the value);
-//   - stdout is a pipe drained by a goroutine started *before* Execute, to avoid deadlocking if
-//     the command writes more than a pipe buffer.
+// The commands read os.Stdin directly (readValue, inject) and write output to os.Stdout (get,
+// inject, env, log, --json), so we temporarily swap those process globals around a single
+// Execute(). We back them with temp files rather than os.Pipe: a file has no reader/writer race,
+// which keeps the harness deterministic on Windows (where a pipe whose peer closes early fails
+// the write with "the pipe is being closed").
 //
-// Both globals are restored before returning. Tests therefore must not run in parallel.
+// Both globals are restored before returning, so tests must not run in parallel.
 func execArca(stdin string, args ...string) (string, error) {
-	oldIn := os.Stdin
-	ir, iw, _ := os.Pipe()
-	go func() { io.WriteString(iw, stdin); iw.Close() }()
-	os.Stdin = ir
-	defer func() { os.Stdin = oldIn; ir.Close() }()
+	inF, err := os.CreateTemp("", "arca-in-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(inF.Name())
+	if _, err := inF.WriteString(stdin); err != nil {
+		inF.Close()
+		return "", err
+	}
+	if _, err := inF.Seek(0, 0); err != nil {
+		inF.Close()
+		return "", err
+	}
+	outF, err := os.CreateTemp("", "arca-out-*")
+	if err != nil {
+		inF.Close()
+		return "", err
+	}
+	defer os.Remove(outF.Name())
 
-	oldOut := os.Stdout
-	or, ow, _ := os.Pipe()
-	os.Stdout = ow
-	done := make(chan string, 1)
-	go func() { var b bytes.Buffer; io.Copy(&b, or); done <- b.String() }()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = inF, outF
+	defer func() {
+		os.Stdin, os.Stdout = oldIn, oldOut
+		inF.Close()
+		outF.Close()
+	}()
 
 	root := newRoot()
 	root.SetArgs(args)
 	root.SetOut(io.Discard) // silence cobra's own usage/output; we only care about os.Stdout
 	root.SetErr(io.Discard)
-	err := root.Execute()
+	err = root.Execute()
 
-	ow.Close()
-	os.Stdout = oldOut
-	return <-done, err
+	_ = outF.Sync()
+	_, _ = outF.Seek(0, 0)
+	b, _ := io.ReadAll(outF)
+	return string(b), err
 }
 
 // runArca is execArca for the happy path: it fails the test on any command error.
