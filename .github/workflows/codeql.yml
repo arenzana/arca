@@ -16,6 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: actions # scan the workflows themselves for injection/misconfig
+            build-mode: none
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
         with:
@@ -26,6 +34,8 @@ jobs:
           go-version-file: go.mod
       - uses: github/codeql-action/init@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
         with:
-          languages: go
-          build-mode: autobuild
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
       - uses: github/codeql-action/analyze@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3
+        with:
+          category: "/language:${{ matrix.language }}"

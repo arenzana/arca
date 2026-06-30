@@ -17,7 +17,29 @@ Do **not** open public issues for vulnerabilities. We aim to acknowledge within 
 - Store and audit files are created `0600`; store writes are atomic (temp + rename).
 - The audit log records access **metadata only** (op, name, time, actor, agent, session, caller) — never values.
 - Auditing is **fail-closed by default**: if an access cannot be recorded the operation is
-  aborted (reads abort before disclosing the value). Override with `ARCA_STRICT_AUDIT=0`.
+  aborted (reads abort before disclosing the value). A non-agent caller may opt into
+  best-effort auditing with `ARCA_STRICT_AUDIT=0`; a **detected AI agent cannot weaken this**.
+
+## Trust model & boundaries
+
+arca runs with the invoking user's privileges; it raises the bar for a *cooperating* AI agent,
+not a hostile local user (who could bypass arca entirely). Specifically:
+
+- **Per-secret policy is agent-aware.** A detected agent cannot self-approve a
+  `--require-approval` secret via `ARCA_APPROVAL=allow`, cannot disable fail-closed auditing
+  (`ARCA_STRICT_AUDIT=0`), and cannot suppress its own read record (`get --no-log`). These
+  overrides are honored only for a non-agent caller.
+- **`--no-print` blocks *disclosure*, not *use*.** It refuses `get`/`env`/`inject`, but `exec`
+  / MCP `run_with_secrets` deliberately let a command **use** the secret. The command you run
+  could still print it — choose commands that consume the secret without echoing it. The value
+  itself is never returned by arca; the command's output is.
+- **Secret names** are restricted to `[A-Za-z_][A-Za-z0-9_]*` on write, and invalid names in a
+  hand-edited / synced store are skipped by `env`/`exec`, to prevent shell-injection via
+  `eval "$(arca env)"` or env-variable hijacking.
+- **Audit attribution is advisory.** The agent name/version/session and `ARCA_ACTOR` are read
+  from the environment, so the log records the *claimed* identity, not a cryptographically
+  verified one. `ARCA_AUDIT` likewise trusts the configured path; audit integrity assumes a
+  trusted `ARCA_AUDIT` / `ARCA_STRICT_AUDIT` environment.
 
 ## Supply-chain integrity
 

@@ -210,9 +210,14 @@ func TestFailClosedAudit(t *testing.T) {
 	if _, _, code := b.run(t, "", "get", "PLAIN"); code == 0 {
 		t.Fatal("expected fail-closed get to abort with a broken audit log")
 	}
-	// opt out → best-effort: get proceeds
-	if out, _, code := b.runEnv(t, []string{"ARCA_STRICT_AUDIT=0"}, "", "get", "PLAIN"); code != 0 || out != "plain" {
+	// opt out → best-effort for a non-agent caller: get proceeds
+	bestEffort := []string{"ARCA_STRICT_AUDIT=0", "CLAUDECODE=", "CLAUDE_CODE_SESSION_ID=", "CURSOR_TRACE_ID=", "AI_AGENT="}
+	if out, _, code := b.runEnv(t, bestEffort, "", "get", "PLAIN"); code != 0 || out != "plain" {
 		t.Fatalf("best-effort get = %q code=%d", out, code)
+	}
+	// an agent stays fail-closed even with ARCA_STRICT_AUDIT=0
+	if _, _, code := b.runEnv(t, []string{"ARCA_STRICT_AUDIT=0", "AI_AGENT=claude-code"}, "", "get", "PLAIN"); code == 0 {
+		t.Fatal("expected an agent to remain fail-closed despite ARCA_STRICT_AUDIT=0")
 	}
 }
 

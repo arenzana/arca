@@ -51,7 +51,7 @@ func registerMCPTools(s *server.MCPServer) {
 		mcpShowSecret)
 
 	s.AddTool(mcp.NewTool("run_with_secrets",
-		mcp.WithDescription("Run a command with the named secrets injected as environment variables; returns the command's output and exit code. Secret VALUES are never returned — prefer this over read_secret."),
+		mcp.WithDescription("Run a command with the named secrets injected as environment variables; returns the command's output and exit code. arca does not return the secret value itself, but the command you choose can print it — pick a command that uses the secret without echoing it. (--no-print only blocks reveal via get/inject/env, not a command you control.) Prefer this over read_secret."),
 		mcp.WithString("command", mcp.Required(), mcp.Description("executable to run")),
 		mcp.WithArray("args", mcp.Description("command arguments"), mcp.Items(map[string]any{"type": "string"})),
 		mcp.WithArray("secrets", mcp.Required(), mcp.Description("names of the secrets to inject as env vars"), mcp.Items(map[string]any{"type": "string"}))),

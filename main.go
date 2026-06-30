@@ -148,6 +148,11 @@ func recordAudit(op, name, caller string) error {
 // strictAudit reports whether fail-closed auditing is in effect. It is the DEFAULT; set
 // ARCA_STRICT_AUDIT to a falsey value (0/false/off/no/lax) to opt into best-effort auditing.
 func strictAudit() bool {
+	// An AI agent must not be able to weaken fail-closed auditing on itself; the lax override
+	// is honored only for a non-agent caller.
+	if detectIdentity().Agent != "" {
+		return true
+	}
 	switch strings.ToLower(os.Getenv("ARCA_STRICT_AUDIT")) {
 	case "0", "false", "off", "no", "lax", "best-effort":
 		return false
@@ -211,6 +216,22 @@ func shortID(s string) string {
 
 // readValue reads a secret from a TTY without echo, or from piped stdin. Secrets are NEVER
 // taken as command-line arguments (which would leak via shell history / `ps`).
+// maxInputBytes caps a single secret value / inject template read from stdin (DoS guard).
+const maxInputBytes = 16 << 20 // 16 MiB
+
+// readAllLimited reads up to max bytes from r, erroring if the input exceeds it rather than
+// silently truncating.
+func readAllLimited(r io.Reader, max int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, fmt.Errorf("input exceeds the %d-byte limit", max)
+	}
+	return b, nil
+}
+
 func readValue(prompt string) ([]byte, error) {
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprint(os.Stderr, prompt)
@@ -218,7 +239,7 @@ func readValue(prompt string) ([]byte, error) {
 		fmt.Fprintln(os.Stderr)
 		return b, err
 	}
-	b, err := io.ReadAll(os.Stdin)
+	b, err := readAllLimited(os.Stdin, maxInputBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +429,17 @@ func newInit() *cobra.Command {
 				if err := os.MkdirAll(filepath.Dir(idPath), 0o700); err != nil {
 					return err
 				}
-				if err := os.WriteFile(idPath, []byte(idStr+"\n"), 0o600); err != nil {
+				// O_EXCL: create exclusively (never follow a pre-planted symlink or clobber an
+				// existing file) so the private key can't be redirected to an attacker path.
+				f, err := os.OpenFile(idPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+				if err != nil {
+					return err
+				}
+				if _, err := f.WriteString(idStr + "\n"); err != nil {
+					f.Close()
+					return err
+				}
+				if err := f.Close(); err != nil {
 					return err
 				}
 				recips = []string{rec}
@@ -552,8 +583,9 @@ func newGet() *cobra.Command {
 				return fmt.Errorf("decrypt %s: %w", name, err)
 			}
 			// Log before revealing: under fail-closed auditing, a read that cannot be
-			// recorded must not disclose the value.
-			if !noLog {
+			// recorded must not disclose the value. --no-log may suppress the record for a
+			// human, but an AI agent can never suppress its own audit trail.
+			if !noLog || detectIdentity().Agent != "" {
 				if err := logAudit("read", name, ""); err != nil {
 					return err
 				}
@@ -818,7 +850,7 @@ func newInject() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := io.ReadAll(os.Stdin)
+			data, err := readAllLimited(os.Stdin, maxInputBytes)
 			if err != nil {
 				return err
 			}

@@ -35,11 +35,21 @@ func TestGetEnvFlags(t *testing.T) {
 	if out := runArca(t, "", "env", "--no-export"); !strings.Contains(out, "A=") || strings.Contains(out, "export ") {
 		t.Fatalf("env --no-export = %q", out)
 	}
-	// --no-log on a fresh secret must leave no read event.
+	// --no-log on a fresh secret must leave no read event for a non-agent caller.
+	for _, k := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
+		t.Setenv(k, "")
+	}
 	runArca(t, "v2", "set", "B")
 	runArca(t, "", "get", "B", "--no-log")
 	if out := runArca(t, "", "log", "B"); strings.Contains(out, "read") {
 		t.Fatalf("--no-log still recorded a read: %q", out)
+	}
+	// But an agent cannot suppress its own read record.
+	t.Setenv("AI_AGENT", "claude-code")
+	runArca(t, "v3", "set", "C")
+	runArca(t, "", "get", "C", "--no-log")
+	if out := runArca(t, "", "log", "C"); !strings.Contains(out, "read") {
+		t.Fatalf("agent --no-log should still record a read: %q", out)
 	}
 }
 

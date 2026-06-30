@@ -177,11 +177,19 @@ func TestAuditFailureModes(t *testing.T) {
 	if err := runArcaErr("", "get", "K"); err == nil {
 		t.Fatal("expected get to fail-closed under default auditing")
 	}
-	// Opt out → best-effort: the broken audit log is swallowed and the op proceeds.
+	// Opt out → best-effort (non-agent): the broken audit log is swallowed and the op proceeds.
+	for _, k := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
+		t.Setenv(k, "")
+	}
 	t.Setenv("ARCA_STRICT_AUDIT", "0")
 	runArca(t, "v", "set", "K2")
 	if out := runArca(t, "", "get", "K2"); out != "v" {
 		t.Fatalf("best-effort get = %q", out)
+	}
+	// An AI agent cannot weaken fail-closed auditing, even with ARCA_STRICT_AUDIT=0.
+	t.Setenv("AI_AGENT", "claude-code")
+	if err := runArcaErr("v", "set", "K3"); err == nil {
+		t.Fatal("expected an agent to remain fail-closed despite ARCA_STRICT_AUDIT=0")
 	}
 }
 

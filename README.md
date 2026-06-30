@@ -15,7 +15,7 @@
 </p>
 
 A small, file-based secrets manager built on [age](https://github.com/FiloSottile/age) — designed
-to sit **safely in front of AI agents**. Secrets are encrypted per value with rich, cleartext
+to sit **safely in front of AI agents**. Secrets are encrypted per value with cleartext
 metadata in a single JSON store; every access is recorded in a local, fail-closed audit log
 attributed to the calling agent. No daemon, no account, no proprietary backend.
 
@@ -44,7 +44,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
   *reference* one (`inject`) while the value never reaches stdout or an agent's context.
 - **Every access is accountable.** The audit log records who/what/when — including the
   auto-detected AI agent, version, and session — and is **fail-closed by default**.
-- **Per-secret policy.** Mark a secret exec-only (`--no-print`) or gate it behind human approval
+- **Per-secret policy.** Mark a secret exec-only (`--no-print`) or require human approval
   (`--require-approval`).
 - **Git-friendly.** The store is plain JSON: it diffs, merges, and lives happily in a dotfiles
   repo as the source of truth, with a free created/modified history from `git log`.
@@ -63,7 +63,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Rotation** | `rotate` (keeps `created_at`), `--rotate-after` dates, `stale` to find overdue/missing policies |
 | **Expiry (TTL)** | `--ttl 30m\|12h\|7d\|2w` or `--expires-at`; expired secrets are **refused on every access path** and surfaced by `stale` |
 | **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default |
-| **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human gate), least-privilege `exec --only` |
+| **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human approval), least-privilege `exec --only` |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
 | **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
@@ -230,7 +230,7 @@ it up (e.g. to a password manager). On a new machine: restore the key, `git clon
       "tags": ["github","ci"], "description": "…",
       "rotate_after": "2026-12-01",
       "no_print": false,                     // exec-only when true
-      "require_approval": false,             // human gate when true
+      "require_approval": false,             // requires human approval when true
       "meta": { }                            // open-ended extensibility bag
     }
   }
@@ -273,7 +273,7 @@ an agent accesses secrets through controlled, **audited tools** instead of raw s
 | `list_secrets` | Names + metadata (tags, policy, last read) — **never values** |
 | `show_secret` | Metadata for one secret |
 | `run_with_secrets` | Run a command with named secrets injected as env; returns the command's **output**, not the values |
-| `read_secret` | Reveal a value (refused for `--no-print`, gated by `--require-approval`, audited) — the escape hatch |
+| `read_secret` | Reveal a value (refused for `--no-print`, requires `--require-approval` confirmation, audited) — the escape hatch |
 | `audit_log` | Recent access events |
 
 The intended flow is *use, don't reveal*: an agent calls `run_with_secrets` so a command can use a
@@ -291,7 +291,7 @@ claude mcp add arca -- arca mcp
 
 Built as security software: **reproducible** builds (`CGO_ENABLED=0`, `-trimpath`, pinned
 timestamps), **cosign**-signed checksums, a **CycloneDX SBOM**, and **SLSA build-provenance**
-attestations on every release. CI runs `go vet`, `go test -race` (~90% coverage, gated),
+attestations on every release. CI runs `go vet`, `go test -race` (~92% coverage, enforced),
 `go mod verify`, `govulncheck`, **CodeQL**, **OpenSSF Scorecard**, dependency review, and
 **SHA-pinned** actions under a hardened runner. See [SECURITY.md](SECURITY.md) for the disclosure
 policy and release-verification steps.
