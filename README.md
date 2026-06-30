@@ -148,6 +148,16 @@ imported secret is recorded in the audit log like any other write. With `--json`
 pass through verbatim (a JSON-escaped multi-line key round-trips), numbers and booleans are
 stringified, and `null`/nested values are skipped.
 
+By default `import` **skips a name that already exists** (so a re-run never silently clobbers a
+secret); pass `--overwrite` to replace them. A few flags shape the load:
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Print what would be imported (new vs overwrite vs skip) and write nothing |
+| `--overwrite` | Replace existing secrets instead of skipping them |
+| `--prefix P` | Prepend `P` to every imported name (e.g. `--prefix STRIPE_`) |
+| `--tag t` | Attach tags to every imported secret (repeatable or comma-separated) |
+
 ```sh
 # dotenv — a plain file, or decrypted from sops
 arca import < .env
@@ -164,6 +174,11 @@ op item get prod-app --format json | jq '[.fields[]|select(.value)|{(.label):.va
 # any KEY=value source via dotenv
 pass show prod/env | arca import
 printenv | grep '^APP_' | arca import
+
+# preview first, then namespace + tag a load
+arca import --json --dry-run < secrets.json
+arca import --prefix STRIPE_ --tag billing,prod < stripe.env
+arca import --overwrite < refreshed.env          # replace existing (default skips them)
 
 # one secret, multi-line, as a single value (not dotenv)
 arca set TLS_KEY < server.key
@@ -326,7 +341,7 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
 | `recipients` | List age recipients; `add`/`rm` subcommands manage the set | — |
 | `reencrypt` | Re-encrypt every secret to the current recipient set | — |
-| `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) | `--json` |
+| `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) | `--json`, `--dry-run`, `--overwrite`, `--prefix P`, `--tag t` |
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
 | `exec -- CMD` | Run CMD with secrets injected as env (audited) | `--only a,b` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |

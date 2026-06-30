@@ -883,17 +883,46 @@ func jsonScalar(rv json.RawMessage) (string, bool) {
 }
 
 func newImport() *cobra.Command {
-	var asJSON bool
+	var asJSON, dryRun, overwrite bool
+	var prefix string
+	var tags []string
 	c := &cobra.Command{
 		Use:   "import",
-		Short: `Import secrets from stdin (dotenv KEY=value lines, or --json {"KEY":"value"})`,
+		Short: `Bulk-import secrets from stdin (dotenv KEY=value lines, or --json {"KEY":"value"})`,
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			unlock, err := lockStore()
+			// Reading/parsing stdin doesn't touch the store, so do it before taking the lock.
+			var pairs []kvPair
+			var err error
+			if asJSON {
+				pairs, err = parseJSONSecrets(os.Stdin)
+			} else {
+				pairs, err = parseDotenvSecrets(os.Stdin)
+			}
 			if err != nil {
 				return err
 			}
-			defer unlock()
+			// Apply the optional prefix and re-validate the final name (a prefix can make an
+			// otherwise-valid key invalid, e.g. one starting with a digit).
+			plan := make([]kvPair, 0, len(pairs))
+			for _, p := range pairs {
+				name := prefix + p.key
+				if validName(name) != nil {
+					fmt.Fprintf(os.Stderr, "skip %q: not a valid secret name\n", name)
+					continue
+				}
+				plan = append(plan, kvPair{name, p.val})
+			}
+
+			// A dry run only previews, so it neither locks nor needs a writable store.
+			var unlock func()
+			if !dryRun {
+				unlock, err = lockStore()
+				if err != nil {
+					return err
+				}
+				defer unlock()
+			}
 			s, err := openStore()
 			if err != nil {
 				return err
@@ -903,31 +932,49 @@ func newImport() *cobra.Command {
 				return err
 			}
 
-			var pairs []kvPair
-			if asJSON {
-				pairs, err = parseJSONSecrets(os.Stdin)
-			} else {
-				pairs, err = parseDotenvSecrets(os.Stdin)
-			}
-			if err != nil {
-				return err
-			}
-
 			now := time.Now().UTC()
-			imported := make([]string, 0, len(pairs))
-			for _, p := range pairs {
+			imported := make([]string, 0, len(plan))
+			var overwritten, skipped int
+			for _, p := range plan {
+				existing := s.Secrets[p.key]
+				if existing != nil && !overwrite {
+					fmt.Fprintf(os.Stderr, "skip %q: already exists (pass --overwrite to replace)\n", p.key)
+					skipped++
+					continue
+				}
+				if dryRun {
+					if existing != nil {
+						overwritten++
+						fmt.Fprintf(os.Stderr, "would overwrite %q\n", p.key)
+					} else {
+						fmt.Fprintf(os.Stderr, "would import %q\n", p.key)
+					}
+					imported = append(imported, p.key)
+					continue
+				}
 				armored, err := crypto.Encrypt([]byte(p.val), recips)
 				if err != nil {
 					return err
 				}
-				sec := s.Secrets[p.key]
+				sec := existing
 				if sec == nil {
 					sec = &store.Secret{CreatedAt: now}
 					s.Secrets[p.key] = sec
+				} else {
+					overwritten++
 				}
 				sec.Value = armored
 				sec.UpdatedAt = now
+				if len(tags) > 0 {
+					sec.Tags = tags
+				}
 				imported = append(imported, p.key)
+			}
+
+			if dryRun {
+				fmt.Fprintf(os.Stderr, "dry run: %d to import (%d new, %d overwrite), %d skipped\n",
+					len(imported), len(imported)-overwritten, overwritten, skipped)
+				return nil
 			}
 			if err := s.Save(); err != nil {
 				return err
@@ -939,11 +986,16 @@ func newImport() *cobra.Command {
 					return err
 				}
 			}
-			fmt.Fprintf(os.Stderr, "imported %d secret(s)\n", len(imported))
+			fmt.Fprintf(os.Stderr, "imported %d secret(s) (%d new, %d overwritten), %d skipped\n",
+				len(imported), len(imported)-overwritten, overwritten, skipped)
 			return nil
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, `read a JSON object {"KEY":"value"} from stdin instead of dotenv lines`)
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be imported without writing anything")
+	c.Flags().BoolVar(&overwrite, "overwrite", false, "replace secrets that already exist (default: skip them)")
+	c.Flags().StringVar(&prefix, "prefix", "", "prepend this prefix to every imported name")
+	c.Flags().StringSliceVar(&tags, "tag", nil, "tags to apply to imported secrets (repeatable or comma-separated)")
 	return c
 }
 
