@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -25,8 +26,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
-		t.Fatalf("perms = %o, want 600", fi.Mode().Perm())
+	// Unix mode bits: Windows governs file access by ACL, not 0600, so skip that check there.
+	if runtime.GOOS != "windows" {
+		if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("perms = %o, want 600", fi.Mode().Perm())
+		}
 	}
 
 	got, err := Load(p)
@@ -122,6 +126,9 @@ func TestLoadDirectory(t *testing.T) {
 // exists but is read-only, so CreateTemp inside Save fails. (Skipped when running as root,
 // which bypasses permission checks.)
 func TestSaveCreateTempError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a 0500 directory does not block the owner from writing on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses directory permissions")
 	}
