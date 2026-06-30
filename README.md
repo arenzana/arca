@@ -75,11 +75,21 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 
 ## Install
 
+**Homebrew** (macOS / Linux):
+
+```sh
+brew install arenzana/tap/arca
+```
+
+**`go install`:**
+
 ```sh
 go install github.com/arenzana/arca@latest
 ```
 
-Or build from source: `git clone … && cd arca && make build` (produces a static, reproducible binary).
+**Pre-built binaries** for linux/macOS/windows (amd64 + arm64) are attached to each
+[release](https://github.com/arenzana/arca/releases), cosign-signed with SLSA provenance — see
+[SECURITY.md](SECURITY.md) to verify. Or build from source: `git clone … && cd arca && make build`.
 
 ---
 

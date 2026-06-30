@@ -7,6 +7,8 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Homebrew install via a tap: `brew install arenzana/tap/arca` (the cask is published to
+  `arenzana/homebrew-tap` on each release).
 - Windows support for the approval prompt: `--require-approval` now reads from the Windows
   console (`CONIN$`/`CONOUT$`) instead of `/dev/tty`, which does not exist on Windows.
 - Store-level locking: every mutation (`set`/`rotate`/`rm`/`import`/`reencrypt`/`recipients`)

@@ -53,6 +53,26 @@ signs:
       - --output-certificate=${certificate}
       - ${artifact}
 
+homebrew_casks:
+  - name: arca
+    repository:
+      owner: arenzana
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    # Publish only when the tap token is present; without it the cask is built but not pushed, so
+    # a release missing the secret still succeeds.
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}'
+    homepage: "https://github.com/arenzana/arca"
+    description: "age-encrypted, file-based secrets manager built to sit safely in front of AI agents"
+    # The binaries are cosign-signed but not Apple-notarized; strip the quarantine attribute so
+    # Gatekeeper doesn't block the cask-installed binary.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/arca"]
+          end
+
 release:
   prerelease: auto
   # Create as a draft so every asset (archives, checksums, signatures, SBOMs) is

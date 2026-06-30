@@ -44,6 +44,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Always set (empty if the secret is absent) so the goreleaser brews template resolves;
+          # the skip_upload guard then no-ops the Homebrew push when it's empty.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       # GitHub-native build provenance for every released artifact.
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
         with:
