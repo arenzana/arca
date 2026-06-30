@@ -96,8 +96,49 @@ func Load(path string) (*Store, error) {
 			return nil, fmt.Errorf("store %s: secret %q is null", path, name)
 		}
 	}
+	// Bring an older store up to the current schema in memory; the upgrade is persisted on the
+	// next Save (a read alone won't rewrite the file).
+	if err := s.migrate(); err != nil {
+		return nil, fmt.Errorf("migrate store %s: %w", path, err)
+	}
 	s.path = path
 	return &s, nil
+}
+
+// migration upgrades a store in place from schema version N to N+1.
+type migration func(*Store) error
+
+// migrations[N] upgrades a store from schema version N to N+1. When the on-disk shape changes
+// incompatibly: bump Version, then add the N→N+1 step here. Load applies the chain in order, so
+// an old store is always brought current.
+var migrations = map[int]migration{
+	// (none yet — version 1 is the initial schema)
+}
+
+// migrate brings the store up to the current Version by applying the registered migrations in
+// sequence. A version-0 store (one written before versioning, or hand-edited without the field)
+// is treated as the v1 baseline, whose shape is identical.
+func (s *Store) migrate() error {
+	if s.Version == 0 {
+		s.Version = 1
+	}
+	return applyMigrations(s, Version, migrations)
+}
+
+// applyMigrations is the version-stepping core, split out so it can be tested with a synthetic
+// target version and migration set (the real Version is a compile-time const).
+func applyMigrations(s *Store, target int, migs map[int]migration) error {
+	for s.Version < target {
+		m, ok := migs[s.Version]
+		if !ok {
+			return fmt.Errorf("no migration registered from store version %d to %d", s.Version, s.Version+1)
+		}
+		if err := m(s); err != nil {
+			return fmt.Errorf("migrate v%d->v%d: %w", s.Version, s.Version+1, err)
+		}
+		s.Version++
+	}
+	return nil
 }
 
 // Save writes the store atomically and with restrictive permissions:
