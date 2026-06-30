@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -207,5 +208,44 @@ func TestLoadTooLarge(t *testing.T) {
 	f.Close()
 	if _, err := Load(p); err == nil {
 		t.Fatal("expected an error for an oversized store")
+	}
+}
+
+// TestLoadUnversioned normalizes a store with no version field to the v1 baseline.
+func TestLoadUnversioned(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	if err := os.WriteFile(p, []byte(`{"recipients":["age1x"],"secrets":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Version != 1 {
+		t.Fatalf("an unversioned store should normalize to v1, got %d", s.Version)
+	}
+}
+
+// TestApplyMigrations exercises the version-stepping core with a synthetic migration chain.
+func TestApplyMigrations(t *testing.T) {
+	s := &Store{Version: 1}
+	migs := map[int]migration{
+		1: func(s *Store) error { s.Recipients = append(s.Recipients, "v2"); return nil },
+		2: func(s *Store) error { s.Recipients = append(s.Recipients, "v3"); return nil },
+	}
+	if err := applyMigrations(s, 3, migs); err != nil {
+		t.Fatal(err)
+	}
+	if s.Version != 3 || len(s.Recipients) != 2 {
+		t.Fatalf("after migrate: v%d recipients=%v", s.Version, s.Recipients)
+	}
+	// A missing step is an error.
+	if err := applyMigrations(&Store{Version: 1}, 3, map[int]migration{}); err == nil {
+		t.Fatal("expected an error for a missing migration step")
+	}
+	// A failing migration propagates.
+	boom := map[int]migration{1: func(*Store) error { return fmt.Errorf("boom") }}
+	if err := applyMigrations(&Store{Version: 1}, 2, boom); err == nil {
+		t.Fatal("expected the migration error to propagate")
 	}
 }
