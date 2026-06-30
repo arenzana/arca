@@ -40,6 +40,7 @@ type Secret struct {
 	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`       // hard expiry: reads/use refuse the value after this
 	NoPrint         bool              `json:"no_print,omitempty"`         // exec-only: never reveal to stdout
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
+	Canary          bool              `json:"canary,omitempty"`           // decoy: any use is a tripwire, alerted and audited
 	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
 }
 

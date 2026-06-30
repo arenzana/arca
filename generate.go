@@ -62,7 +62,7 @@ func newGenerate() *cobra.Command {
 	var length int
 	var charset, desc, ttl, expiresAt string
 	var tags []string
-	var noPrint, requireApproval, show bool
+	var noPrint, requireApproval, show, canary bool
 	c := &cobra.Command{
 		Use:   "generate NAME",
 		Short: "Create a secret with a random value",
@@ -116,6 +116,9 @@ func newGenerate() *cobra.Command {
 			if cmd.Flags().Changed("require-approval") {
 				sec.RequireApproval = requireApproval
 			}
+			if cmd.Flags().Changed("canary") {
+				sec.Canary = canary
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -138,5 +141,6 @@ func newGenerate() *cobra.Command {
 	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
 	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
 	c.Flags().BoolVar(&show, "show", false, "also print the generated value to stdout")
+	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
 	return c
 }

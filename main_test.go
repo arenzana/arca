@@ -298,6 +298,116 @@ func TestLogVerify(t *testing.T) {
 	}
 }
 
+// TestCanaryValue checks the decoy templates produce realistically-shaped tokens.
+func TestCanaryValue(t *testing.T) {
+	for tmpl, prefix := range map[string]string{"stripe": "sk_live_", "github": "ghp_", "aws": "AKIA", "slack": "xoxb-"} {
+		v, err := canaryValue(tmpl)
+		if err != nil {
+			t.Fatalf("%s: %v", tmpl, err)
+		}
+		if !strings.HasPrefix(v, prefix) {
+			t.Fatalf("%s -> %q, want prefix %q", tmpl, v, prefix)
+		}
+	}
+	if v, _ := canaryValue("generic"); len(v) < 20 {
+		t.Fatalf("generic decoy too short: %q", v)
+	}
+	if _, err := canaryValue("bogus"); err == nil {
+		t.Fatal("an unknown template should error")
+	}
+}
+
+// TestCanary covers the tripwire: planting a decoy, using it (via get and via exec) records a
+// distinct signed "canary" audit event, and `canary --list` reflects the trip.
+func TestCanary(t *testing.T) {
+	dir := sandbox(t)
+	// Run as a detected agent so a trip is attributed to the agent/session (the real case).
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-test")
+	runArca(t, "", "init")
+
+	// Early validation: an invalid name and an unknown template are rejected.
+	if err := runArcaErr("", "canary", "bad-name"); err == nil {
+		t.Fatal("an invalid canary name should error")
+	}
+	if err := runArcaErr("", "canary", "OK", "--template", "bogus"); err == nil {
+		t.Fatal("an unknown template should error")
+	}
+
+	// Plant a github-shaped decoy; reading it returns the realistic value AND trips.
+	runArca(t, "", "canary", "TRAP", "--template", "github")
+	if out := runArca(t, "", "get", "TRAP"); !strings.HasPrefix(out, "ghp_") {
+		t.Fatalf("decoy value = %q, want a ghp_ prefix", out)
+	}
+
+	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	evs, _ := a.Recent("TRAP", 50)
+	a.Close()
+	var sawCanary bool
+	for _, e := range evs {
+		if e.Op == "canary" {
+			sawCanary = true
+		}
+	}
+	if !sawCanary {
+		t.Fatal("using a canary was not recorded as a trip")
+	}
+
+	if list := runArca(t, "", "canary", "--list"); !strings.Contains(list, "TRAP") || !strings.Contains(list, "TRIPPED") {
+		t.Fatalf("canary --list = %q, want TRAP shown as TRIPPED", list)
+	}
+
+	// show (metadata, no value) doesn't trip; env (which uses every secret) does.
+	runArca(t, "", "show", "TRAP")
+	runArca(t, "", "env")
+
+	// set --canary marks an ordinary secret; using it via exec trips too.
+	runArca(t, "plainvalue", "set", "TRAP2", "--canary")
+	runArca(t, "", "exec", "--only", "TRAP2", "--", "true")
+	a2, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	_, n, _ := a2.LastOp("TRAP2", "canary")
+	a2.Close()
+	if n == 0 {
+		t.Fatal("exec of a canary did not trip")
+	}
+}
+
+// TestCanaryUnidentified trips a canary with no agent/actor in the environment, exercising the
+// "unidentified caller" attribution path.
+func TestCanaryUnidentified(t *testing.T) {
+	dir := sandbox(t)
+	for _, e := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT", "ARCA_ACTOR"} {
+		t.Setenv(e, "")
+	}
+	runArca(t, "", "init")
+	runArca(t, "decoyval", "set", "BAIT", "--canary")
+	runArca(t, "", "get", "BAIT")
+
+	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	_, n, _ := a.LastOp("BAIT", "canary")
+	a.Close()
+	if n == 0 {
+		t.Fatal("canary did not trip for an unidentified caller")
+	}
+}
+
+// TestCanaryList covers the listing: a non-canary is excluded, and an untripped canary shows as
+// "armed" (the no-trips branch).
+func TestCanaryList(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "ORDINARY") // not a canary
+	runArca(t, "", "canary", "FRESH")  // a canary, never used
+
+	out := runArca(t, "", "canary", "--list")
+	if strings.Contains(out, "ORDINARY") {
+		t.Fatalf("a non-canary should not be listed: %q", out)
+	}
+	if !strings.Contains(out, "FRESH") || !strings.Contains(out, "armed") {
+		t.Fatalf("an untripped canary should show as armed: %q", out)
+	}
+}
+
 // TestImportDotenv covers the default (dotenv) import path: blanks/comments are skipped, the
 // `export ` prefix and surrounding quotes are stripped, an invalid name is refused, and every
 // imported secret is recorded in the audit log (a bulk load must not be a blind spot).
