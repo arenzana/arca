@@ -27,6 +27,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 - [Features](#features)
 - [Install](#install)
 - [Quickstart](#quickstart)
+- [Recipes](#recipes)
 - [The model](#the-model)
 - [Command reference](#command-reference)
 - [Configuration (ops)](#configuration-ops)
@@ -131,6 +132,89 @@ Migrate an existing sops dotenv:
 
 ```sh
 sops -d ~/.dotfiles/secrets/secrets.env | arca import
+```
+
+---
+
+## Recipes
+
+**Use a secret in a command — never on stdout**
+
+```sh
+arca exec -- terraform apply
+arca exec --only AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY -- terraform apply   # least privilege
+```
+
+**Render a config from a template** (the value only lands in the rendered file):
+
+```sh
+echo 'database_url = "arca://DATABASE_URL"' > app.toml.tmpl
+echo 'api_key      = "arca://STRIPE_KEY"'  >> app.toml.tmpl
+arca inject < app.toml.tmpl > app.toml
+```
+
+**Generate, then rotate on a schedule:**
+
+```sh
+arca generate DB_PASSWORD --length 40 --no-print      # random value, exec-only
+arca rotate   DB_PASSWORD --rotate-after 2026-12-01    # new value + next rotation date
+arca stale --within 30                                 # what's due (or expired) in 30 days
+```
+
+**Short-lived tokens:**
+
+```sh
+arca generate CI_DEPLOY_TOKEN --ttl 1h                 # refused on every path after an hour
+```
+
+**Exec-only and human-approved secrets:**
+
+```sh
+arca set PROD_DB_PASSWORD --no-print                   # get/env/inject refuse to print it
+arca set ROOT_SIGNING_KEY --require-approval           # a human confirms each release on the TTY
+```
+
+**Share with a teammate** (add their age public key, re-wrap the store):
+
+```sh
+arca recipients add age1teammate...
+arca reencrypt
+```
+
+**Load into a shell or write a dotenv:**
+
+```sh
+eval "$(arca env)"                                     # export every non-no-print secret
+arca env --no-export > .env
+```
+
+**Use from an AI agent (MCP):**
+
+```sh
+claude mcp add arca -- arca mcp
+# the agent calls run_with_secrets to USE a secret without seeing it, and read_secret
+# (policy-gated, audited) only when the value must enter its context.
+```
+
+**Audit — who touched what:**
+
+```sh
+arca log                       # recent access across all secrets
+arca log PROD_DB_PASSWORD      # one secret, with agent / session / actor
+arca ls --reads                # last-read time + count per secret
+```
+
+**Keep the store in a dotfiles repo** (the JSON diffs cleanly; the audit DB stays local):
+
+```sh
+export ARCA_STORE=~/.dotfiles/arca/store.json
+```
+
+**Script against JSON output:**
+
+```sh
+arca ls --json | jq -r '.[] | select(.expired) | .name'    # expired secrets
+arca log --json | jq '.[] | {op, name, agent, time}'
 ```
 
 ---

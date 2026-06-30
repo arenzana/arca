@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arca — age-encrypted secrets, safe in front of AI agents</title>
+<meta name="description" content="A small, file-based secrets manager built on age — designed to sit safely in front of AI agents.">
+<link rel="icon" type="image/png" sizes="64x64" href="favicon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="arca — age-encrypted secrets, safe in front of AI agents">
+<meta property="og:description" content="A small, file-based secrets manager built on age, designed to sit safely in front of AI agents.">
+<meta property="og:url" content="https://arenzana.github.io/arca/">
+<meta property="og:image" content="https://arenzana.github.io/arca/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="arca — age-encrypted secrets, safe in front of AI agents">
+<meta name="twitter:image" content="https://arenzana.github.io/arca/og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --teal:#3FA39B; --teal-dark:#2E7D78; --teal-deep:#1f5b57; --teal-light:#8FCEC8; --teal-bg:#E8F5F2;
+    --coral:#EC8B77; --coral-deep:#d97560;
+    --cream:#FBF8F1; --paper:#fff;
+    --ink:#273a38; --muted:#6a8682;
+    --radius:22px; --shadow:0 16px 40px -18px rgba(31,91,87,.35);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; font-family:Quicksand,system-ui,sans-serif; color:var(--ink);
+    background:var(--cream);
+    background-image:radial-gradient(1100px 520px at 50% -240px, var(--teal-bg), transparent 70%);
+    line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--teal-dark); text-decoration:none}
+  .wrap{max-width:980px; margin:0 auto; padding:0 22px}
+  code,pre{font-family:"JetBrains Mono",ui-monospace,monospace}
+
+  /* nav */
+  nav{display:flex; align-items:center; justify-content:space-between; padding:20px 22px; max-width:980px; margin:0 auto}
+  nav .brand{display:flex; align-items:center; gap:10px; font-weight:700; font-size:1.15rem; color:var(--teal-deep)}
+  nav .brand img{width:34px;height:34px}
+  nav .links{display:flex; gap:22px; font-weight:600}
+  nav .links a{color:var(--muted)}
+  nav .links a:hover{color:var(--teal-dark)}
+
+  /* hero */
+  header{text-align:center; padding:34px 0 18px; position:relative}
+  .logo{width:172px; height:172px; filter:drop-shadow(0 18px 26px rgba(31,91,87,.28)); animation:bob 5s ease-in-out infinite}
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
+  h1{font-size:3.6rem; margin:.15em 0 .05em; font-weight:700; color:var(--teal-deep); letter-spacing:-.5px}
+  .latin{color:var(--muted); font-style:italic; font-size:1.05rem; margin:0 0 .5em}
+  .tagline{font-size:1.32rem; font-weight:500; max-width:30ch; margin:.2em auto .1em}
+  .tagline b{color:var(--coral-deep)}
+
+  .install-pill{
+    display:inline-flex; align-items:center; gap:12px; margin:26px 0 8px; padding:13px 20px;
+    background:var(--paper); border:2px solid var(--teal-light); border-radius:999px;
+    box-shadow:var(--shadow); font-family:"JetBrains Mono",monospace; font-size:1rem; color:var(--teal-deep);
+    cursor:pointer; transition:border-color .15s, transform .15s;
+  }
+  .install-pill:hover{border-color:var(--teal); transform:translateY(-2px)}
+  .install-pill .dollar{color:var(--coral)}
+  .install-pill .copy{font-family:Quicksand; font-weight:600; font-size:.8rem; color:#fff; background:var(--teal); padding:5px 11px; border-radius:999px; transition:background .15s}
+  .install-pill:hover .copy{background:var(--teal-dark)}
+
+  /* terminal copy button */
+  .tcopy{margin-left:auto; font-family:Quicksand; font-weight:600; font-size:.72rem; color:#bfe0db;
+    background:rgba(255,255,255,.08); border:0; border-radius:999px; padding:4px 11px; cursor:pointer; transition:background .15s}
+  .tcopy:hover{background:rgba(255,255,255,.18)}
+
+  .cta{display:flex; gap:14px; justify-content:center; flex-wrap:wrap; margin-top:18px}
+  .btn{display:inline-block; padding:12px 24px; border-radius:999px; font-weight:700; transition:transform .15s, box-shadow .15s}
+  .btn:hover{transform:translateY(-2px)}
+  .btn.primary{background:var(--teal); color:#fff; box-shadow:0 12px 24px -10px rgba(63,163,155,.8)}
+  .btn.ghost{background:#fff; color:var(--teal-deep); border:2px solid var(--teal-light)}
+
+  /* sparkles */
+  .spark{position:absolute; color:var(--teal-light); user-select:none; animation:tw 3.4s ease-in-out infinite}
+  .spark.coral{color:var(--coral-soft,#f3a693)}
+  @keyframes tw{0%,100%{opacity:.35; transform:scale(.85)}50%{opacity:1; transform:scale(1.15)}}
+
+  /* wavy divider echoing the box rim */
+  .wave{display:block; width:100%; height:46px; margin-top:26px}
+
+  /* features */
+  section{padding:14px 0 8px}
+  .eyebrow{text-align:center; text-transform:uppercase; letter-spacing:2px; font-size:.78rem; font-weight:700; color:var(--teal); margin-bottom:4px}
+  h2{text-align:center; font-size:1.9rem; color:var(--teal-deep); margin:.1em 0 .7em}
+  .grid{display:grid; grid-template-columns:repeat(2,1fr); gap:18px}
+  .card{background:var(--paper); border-radius:var(--radius); padding:22px 22px 20px; box-shadow:var(--shadow); border-top:4px solid var(--teal)}
+  .card:nth-child(even){border-top-color:var(--coral)}
+  .card .ico{font-size:1.7rem}
+  .card h3{margin:.35em 0 .25em; font-size:1.18rem; color:var(--teal-deep)}
+  .card p{margin:0; color:var(--muted); font-size:.97rem}
+  .card code{background:var(--teal-bg); color:var(--teal-dark); padding:1px 6px; border-radius:6px; font-size:.85em}
+
+  /* recipes */
+  .recipes{display:grid; gap:16px}
+  .recipe{background:var(--paper); border-radius:var(--radius); padding:20px 22px; box-shadow:var(--shadow); border-left:5px solid var(--teal)}
+  .recipe:nth-child(2){border-left-color:var(--coral)}
+  .recipe h3{margin:0 0 .15em; font-size:1.16rem; color:var(--teal-deep)}
+  .recipe p{margin:0 0 13px; color:var(--muted); font-size:.97rem}
+  .recipe p i{color:var(--coral-deep); font-style:normal; font-weight:600}
+  .snip{background:#22403d; color:#e7f4f1; border-radius:13px; padding:14px 16px; margin:0;
+    font-family:"JetBrains Mono",monospace; font-size:.86rem; overflow-x:auto; white-space:pre-wrap; line-height:1.7}
+  .snip .c{color:#7fc8c2} .snip .d{color:#EC8B77}
+
+  /* terminal blocks */
+  .terms{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
+  .term{background:#22403d; border-radius:16px; overflow:hidden; box-shadow:var(--shadow)}
+  .term .bar{display:flex; gap:6px; padding:11px 14px; background:#1b3431}
+  .term .bar i{width:11px;height:11px;border-radius:50%;display:inline-block}
+  .term .bar .r{background:#EC8B77}.term .bar .y{background:#e9c26b}.term .bar .g{background:#7fc8c2}
+  .term .body{padding:16px 16px; color:#dff3f0; font-family:"JetBrains Mono",monospace; font-size:.86rem; white-space:pre-wrap}
+  .term .body .c{color:#7fc8c2}
+  .term .label{padding:0 16px 14px; color:#9fc4c0; font-size:.78rem; font-family:Quicksand; font-weight:600}
+
+  .qs{background:#22403d; border-radius:18px; box-shadow:var(--shadow); margin-top:8px}
+  .qs .body{padding:20px 22px; color:#dff3f0; font-family:"JetBrains Mono",monospace; font-size:.9rem; white-space:pre; overflow-x:auto}
+  .qs .c{color:#86c9c2}.qs .k{color:#f0a791}
+
+  footer{text-align:center; color:var(--muted); padding:40px 0 50px; font-size:.95rem}
+  footer a{font-weight:600}
+  footer .heart{color:var(--coral)}
+
+  @media (max-width:720px){
+    h1{font-size:2.8rem}
+    .grid,.terms{grid-template-columns:1fr}
+    nav .links{display:none}
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="brand"><img src="arca-light.png" alt="">arca</span>
+  <span class="links">
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/arenzana/arca">GitHub ↗</a>
+  </span>
+</nav>
+
+<header>
+  <span class="spark" style="left:16%;top:30px;font-size:1.5rem">✦</span>
+  <span class="spark coral" style="right:18%;top:120px;font-size:1rem;animation-delay:.8s">✦</span>
+  <span class="spark" style="right:11%;top:18px;font-size:1.1rem;animation-delay:1.4s">✦</span>
+  <div class="wrap">
+    <img class="logo" src="arca-light.png" alt="arca — a teal strongbox with a heart lock">
+    <h1>arca</h1>
+    <p class="latin">/ˈar.ka/ · Latin: a strongbox for keeping valuables under lock</p>
+    <p class="tagline">age-encrypted secrets, kept <b>safely in front of AI agents</b>.</p>
+
+    <button class="install-pill" data-copy="brew install arenzana/tap/arca" title="Copy to clipboard"><span class="dollar">$</span> brew install arenzana/tap/arca <span class="copy">copy</span></button>
+
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/arenzana/arca">Get started</a>
+      <a class="btn ghost" href="https://github.com/arenzana/arca/releases">Releases</a>
+    </div>
+  </div>
+  <svg class="wave" viewBox="0 0 1200 46" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M0,30 C150,6 250,6 400,26 C560,48 640,48 800,26 C950,6 1050,6 1200,30 L1200,46 L0,46 Z" fill="var(--teal-bg)"/>
+  </svg>
+</header>
+
+<section id="features" class="wrap">
+  <div class="eyebrow">why arca</div>
+  <h2>Small, file-based, agent-safe</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="ico">🔒</div>
+      <h3>Encrypted at rest</h3>
+      <p>Per-value <b>age</b> ciphertext with cleartext metadata in one JSON store. Reuses your existing sops key. No daemon, no account.</p>
+    </div>
+    <div class="card">
+      <div class="ico">🪄</div>
+      <h3>Use without revealing</h3>
+      <p>A command <code>exec</code>s with a secret, or a config <code>inject</code>s a reference — the value never reaches stdout or an agent's context.</p>
+    </div>
+    <div class="card">
+      <div class="ico">📓</div>
+      <h3>Audited &amp; fail-closed</h3>
+      <p>Every access is logged with the calling agent, version, and session. If it can't be recorded, it doesn't happen.</p>
+    </div>
+    <div class="card">
+      <div class="ico">🤖</div>
+      <h3>Built for AI agents</h3>
+      <p>An <code>arca mcp</code> server exposes audited tools, plus per-secret <code>--no-print</code>, approval gates, and TTLs an agent can't bypass.</p>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="wrap">
+  <div class="eyebrow">install</div>
+  <h2>Pick your platform</h2>
+  <div class="terms">
+    <div class="term">
+      <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><button class="tcopy" data-copy="brew install arenzana/tap/arca">copy</button></div>
+      <div class="body"><span class="c"># macOS / Linux</span>
+brew install \
+  arenzana/tap/arca</div>
+      <div class="label">Homebrew</div>
+    </div>
+    <div class="term">
+      <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><button class="tcopy" data-copy="scoop bucket add arenzana https://github.com/arenzana/scoop-bucket&#10;scoop install arca">copy</button></div>
+      <div class="body"><span class="c"># Windows</span>
+scoop bucket add \
+  arenzana …
+scoop install arca</div>
+      <div class="label">Scoop</div>
+    </div>
+    <div class="term">
+      <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><button class="tcopy" data-copy="go install github.com/arenzana/arca@latest">copy</button></div>
+      <div class="body"><span class="c"># anywhere with Go</span>
+go install \
+  github.com/arenzana/arca@latest</div>
+      <div class="label">go install</div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="eyebrow">quickstart</div>
+  <h2>Thirty seconds in</h2>
+  <div class="qs"><div class="body"><span class="c"># reuse your sops key, or generate one</span>
+arca <span class="k">init</span>
+printf <span class="c">'%s'</span> <span class="c">"$TOKEN"</span> | arca <span class="k">set</span> GITHUB_TOKEN --tag ci
+
+<span class="c"># use it without it ever hitting stdout</span>
+arca <span class="k">exec</span> -- terraform apply
+
+<span class="c"># generate, expire, and audit</span>
+arca <span class="k">generate</span> DB_PASSWORD --length 32 --no-print
+arca <span class="k">set</span> TMP_TOKEN --ttl 1h
+arca <span class="k">log</span> GITHUB_TOKEN</div></div>
+</section>
+
+<section id="recipes" class="wrap">
+  <div class="eyebrow">in practice</div>
+  <h2>What makes it different</h2>
+  <div class="recipes">
+    <div class="recipe">
+      <h3>🪄 Use a secret without revealing it</h3>
+      <p>A command gets the value in its environment — it <i>never</i> touches stdout or an agent's context.</p>
+      <pre class="snip"><span class="d">$</span> arca exec -- terraform apply</pre>
+    </div>
+    <div class="recipe">
+      <h3>🤖 Hand an agent secrets it can't read</h3>
+      <p>Over MCP, an agent runs commands <i>with</i> a secret while the value stays out of the model.</p>
+      <pre class="snip"><span class="d">$</span> claude mcp add arca -- arca mcp
+<span class="c"># the agent calls run_with_secrets — it uses the value, never sees it</span></pre>
+    </div>
+    <div class="recipe">
+      <h3>⏳ Random, expiring, exec-only — and audited</h3>
+      <p>Generate a token that's never printed, expires in an hour, and logs every use.</p>
+      <pre class="snip"><span class="d">$</span> arca generate API_TOKEN --ttl 1h --no-print
+<span class="d">$</span> arca log API_TOKEN     <span class="c"># who used it, and when</span></pre>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Made with <span class="heart">♥</span> and <a href="https://github.com/FiloSottile/age">age</a> ·
+  <a href="https://github.com/arenzana/arca">GitHub</a> ·
+  <a href="https://github.com/arenzana/arca/releases">Releases</a> ·
+  <a href="https://github.com/arenzana/arca/blob/main/SECURITY.md">Security</a><br>
+  MIT licensed · cosign-signed releases with SLSA provenance
+</footer>
+
+<script>
+  document.querySelectorAll('[data-copy]').forEach(function(el){
+    el.addEventListener('click', function(){
+      if (navigator.clipboard) navigator.clipboard.writeText(el.dataset.copy);
+      var tag = el.querySelector('.copy') || el; // pill: inner badge; terminal: the button itself
+      var prev = tag.textContent;
+      tag.textContent = 'copied!';
+      setTimeout(function(){ tag.textContent = prev; }, 1400);
+    });
+  });
+</script>
+
+</body>
+</html>
