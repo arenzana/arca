@@ -22,6 +22,10 @@ Do **not** open public issues for vulnerabilities. We aim to acknowledge within 
 
 ## Trust model & boundaries
 
+The system's actors and components are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+and the full security assessment — assets, threats, and how each is addressed — in
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
 arca runs with the invoking user's privileges; it raises the bar for a *cooperating* AI agent,
 not a hostile local user (who could bypass arca entirely). Specifically:
 

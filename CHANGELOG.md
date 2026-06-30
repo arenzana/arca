@@ -10,6 +10,12 @@ All notable changes to arca are documented here. The format follows
 - `STABILITY.md` — the v1.0 SemVer policy: which surfaces (commands, exit codes, store schema,
   `arca://` references, `ARCA_*` config, `--json` output, MCP tools) are stable, and what isn't.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and issue/PR templates.
+- `MAINTAINERS.md` — maintainers, roles, and who holds access to sensitive resources.
+- `docs/ARCHITECTURE.md` — design documentation (actors, components, and the agent-aware
+  policy invariant) and `docs/THREAT-MODEL.md` — the documented security assessment.
+- Developer Certificate of Origin: a `Signed-off-by` trailer is now required on every commit
+  and enforced by a `dco` CI check; `CONTRIBUTING.md` documents `git commit -s`.
+- `CONTRIBUTING.md` now documents how dependencies are selected, obtained, and tracked.
 
 ## [0.3.0] - 2026-06-30
 
