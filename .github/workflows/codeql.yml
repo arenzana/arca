@@ -15,6 +15,7 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     permissions:
+      contents: read # checkout (job-level perms replace the workflow default)
       security-events: write
     strategy:
       fail-fast: false
