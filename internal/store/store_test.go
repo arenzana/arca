@@ -148,3 +148,19 @@ func TestSaveRenameError(t *testing.T) {
 		t.Fatal("expected Save to fail renaming over a directory")
 	}
 }
+
+// TestExpired covers the hard-expiry predicate: no expiry → never; past → expired; future → not.
+func TestExpired(t *testing.T) {
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+	if (&Secret{}).Expired(now) {
+		t.Fatal("a secret with no expiry must not be expired")
+	}
+	if !(&Secret{ExpiresAt: &past}).Expired(now) {
+		t.Fatal("a past expiry must be expired")
+	}
+	if (&Secret{ExpiresAt: &future}).Expired(now) {
+		t.Fatal("a future expiry must not be expired")
+	}
+}
