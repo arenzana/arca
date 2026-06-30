@@ -34,6 +34,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 - [Designed for AI agents](#designed-for-ai-agents)
 - [MCP server](#mcp-server)
 - [Security & supply chain](#security--supply-chain)
+- [Stability](#stability)
 - [License](#license)
 
 ---
@@ -315,6 +316,15 @@ attestations on every release. CI runs `go vet`, `go test -race` (~92% coverage,
 `go mod verify`, `govulncheck`, **CodeQL**, **OpenSSF Scorecard**, dependency review, and
 **SHA-pinned** actions under a hardened runner. See [SECURITY.md](SECURITY.md) for the disclosure
 policy and release-verification steps.
+
+---
+
+## Stability
+
+From v1.0, arca follows [Semantic Versioning](https://semver.org). [STABILITY.md](STABILITY.md)
+defines exactly which surfaces are covered — commands/flags, exit codes, the store schema,
+`arca://` references, the `ARCA_*` configuration, `--json` output, and the MCP tools — and what
+may change (human-readable text, internal packages). Parse `--json`, not the table output.
 
 ---
 
