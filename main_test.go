@@ -214,3 +214,82 @@ func TestNoPrintAndInject(t *testing.T) {
 		t.Fatalf("exec no-print = %q", out)
 	}
 }
+
+// TestImportDotenv covers the default (dotenv) import path: blanks/comments are skipped, the
+// `export ` prefix and surrounding quotes are stripped, an invalid name is refused, and every
+// imported secret is recorded in the audit log (a bulk load must not be a blind spot).
+func TestImportDotenv(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+
+	in := "# a comment\n\nexport TOKEN=\"abc123\"\nDB_URL='postgres://x'\nJUSTAWORD\nbad-name=nope\n"
+	runArca(t, in, "import")
+
+	if out := runArca(t, "", "get", "TOKEN"); out != "abc123" {
+		t.Fatalf("TOKEN = %q, want abc123", out)
+	}
+	if out := runArca(t, "", "get", "DB_URL"); out != "postgres://x" {
+		t.Fatalf("DB_URL = %q", out)
+	}
+	if err := runArcaErr("", "get", "bad-name"); err == nil {
+		t.Fatal("an invalid name must not be imported")
+	}
+
+	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	defer a.Close()
+	evs, _ := a.Recent("TOKEN", 50)
+	var sawImport bool
+	for _, e := range evs {
+		if e.Op == "import" {
+			sawImport = true
+		}
+	}
+	if !sawImport {
+		t.Fatal("import was not audited")
+	}
+}
+
+// TestImportJSON covers `import --json`: string values pass through (including a multi-line
+// PEM that dotenv could not carry), numbers and booleans are stringified, and null / nested
+// values are skipped rather than stored.
+func TestImportJSON(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+
+	pem := "-----BEGIN KEY-----\nline1\nline2\n-----END KEY-----"
+	js := `{
+	  "API_KEY": "k-123",
+	  "PORT": 8080,
+	  "ENABLED": true,
+	  "TLS_KEY": "` + strings.ReplaceAll(pem, "\n", `\n`) + `",
+	  "bad-name": "skipme",
+	  "NOPE_NULL": null,
+	  "NOPE_OBJ": {"x": 1}
+	}`
+	runArca(t, js, "import", "--json")
+
+	if err := runArcaErr("", "get", "bad-name"); err == nil {
+		t.Fatal("an invalid name in JSON must be skipped")
+	}
+	// Malformed JSON is a hard error, not a silent no-op.
+	if err := runArcaErr("{not json", "import", "--json"); err == nil {
+		t.Fatal("expected --json on malformed input to fail")
+	}
+
+	cases := map[string]string{
+		"API_KEY": "k-123",
+		"PORT":    "8080",
+		"ENABLED": "true",
+		"TLS_KEY": pem,
+	}
+	for name, want := range cases {
+		if out := runArca(t, "", "get", name); out != want {
+			t.Fatalf("get %s = %q, want %q", name, out, want)
+		}
+	}
+	for _, name := range []string{"NOPE_NULL", "NOPE_OBJ"} {
+		if err := runArcaErr("", "get", name); err == nil {
+			t.Fatalf("%s should have been skipped, not stored", name)
+		}
+	}
+}
