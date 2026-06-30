@@ -26,7 +26,7 @@ import (
 // LoadIdentities parses one or more age identities (private keys) from a key file such as
 // ~/.config/sops/age/keys.txt. Comment lines are ignored by age's parser.
 func LoadIdentities(path string) ([]age.Identity, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //#nosec G304 -- the identity path is operator-controlled (config/env), not untrusted input
 	if err != nil {
 		return nil, fmt.Errorf("open identity %s: %w", path, err)
 	}

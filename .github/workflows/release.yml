@@ -18,7 +18,25 @@ jobs:
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
         with:
-          egress-policy: audit
+          # Block egress on the privileged, OIDC-signing release job. The allowlist covers the
+          # Go toolchain, GoReleaser/GitHub, and Sigstore (cosign/Fulcio/Rekor/TUF). If a real
+          # release ever needs another host, harden-runner names the blocked endpoint and the
+          # release fails closed (an unpublished draft) — add it here, nothing ships broken.
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            github.com:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            rekor.sigstore.dev:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            token.actions.githubusercontent.com:443
+            tuf-repo-cdn.sigstore.dev:443
+            uploads.github.com:443
+            vuln.go.dev:443
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
@@ -46,6 +64,7 @@ jobs:
           subject-path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/checksums.txt
       # Publish only now that every asset and attestation is in place. With immutable
       # releases enabled, publishing locks the tag + assets, so this must be the last step.
       - name: publish release
