@@ -9,6 +9,9 @@ All notable changes to arca are documented here. The format follows
 ### Added
 - `generate NAME` creates a secret with a cryptographically-random value (`--length`,
   `--charset alnum|hex|full|<custom>`, `--show`), so a password/token is never typed.
+- `edit NAME` opens a secret's value in `$EDITOR` and re-encrypts it on save (the plaintext
+  touches a `0600` temp file, scrubbed and removed afterward).
+- `rename OLD NEW` (alias `mv`) renames a secret while preserving its metadata and history.
 - Homebrew install via a tap: `brew install arenzana/tap/arca` (the cask is published to
   `arenzana/homebrew-tap` on each release).
 - Scoop install on Windows (the manifest is published to `arenzana/scoop-bucket` on release).
