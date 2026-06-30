@@ -6,6 +6,11 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `STABILITY.md` — the v1.0 SemVer policy: which surfaces (commands, exit codes, store schema,
+  `arca://` references, `ARCA_*` config, `--json` output, MCP tools) are stable, and what isn't.
+- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and issue/PR templates.
+
 ## [0.3.0] - 2026-06-30
 
 ### Added
