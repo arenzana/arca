@@ -479,6 +479,11 @@ func newSet() *cobra.Command {
 			if err := validName(name); err != nil {
 				return err
 			}
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			s, err := openStore()
 			if err != nil {
 				return err
@@ -756,6 +761,11 @@ func newRm() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			s, err := openStore()
 			if err != nil {
 				return err
@@ -784,6 +794,11 @@ func newImport() *cobra.Command {
 		Short: "Import KEY=value (dotenv) lines from stdin",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			s, err := openStore()
 			if err != nil {
 				return err
@@ -1092,6 +1107,11 @@ func newRotate() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			s, err := openStore()
 			if err != nil {
 				return err

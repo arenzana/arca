@@ -41,6 +41,11 @@ func newRecipientsAdd() *cobra.Command {
 		Short: "Add age recipient(s) (run `reencrypt` to apply to existing secrets)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			s, err := openStore()
 			if err != nil {
 				return err
@@ -76,6 +81,11 @@ func newRecipientsRm() *cobra.Command {
 		Short: "Remove age recipient(s) (run `reencrypt` so they can no longer decrypt)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			s, err := openStore()
 			if err != nil {
 				return err
@@ -113,6 +123,11 @@ func newReencrypt() *cobra.Command {
 		Short: "Re-encrypt every secret to the current recipient set",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
 			s, err := openStore()
 			if err != nil {
 				return err

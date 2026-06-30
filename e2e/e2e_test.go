@@ -9,12 +9,14 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -269,6 +271,41 @@ func TestJSONAndRecipients(t *testing.T) {
 	}
 	if _, _, code := b.run(t, "", "recipients", "add", "not-a-key"); code == 0 {
 		t.Fatal("expected an invalid recipient to be rejected")
+	}
+}
+
+// TestConcurrentSet launches many `arca set` processes at once; the store lock must serialize
+// them so every secret lands (without locking, the read-modify-write would lose updates).
+func TestConcurrentSet(t *testing.T) {
+	b := sandbox(t)
+	b.must(t, "", "init")
+
+	const n = 8
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cmd := exec.Command(bin, "set", fmt.Sprintf("K%d", i))
+			cmd.Env = append(os.Environ(), b.env...)
+			cmd.Stdin = strings.NewReader("v")
+			errs <- cmd.Run()
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		if e != nil {
+			t.Fatalf("a concurrent set failed (lock timeout too short?): %v", e)
+		}
+	}
+
+	out := b.must(t, "", "ls")
+	for i := 0; i < n; i++ {
+		if !strings.Contains(out, fmt.Sprintf("K%d", i)) {
+			t.Errorf("lost update: K%d missing from the store", i)
+		}
 	}
 }
 
