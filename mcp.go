@@ -214,6 +214,10 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		if sec == nil {
 			return mcp.NewToolResultError("no such secret: " + name), nil
 		}
+		// Defense in depth: refuse to inject a name that isn't a valid identifier (poisoned store).
+		if err := validName(name); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		if err := gate(sec, name); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
