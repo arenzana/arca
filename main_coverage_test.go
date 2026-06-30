@@ -508,11 +508,17 @@ func TestImportBadRecipient(t *testing.T) {
 func TestMainEntry(t *testing.T) {
 	oldArgs, oldOut := os.Args, os.Stdout
 	defer func() { os.Args, os.Stdout = oldArgs, oldOut }()
-	_, w, _ := os.Pipe()
-	os.Stdout = w
+	// Use a temp file, not a pipe with a discarded read end: an unread pipe whose reader is
+	// GC-closed mid-write breaks the write, which would make main() os.Exit(1) and kill the test
+	// binary — an intermittent cross-OS flake.
+	f, err := os.CreateTemp("", "arca-main-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { f.Close(); os.Remove(f.Name()) }()
+	os.Stdout = f
 	os.Args = []string{"arca", "--version"}
 	main()
-	w.Close()
 }
 
 // FuzzShellQuote checks shellQuote never panics and always returns a single-quoted string,
