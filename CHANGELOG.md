@@ -7,6 +7,12 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Output redaction on `exec`** — if a command prints an injected secret, arca replaces the
+  value with `«arca:NAME»` in the captured stdout/stderr before it reaches whoever is reading
+  (an AI agent, a log), and records the catch in the audit log (`op=redact`). It's streaming
+  (a value split across writes is still caught) and on by default for captured output, stepping
+  aside for an interactive terminal. `--redact on|off` forces the behavior; `--reveal` shows a
+  partial mask of long values instead of the name. Values under 4 characters aren't scanned.
 - `STABILITY.md` — the v1.0 SemVer policy: which surfaces (commands, exit codes, store schema,
   `arca://` references, `ARCA_*` config, `--json` output, MCP tools) are stable, and what isn't.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and issue/PR templates.
