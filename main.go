@@ -239,18 +239,40 @@ func contains(ss []string, x string) bool {
 // shellQuote single-quotes a value for safe `eval` in a POSIX shell (used by `env`).
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
+// nameRe is the allowed shape of a secret name: a valid shell / environment-variable
+// identifier. Enforced on every write (set/import) so a name can never inject shell when
+// emitted by `env` (used via `eval "$(arca env)"`) or hijack a variable like LD_PRELOAD when
+// injected by `exec`. `inject` already restricts arca://NAME references to this same shape.
+var nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validName rejects names that aren't safe identifiers.
+func validName(name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid secret name %q: must match [A-Za-z_][A-Za-z0-9_]*", name)
+	}
+	return nil
+}
+
 // approve enforces a per-secret human approval gate before a value is released.
 //
-// ARCA_APPROVAL=allow|deny short-circuits the prompt (for trusted automation, tests, or
-// MCP-mediated approval). Otherwise it prompts on the controlling terminal (/dev/tty, so it
-// works even when stdin is piped). With no override and no terminal, access is DENIED — an
-// agent can't self-approve.
+// ARCA_APPROVAL=deny always short-circuits to a refusal (fail-safe; it can only restrict).
+// ARCA_APPROVAL=allow pre-approves ONLY for a non-agent caller — an inherited env var is not
+// proof of human consent, so when the caller looks like an AI agent the allow is ignored and a
+// real terminal confirmation is required (which an agent won't have). Otherwise it prompts on
+// the controlling terminal (/dev/tty, so it works even when stdin is piped). With no honored
+// override and no terminal, access is DENIED — an agent can't self-approve.
 func approve(name, who string) error {
 	switch strings.ToLower(os.Getenv("ARCA_APPROVAL")) {
-	case "allow", "yes", "1", "approve":
-		return nil
 	case "deny", "no", "0":
 		return fmt.Errorf("approval denied for %s", name)
+	case "allow", "yes", "1", "approve":
+		// Only honor a pre-approval when the caller is NOT a detected AI agent. An agent that
+		// controls its own environment must not be able to self-approve, so reject outright
+		// rather than fall through to a prompt it could never satisfy.
+		if detectIdentity().Agent == "" {
+			return nil
+		}
+		return fmt.Errorf("%s requires human approval; an AI agent cannot self-approve via ARCA_APPROVAL", name)
 	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
@@ -416,6 +438,9 @@ func newSet() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			if err := validName(name); err != nil {
+				return err
+			}
 			s, err := openStore()
 			if err != nil {
 				return err
@@ -743,6 +768,10 @@ func newImport() *cobra.Command {
 					continue
 				}
 				k = strings.TrimSpace(k)
+				if validName(k) != nil { // never import a name that could inject downstream
+					fmt.Fprintf(os.Stderr, "skip %q: not a valid secret name\n", k)
+					continue
+				}
 				v = strings.Trim(strings.TrimSpace(v), `"'`) // drop surrounding quotes
 				armored, err := crypto.Encrypt([]byte(v), recips)
 				if err != nil {
@@ -872,6 +901,12 @@ func newExec() *cobra.Command {
 				if sec == nil {
 					return fmt.Errorf("no such secret: %s", name)
 				}
+				// Defense in depth against a poisoned/hand-edited store: never inject a name
+				// that isn't a valid identifier (e.g. LD_PRELOAD-style or `=`-bearing names).
+				if validName(name) != nil {
+					fmt.Fprintf(os.Stderr, "skip %q: not a valid env name\n", name)
+					continue
+				}
 				if err := gate(sec, name); err != nil {
 					return err
 				}
@@ -922,6 +957,13 @@ func newEnv() *cobra.Command {
 				return err
 			}
 			for _, name := range s.Names() {
+				// Defense in depth: never emit `export <name>=…` for a name that isn't a valid
+				// identifier — a crafted name in a poisoned store could otherwise inject shell
+				// when the output is run via `eval "$(arca env)"`.
+				if validName(name) != nil {
+					fmt.Fprintf(os.Stderr, "skip %q: not a valid env name\n", name)
+					continue
+				}
 				if s.Secrets[name].NoPrint {
 					fmt.Fprintf(os.Stderr, "skip %s (--no-print)\n", name)
 					continue

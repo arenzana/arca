@@ -56,10 +56,27 @@ func sandbox(t *testing.T) box {
 	}}
 }
 
+// dedupeEnv collapses KEY=value pairs so a later occurrence overrides an earlier one — this
+// lets b.env and `extra` reliably override an ambient variable (e.g. clearing CLAUDECODE).
+func dedupeEnv(pairs []string) []string {
+	idx := map[string]int{}
+	out := []string{}
+	for _, kv := range pairs {
+		k, _, _ := strings.Cut(kv, "=")
+		if i, ok := idx[k]; ok {
+			out[i] = kv
+		} else {
+			idx[k] = len(out)
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 func (b box) runEnv(t *testing.T, extra []string, stdin string, args ...string) (out, errOut string, code int) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(append(os.Environ(), b.env...), extra...)
+	cmd.Env = dedupeEnv(append(append(os.Environ(), b.env...), extra...))
 	cmd.Stdin = strings.NewReader(stdin)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
@@ -164,13 +181,19 @@ func TestPolicies(t *testing.T) {
 		t.Fatalf("exec no-print = %q", out)
 	}
 
-	// --require-approval: denied with no terminal; allowed via ARCA_APPROVAL
+	// --require-approval: denied with no terminal.
 	b.must(t, "v", "set", "GATED", "--require-approval")
 	if _, _, code := b.run(t, "", "get", "GATED"); code == 0 {
 		t.Fatal("expected get to be denied (no terminal to approve)")
 	}
-	if out, _, code := b.runEnv(t, []string{"ARCA_APPROVAL=allow"}, "", "get", "GATED"); code != 0 || out != "v" {
-		t.Fatalf("approved get = %q code=%d", out, code)
+	// ARCA_APPROVAL=allow works only for a non-agent caller (agent env cleared)...
+	nonAgent := []string{"ARCA_APPROVAL=allow", "CLAUDECODE=", "CLAUDE_CODE_SESSION_ID=", "CURSOR_TRACE_ID=", "AI_AGENT="}
+	if out, _, code := b.runEnv(t, nonAgent, "", "get", "GATED"); code != 0 || out != "v" {
+		t.Fatalf("approved get (non-agent) = %q code=%d", out, code)
+	}
+	// ...but an AI agent cannot self-approve via the inherited env var.
+	if _, _, code := b.runEnv(t, []string{"ARCA_APPROVAL=allow", "AI_AGENT=claude-code"}, "", "get", "GATED"); code == 0 {
+		t.Fatal("expected an agent to be refused self-approval")
 	}
 }
 

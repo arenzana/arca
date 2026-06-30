@@ -367,9 +367,19 @@ func TestApprovalGate(t *testing.T) {
 		}
 	}
 
+	// ARCA_APPROVAL=allow pre-approves ONLY for a non-agent caller.
 	t.Setenv("ARCA_APPROVAL", "allow")
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CURSOR_TRACE_ID", "")
+	t.Setenv("AI_AGENT", "")
 	if out := runArca(t, "", "get", "GATED"); out != "secret" {
-		t.Fatalf("approved get = %q", out)
+		t.Fatalf("approved get (non-agent) = %q", out)
+	}
+	// An AI agent must NOT be able to self-approve via the inherited env var.
+	t.Setenv("AI_AGENT", "claude-code")
+	if err := runArcaErr("", "get", "GATED"); err == nil {
+		t.Fatal("expected an agent to be unable to self-approve via ARCA_APPROVAL=allow")
 	}
 }
 
