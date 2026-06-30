@@ -6,6 +6,8 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-30
+
 ### Added
 - `generate NAME` creates a secret with a cryptographically-random value (`--length`,
   `--charset alnum|hex|full|<custom>`, `--show`), so a password/token is never typed.
@@ -65,6 +67,7 @@ All notable changes to arca are documented here. The format follows
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/arenzana/arca/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/arenzana/arca/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/arenzana/arca/releases/tag/v0.1.0
