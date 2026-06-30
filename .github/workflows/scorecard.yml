@@ -14,6 +14,7 @@ jobs:
   analysis:
     runs-on: ubuntu-latest
     permissions:
+      contents: read          # checkout (job-level perms replace the workflow default)
       security-events: write  # upload SARIF to code scanning
       id-token: write         # publish results to the OpenSSF API
     steps:
