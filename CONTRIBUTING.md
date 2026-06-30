@@ -2,6 +2,17 @@
 
 Thanks for your interest in arca. This covers how to build, test, and submit changes.
 
+## Repositories
+
+The project spans three repositories:
+
+- **[arenzana/arca](https://github.com/arenzana/arca)** — this repository: the source code, tests,
+  documentation, and the website (`docs/`). This is the only one developed directly.
+- **[arenzana/homebrew-tap](https://github.com/arenzana/homebrew-tap)** — the Homebrew cask,
+  **published automatically** by the release pipeline; not hand-edited.
+- **[arenzana/scoop-bucket](https://github.com/arenzana/scoop-bucket)** — the Scoop manifest,
+  likewise auto-published on each release.
+
 ## Development setup
 
 arca is a single Go module with no build-time code generation.
