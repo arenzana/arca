@@ -74,7 +74,7 @@ func newRoot() *cobra.Command {
 	cmds := []*cobra.Command{
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
-		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(),
+		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newCanary(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
@@ -352,8 +352,15 @@ func approverWho() string {
 
 // gate runs the approval check for a secret if it requires one. A no-op otherwise.
 func gate(sec *store.Secret, name string) error {
-	// Hard expiry is checked first: an expired secret is refused on every access path
-	// (get / inject / exec / env / MCP), before any approval prompt or decryption.
+	// A canary is a decoy that should never legitimately be used: any access through this gate
+	// (get / inject / exec / env / MCP) is a tripwire. Alert and record it, but let the access
+	// proceed — the value is fake, and letting the caller take it keeps the trap useful (an agent
+	// exfiltrating it doesn't learn it was caught).
+	if sec.Canary {
+		tripCanary(name)
+	}
+	// Hard expiry is checked next: an expired secret is refused on every access path,
+	// before any approval prompt or decryption.
 	if sec.Expired(time.Now()) {
 		return fmt.Errorf("%s expired at %s", name, sec.ExpiresAt.UTC().Format(time.RFC3339))
 	}
@@ -361,6 +368,26 @@ func gate(sec *store.Secret, name string) error {
 		return approve(name, approverWho())
 	}
 	return nil
+}
+
+// tripCanary records and announces that a decoy secret was used — a strong signal that something
+// is enumerating or exfiltrating secrets. The audit event (op=canary) is hash-chained and signed
+// like any other, so the trip can't be quietly scrubbed.
+func tripCanary(name string) {
+	id := detectIdentity()
+	who := id.Agent
+	if who == "" {
+		who = id.Actor
+	}
+	if who == "" {
+		who = "an unidentified caller"
+	}
+	fmt.Fprintf(os.Stderr, "⚠  CANARY TRIPPED: %q was accessed by %s", name, who)
+	if id.Session != "" {
+		fmt.Fprintf(os.Stderr, " (session %s)", shortID(id.Session))
+	}
+	fmt.Fprintln(os.Stderr, " — this secret is a decoy and should never be used.")
+	_ = logAudit("canary", name, "") // best-effort: never block the access on the alert itself
 }
 
 // parseTTL parses a relative duration for --ttl. It extends Go's time.ParseDuration (ns…h)
@@ -488,7 +515,7 @@ func newSet() *cobra.Command {
 	var tags []string
 	var desc, rotate, ttl, expiresAt string
 	var meta map[string]string
-	var noPrint, requireApproval bool
+	var noPrint, requireApproval, canary bool
 	c := &cobra.Command{
 		Use:   "set NAME",
 		Short: "Add or update a secret (value from TTY or stdin)",
@@ -560,6 +587,9 @@ func newSet() *cobra.Command {
 			if cmd.Flags().Changed("require-approval") {
 				sec.RequireApproval = requireApproval
 			}
+			if cmd.Flags().Changed("canary") {
+				sec.Canary = canary
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -578,6 +608,7 @@ func newSet() *cobra.Command {
 	c.Flags().StringToStringVar(&meta, "meta", nil, "extra metadata key=value (repeatable)")
 	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
 	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
+	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
 	return c
 }
 

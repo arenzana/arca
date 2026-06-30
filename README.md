@@ -68,6 +68,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Expiry (TTL)** | `--ttl 30m\|12h\|7d\|2w` or `--expires-at`; expired secrets are **refused on every access path** and surfaced by `stale` |
 | **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default; **hash-chained + per-session signed** so tampering is detectable (`log --verify`) |
 | **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human approval), least-privilege `exec --only` |
+| **Canary secrets** | Plant realistic decoys (`canary --template stripe`); any use trips a loud, signed audit alert — leak detection, not just prevention |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
 | **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
@@ -209,6 +210,15 @@ mask of long values instead of the name.
 ```sh
 $ arca exec --only PASSWORD -- sh -c 'echo connecting with $PASSWORD'
 connecting with «arca:PASSWORD»          # the value never reaches the agent's context
+```
+
+**Plant a canary to catch an agent that grabs everything**
+
+```sh
+arca canary AWS_PROD_KEY --template aws    # a realistic decoy; using it should never happen
+# ... later, if anything reads it ...
+#   ⚠  CANARY TRIPPED: "AWS_PROD_KEY" was accessed by claude-code (session …)
+arca canary --list                         # which canaries exist, and which have been tripped
 ```
 
 **Render a config from a template** (the value only lands in the rendered file):
@@ -357,6 +367,7 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `exec -- CMD` | Run CMD with secrets injected as env (audited); injected values are redacted from its output | `--only a,b`, `--redact auto\|on\|off`, `--reveal` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
 | `log [NAME]` | Access history (agent/session/actor); `--verify` checks the log's integrity | `--limit N`, `--json`, `--verify` |
+| `canary [NAME]` | Plant a decoy secret (any use trips a signed alert), or list canaries and their trips | `--template`, `--list`, `--tag`, `--desc` |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) | — |
 | `completion SHELL` | Shell completion script (bash/zsh/fish/powershell) | — |
 

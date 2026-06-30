@@ -132,6 +132,26 @@ func tamper(t *testing.T, path, q string, args ...any) {
 	}
 }
 
+func TestLastOp(t *testing.T) {
+	l, _ := openChained(t)
+	if _, n, err := l.LastOp("X", "canary"); err != nil || n != 0 {
+		t.Fatalf("never-tripped LastOp = %d,%v, want 0,nil", n, err)
+	}
+	if err := l.Record("canary", "X", "", Identity{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record("canary", "X", "", Identity{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record("read", "X", "", Identity{}); err != nil { // different op, must not count
+		t.Fatal(err)
+	}
+	ts, n, err := l.LastOp("X", "canary")
+	if err != nil || n != 2 || ts.IsZero() {
+		t.Fatalf("LastOp = %v,%d,%v, want a time + 2", ts, n, err)
+	}
+}
+
 func TestVerifyEmpty(t *testing.T) {
 	l, _ := openChained(t)
 	r, err := l.Verify()

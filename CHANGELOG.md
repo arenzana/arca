@@ -7,6 +7,11 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Canary (honeytoken) secrets.** `arca canary NAME --template stripe|github|aws|slack|generic`
+  plants a realistic-looking decoy; `set`/`generate --canary` mark an existing secret. Any *use*
+  of a canary (get/exec/env/inject/MCP) trips a loud stderr alert and a distinct, signed audit
+  event (`op=canary`), turning the audit log into active leak detection rather than passive
+  forensics. `arca canary` (no args) lists canaries and whether each has been tripped.
 - **Tamper-evident audit log.** Every event is hash-chained into the previous one and signed
   with the recording session's Ed25519 key (generated and stored per session under the state
   dir), so editing, deleting, reordering, or truncating the log is detectable. `arca log

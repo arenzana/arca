@@ -423,6 +423,22 @@ func (l *Log) LastRead(name string) (time.Time, int, error) {
 	return t, count, nil
 }
 
+// LastOp returns the most recent time and total count of a specific op for a secret. Used to
+// surface canary trips (op="canary") without scanning the whole log.
+func (l *Log) LastOp(name, op string) (time.Time, int, error) {
+	var ts sql.NullString
+	var count int
+	row := l.db.QueryRow(`SELECT MAX(ts), COUNT(*) FROM events WHERE name=? AND op=?`, name, op)
+	if err := row.Scan(&ts, &count); err != nil {
+		return time.Time{}, 0, err
+	}
+	if !ts.Valid {
+		return time.Time{}, 0, nil
+	}
+	t, _ := time.Parse(time.RFC3339, ts.String)
+	return t, count, nil
+}
+
 // Recent returns the latest events (newest first), optionally filtered to a single secret.
 func (l *Log) Recent(name string, limit int) ([]Event, error) {
 	q := `SELECT ts, op, name, ppid, caller, actor, agent, version, session FROM events`
