@@ -197,6 +197,8 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `show NAME` | Show one secret's metadata (no value) | `--json` |
 | `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing`, `--json` |
 | `rm NAME` | Remove a secret | — |
+| `edit NAME` | Edit a secret's value in `$EDITOR` (re-encrypted) | — |
+| `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
 | `recipients` | List age recipients; `add`/`rm` subcommands manage the set | — |
 | `reencrypt` | Re-encrypt every secret to the current recipient set | — |
 | `import` | Load `KEY=value` (dotenv) lines from stdin | — |

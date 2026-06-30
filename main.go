@@ -73,7 +73,7 @@ func newRoot() *cobra.Command {
 	cmds := []*cobra.Command{
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
-		newRecipients(), newReencrypt(), newGenerate(),
+		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
