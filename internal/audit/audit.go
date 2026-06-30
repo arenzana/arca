@@ -60,6 +60,10 @@ func Open(path string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
+	// WAL improves read/write concurrency for the "many short-lived arca processes in front of
+	// an agent" pattern; ignore failure (e.g. a read-only/networked fs) and fall back to the
+	// default rollback journal, which is still correct.
+	_, _ = db.Exec(`PRAGMA journal_mode=WAL;`)
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS events (
 		id      INTEGER PRIMARY KEY AUTOINCREMENT,
 		ts      TEXT    NOT NULL,

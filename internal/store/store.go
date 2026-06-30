@@ -24,6 +24,10 @@ import (
 // Version is the on-disk schema version, bumped if the JSON shape ever changes incompatibly.
 const Version = 1
 
+// maxStoreBytes caps the store file size read into memory — a generous ceiling that still
+// guards against a runaway or hostile store file exhausting memory.
+const maxStoreBytes = 64 << 20 // 64 MiB
+
 // Secret is one entry. Value is the armored age ciphertext; every other field is cleartext
 // metadata so the store can be listed and queried without the decryption key.
 type Secret struct {
@@ -63,6 +67,10 @@ func New(path string, recipients []string) *Store {
 // Load reads and parses the store at path. A missing file is reported as a friendly
 // "run `arca init`" error rather than a raw os error.
 func Load(path string) (*Store, error) {
+	// Reject an implausibly large file before reading it into memory (DoS guard).
+	if fi, err := os.Stat(path); err == nil && fi.Size() > maxStoreBytes {
+		return nil, fmt.Errorf("store %s is %d bytes, exceeding the %d-byte limit", path, fi.Size(), int64(maxStoreBytes))
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -74,8 +82,19 @@ func Load(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("parse store %s: %w", path, err)
 	}
+	// Refuse a store written by a newer, possibly-incompatible arca rather than misread it.
+	if s.Version > Version {
+		return nil, fmt.Errorf("store %s has version %d, newer than this arca supports (%d)", path, s.Version, Version)
+	}
 	if s.Secrets == nil { // tolerate a store with no secrets yet
 		s.Secrets = map[string]*Secret{}
+	}
+	// Reject null secret entries (e.g. a hand-edited / synced `"FOO": null`) up front, so later
+	// code never dereferences a nil *Secret and panics.
+	for name, sec := range s.Secrets {
+		if sec == nil {
+			return nil, fmt.Errorf("store %s: secret %q is null", path, name)
+		}
 	}
 	s.path = path
 	return &s, nil

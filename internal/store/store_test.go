@@ -164,3 +164,41 @@ func TestExpired(t *testing.T) {
 		t.Fatal("a future expiry must not be expired")
 	}
 }
+
+// TestLoadNullEntry rejects a store with a null secret object (which would otherwise nil-deref).
+func TestLoadNullEntry(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	if err := os.WriteFile(p, []byte(`{"version":1,"recipients":[],"secrets":{"FOO":null}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected an error for a null secret entry")
+	}
+}
+
+// TestLoadNewerVersion refuses a store written by a newer arca.
+func TestLoadNewerVersion(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	if err := os.WriteFile(p, []byte(`{"version":999,"recipients":[],"secrets":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected an error for a newer store version")
+	}
+}
+
+// TestLoadTooLarge refuses an implausibly large store (a sparse file, so the test stays cheap).
+func TestLoadTooLarge(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxStoreBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected an error for an oversized store")
+	}
+}
