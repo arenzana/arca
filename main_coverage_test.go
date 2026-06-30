@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -263,6 +264,9 @@ func TestHelpers(t *testing.T) {
 
 // TestPathResolution covers env overrides, XDG defaults, and the SOPS/HOME fallbacks.
 func TestPathResolution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX absolute paths; the XDG/env resolution logic is identical cross-OS")
+	}
 	t.Setenv("ARCA_STORE", "/tmp/s.json")
 	t.Setenv("ARCA_AUDIT", "/tmp/a.db")
 	t.Setenv("ARCA_IDENTITY", "/tmp/id")
