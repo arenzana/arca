@@ -2,9 +2,30 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+// errWriter fails every write, to check the redactWriter propagates a downstream error.
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, fmt.Errorf("downstream boom") }
+
+func TestRedactWriteError(t *testing.T) {
+	w := newRedactWriter(errWriter{}, []redactPattern{pat("S", "secret")})
+	// More than maxLen bytes, so the writer flushes (and hits the failing dst) rather than only
+	// buffering the held-back tail.
+	if _, err := w.Write([]byte("plenty of output here to force a flush")); err == nil {
+		t.Fatal("a downstream write error should propagate")
+	}
+	// Flush should also surface the error.
+	w2 := newRedactWriter(errWriter{}, []redactPattern{pat("S", "secret")})
+	_, _ = w2.Write([]byte("tiny"))
+	if err := w2.Flush(); err == nil {
+		t.Fatal("Flush should surface a downstream write error")
+	}
+}
 
 // feed writes the input through a redactWriter in the given chunk sizes and returns the full
 // redacted output. Chunking exercises the held-back-tail logic that catches a value split across

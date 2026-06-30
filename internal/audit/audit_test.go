@@ -163,6 +163,37 @@ func TestVerifyEmpty(t *testing.T) {
 	}
 }
 
+// The *AfterClose tests exercise the DB-error branches by operating on a closed handle.
+func TestRecordAfterClose(t *testing.T) {
+	l, _ := openChained(t)
+	l.Close()
+	if err := l.Record("read", "X", "", Identity{}); err == nil {
+		t.Fatal("Record on a closed log should error")
+	}
+}
+
+func TestVerifyAfterClose(t *testing.T) {
+	l, _ := openChained(t)
+	l.Close()
+	if _, err := l.Verify(); err == nil {
+		t.Fatal("Verify on a closed log should error")
+	}
+}
+
+func TestQueriesAfterClose(t *testing.T) {
+	l, _ := openChained(t)
+	l.Close()
+	if _, _, err := l.LastOp("X", "canary"); err == nil {
+		t.Fatal("LastOp on a closed log should error")
+	}
+	if _, _, err := l.LastRead("X"); err == nil {
+		t.Fatal("LastRead on a closed log should error")
+	}
+	if _, err := l.Recent("", 10); err == nil {
+		t.Fatal("Recent on a closed log should error")
+	}
+}
+
 func TestVerifyClean(t *testing.T) {
 	l, _ := openChained(t)
 	recordN(t, l, 5)
