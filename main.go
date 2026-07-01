@@ -28,7 +28,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"text/tabwriter"
 	"time"
 
 	"filippo.io/age"
@@ -840,31 +839,30 @@ func newLs() *cobra.Command {
 				}
 				return emitJSON(views)
 			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			defer w.Flush()
-			if reads {
-				fmt.Fprintln(w, "NAME\tTAGS\tUPDATED\tLAST READ\tREADS\tDESCRIPTION")
-			} else {
-				fmt.Fprintln(w, "NAME\tTAGS\tUPDATED\tDESCRIPTION")
+			showReads := reads && a != nil
+			headers := []string{"NAME", "TAGS", "UPDATED", "DESCRIPTION"}
+			if showReads {
+				headers = []string{"NAME", "TAGS", "UPDATED", "LAST READ", "READS", "DESCRIPTION"}
 			}
+			rows := [][]string{}
 			for _, name := range s.Names() {
 				sec := s.Secrets[name]
 				if tag != "" && !contains(sec.Tags, tag) {
 					continue
 				}
-				if reads && a != nil {
+				updated := sec.UpdatedAt.Local().Format("2006-01-02")
+				if showReads {
 					lr, cnt, _ := a.LastRead(name)
 					lrs := "never"
 					if !lr.IsZero() {
 						lrs = lr.Local().Format("2006-01-02 15:04")
 					}
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n",
-						name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02"), lrs, cnt, sec.Description)
+					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, lrs, strconv.Itoa(cnt), sec.Description})
 				} else {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-						name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02"), sec.Description)
+					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, sec.Description})
 				}
 			}
+			renderTable(headers, rows)
 			return nil
 		},
 	}
@@ -1472,17 +1470,18 @@ func newLog() *cobra.Command {
 				}
 				return emitJSON(views)
 			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			defer w.Flush()
-			fmt.Fprintln(w, "TIME\tOP\tNAME\tAGENT\tSESSION\tACTOR\tCALLER")
+			rows := make([][]string, 0, len(evs))
 			for _, e := range evs {
 				agent := e.Agent
 				if e.Version != "" {
 					agent += "/" + e.Version
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					e.TS.Local().Format("2006-01-02 15:04:05"), e.Op, e.Name, agent, shortID(e.Session), e.Actor, e.Caller)
+				rows = append(rows, []string{
+					e.TS.Local().Format("2006-01-02 15:04:05"), colorOp(e.Op), e.Name,
+					agent, shortID(e.Session), e.Actor, e.Caller,
+				})
 			}
+			renderTable([]string{"TIME", "OP", "NAME", "AGENT", "SESSION", "ACTOR", "CALLER"}, rows)
 			return nil
 		},
 	}
@@ -1592,14 +1591,10 @@ func newStale() *cobra.Command {
 				return err
 			}
 			now := time.Now()
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			defer w.Flush()
 
 			if missing {
 				views := []secretView{}
-				if !jsonOut {
-					fmt.Fprintln(w, "NAME\tTAGS\tUPDATED")
-				}
+				rows := [][]string{}
 				for _, name := range s.Names() {
 					sec := s.Secrets[name]
 					if sec.RotateAfter != nil {
@@ -1608,12 +1603,13 @@ func newStale() *cobra.Command {
 					if jsonOut {
 						views = append(views, viewOf(name, sec, time.Time{}, 0))
 					} else {
-						fmt.Fprintf(w, "%s\t%s\t%s\n", name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02"))
+						rows = append(rows, []string{name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02")})
 					}
 				}
 				if jsonOut {
 					return emitJSON(views)
 				}
+				renderTable([]string{"NAME", "TAGS", "UPDATED"}, rows)
 				return nil
 			}
 
@@ -1622,9 +1618,7 @@ func newStale() *cobra.Command {
 			// rotations and already-expired secrets; a larger window looks ahead.
 			cutoff := now.AddDate(0, 0, within)
 			views := []staleView{}
-			if !jsonOut {
-				fmt.Fprintln(w, "NAME\tROTATE AFTER\tEXPIRES\tSTATUS")
-			}
+			rows := [][]string{}
 			for _, name := range s.Names() {
 				sec := s.Secrets[name]
 				rotDue := sec.RotateAfter != nil && !sec.RotateAfter.After(cutoff)
@@ -1654,12 +1648,13 @@ func newStale() *cobra.Command {
 				if jsonOut {
 					views = append(views, staleView{Name: name, RotateAfter: sec.RotateAfter, ExpiresAt: sec.ExpiresAt, Status: status})
 				} else {
-					fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, ra, ex, strings.Join(status, ", "))
+					rows = append(rows, []string{name, ra, ex, strings.Join(status, ", ")})
 				}
 			}
 			if jsonOut {
 				return emitJSON(views)
 			}
+			renderTable([]string{"NAME", "ROTATE AFTER", "EXPIRES", "STATUS"}, rows)
 			return nil
 		},
 	}
