@@ -6,6 +6,8 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-01
+
 ### Added
 - **Command-scoped, just-in-time grants.** Mark a secret `--require-grant` and it becomes usable
   only via `exec`/MCP `run_with_secrets`, and only when a matching `grant` is active. `arca grant
@@ -119,7 +121,8 @@ All notable changes to arca are documented here. The format follows
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/arenzana/arca/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/arenzana/arca/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/arenzana/arca/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/arenzana/arca/releases/tag/v0.1.0
