@@ -2,10 +2,35 @@ package main
 
 import (
 	"io"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+// FuzzShellQuote is the authoritative eval-safety check: a value quoted by shellQuote (used by
+// `arca env` for `eval "$(arca env)"`) must, when evaluated by a real shell, round-trip to exactly
+// the original — so a value containing quotes, `$()`, backticks, `;`, `|`, etc. can never inject.
+func FuzzShellQuote(f *testing.F) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		f.Skip("needs sh")
+	}
+	for _, s := range []string{"", "plain", "a'b", "$(id)", "`id`", "a;b|c&d", "; rm -rf /", "a\nb", "\\", `'\''`, "a\"b", "${HOME}"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		if len(s) > 4096 || strings.IndexByte(s, 0) >= 0 {
+			return // shell arguments cannot carry NUL, and huge inputs aren't the point
+		}
+		out, err := exec.Command("sh", "-c", "printf %s "+shellQuote(s)).Output() //#nosec G204 -- shellQuote is exactly what's under test
+		if err != nil {
+			t.Fatalf("sh rejected quoted %q (from %q): %v", shellQuote(s), s, err)
+		}
+		if string(out) != s {
+			t.Fatalf("shellQuote(%q) eval'd to %q — not a faithful round-trip", s, out)
+		}
+	})
+}
 
 // FuzzGlobMatch checks the command-pattern matcher never panics and always agrees with a
 // regexp reference (glob where only '*' is special).

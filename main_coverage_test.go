@@ -528,19 +528,6 @@ func TestMainEntry(t *testing.T) {
 
 // FuzzShellQuote checks shellQuote never panics and always returns a single-quoted string,
 // for any input — and doubles as arca's native-fuzzing target for OpenSSF Scorecard.
-func FuzzShellQuote(f *testing.F) {
-	f.Add("plain")
-	f.Add("a'b")
-	f.Add("")
-	f.Add("'; rm -rf / #")
-	f.Fuzz(func(t *testing.T, s string) {
-		q := shellQuote(s)
-		if !strings.HasPrefix(q, "'") || !strings.HasSuffix(q, "'") {
-			t.Fatalf("not single-quoted: %q", q)
-		}
-	})
-}
-
 // FuzzFirstSemver ensures the version extractor never panics on arbitrary input.
 func FuzzFirstSemver(f *testing.F) {
 	f.Add("1.2.3")
