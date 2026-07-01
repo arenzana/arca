@@ -95,6 +95,8 @@
   .card h3{margin:.35em 0 .25em; font-size:1.18rem; color:var(--teal-deep)}
   .card p{margin:0; color:var(--muted); font-size:.97rem}
   .card code{background:var(--teal-bg); color:var(--teal-dark); padding:1px 6px; border-radius:6px; font-size:.85em}
+  a.card{display:block; color:inherit; transition:transform .15s}
+  a.card:hover{transform:translateY(-3px)}
 
   /* recipes */
   .recipes{display:grid; gap:16px}
@@ -141,6 +143,7 @@ footer .badges img{height:20px}
   <span class="links">
     <a href="#features">Features</a>
     <a href="#install">Install</a>
+    <a href="docs.html">Docs</a>
     <a href="https://github.com/arenzana/arca">GitHub ↗</a>
   </span>
 </nav>
@@ -279,6 +282,36 @@ connecting with «arca:DB_PASSWORD»   <span class="c"># the value never reaches
       <pre class="snip"><span class="d">$</span> arca log --verify
 audit log OK: 128 event(s) chained, 128 signed</pre>
     </div>
+  </div>
+</section>
+
+<section id="docs" class="wrap">
+  <div class="eyebrow">documentation</div>
+  <h2>Read the docs</h2>
+  <div class="grid">
+    <a class="card" href="COMMANDS.html">
+      <div class="ico">📖</div>
+      <h3>Command reference</h3>
+      <p>Every command, flag, and the policy model — the day-to-day reference.</p>
+    </a>
+    <a class="card" href="POLICIES.html">
+      <div class="ico">🎟️</div>
+      <h3>Per-secret policies</h3>
+      <p>no-print, approval gates, canaries, grants, and rate limits for agents.</p>
+    </a>
+    <a class="card" href="MCP.html">
+      <div class="ico">🤖</div>
+      <h3>MCP for AI agents</h3>
+      <p>Expose audited, capability-scoped tools to a model over stdio.</p>
+    </a>
+    <a class="card" href="ARCHITECTURE.html">
+      <div class="ico">🏗️</div>
+      <h3>Architecture &amp; threat model</h3>
+      <p>Actors, components, trust boundaries, and the security assessment.</p>
+    </a>
+  </div>
+  <div class="cta" style="margin-top:22px">
+    <a class="btn primary" href="docs.html">Browse all docs</a>
   </div>
 </section>
 

@@ -6,12 +6,16 @@ export CGO_ENABLED := 0
 GOFLAGS := -trimpath
 LDFLAGS := -s -w -buildid= -X main.version=$(VERSION)
 
-.PHONY: all build test cover vet vuln sbom tidy verify clean
+.PHONY: all build test cover vet vuln sbom tidy verify clean docs
 
 all: verify build
 
 build:
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BINARY) .
+
+# Render docs/*.md into styled HTML matching the landing page (also runs in the Pages CI job).
+docs:
+	go -C tools/docsgen run . -root ../..
 
 test:
 	go test -race ./...
