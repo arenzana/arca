@@ -37,7 +37,7 @@ type Secret struct {
 	Tags            []string          `json:"tags,omitempty"`             // free-form labels for filtering
 	Description     string            `json:"description,omitempty"`      // human note
 	RotateAfter     *time.Time        `json:"rotate_after,omitempty"`     // rotation due date (drives `stale`)
-	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`       // hard expiry: reads/use refuse the value after this
+	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`       // hard expiry: reads/use refuse the value after this (also how `disable` suspends a secret)
 	NoPrint         bool              `json:"no_print,omitempty"`         // exec-only: never reveal to stdout
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
 	Canary          bool              `json:"canary,omitempty"`           // decoy: any use is a tripwire, alerted and audited

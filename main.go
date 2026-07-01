@@ -74,7 +74,7 @@ func newRoot() *cobra.Command {
 	}
 	cmds := []*cobra.Command{
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
-		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
+		newRm(), newDisable(), newEnable(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newCanary(),
 		newGrant(), newGrants(), newRevoke(), newHandle(),
 	}
@@ -851,15 +851,20 @@ func newLs() *cobra.Command {
 					continue
 				}
 				updated := sec.UpdatedAt.Local().Format("2006-01-02")
+				// Flag disabled/expired secrets so they're visible at a glance (e.g. during a leak).
+				desc := sec.Description
+				if sec.Expired(time.Now()) {
+					desc = strings.TrimSpace("[disabled] " + desc)
+				}
 				if showReads {
 					lr, cnt, _ := a.LastRead(name)
 					lrs := "never"
 					if !lr.IsZero() {
 						lrs = lr.Local().Format("2006-01-02 15:04")
 					}
-					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, lrs, strconv.Itoa(cnt), sec.Description})
+					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, lrs, strconv.Itoa(cnt), desc})
 				} else {
-					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, sec.Description})
+					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, desc})
 				}
 			}
 			renderTable(headers, rows)
@@ -935,6 +940,9 @@ func newShow() *cobra.Command {
 					state = "EXPIRED"
 				}
 				fmt.Printf("expires:      %s (%s)\n", sec.ExpiresAt.Local().Format(time.RFC3339), state)
+				if sec.Expired(time.Now()) {
+					fmt.Printf("              (disabled — refused on every access path; `arca enable %s` to restore)\n", name)
+				}
 			}
 			for k, v := range sec.Meta {
 				fmt.Printf("meta.%s: %s\n", k, v)
@@ -975,6 +983,79 @@ func newRm() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "removed %s\n", name)
+			return nil
+		},
+	}
+}
+
+// newDisable suspends a secret without changing its value: it stamps expiry at "now" so every
+// access path (get/exec/inject/env + MCP) refuses it, while the value and the rest of the metadata
+// are preserved. Reverse it with `enable`. This is the fast, reversible kill switch for a leak —
+// the actual token must still be revoked at its issuer; this only stops arca from handing it out.
+func newDisable() *cobra.Command {
+	return &cobra.Command{
+		Use:   "disable NAME",
+		Short: "Suspend a secret (refused everywhere) without deleting it; reverse with `enable`",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			name := args[0]
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			sec := s.Secrets[name]
+			if sec == nil {
+				return fmt.Errorf("no such secret: %s", name)
+			}
+			now := time.Now().UTC()
+			sec.ExpiresAt = &now
+			if err := s.Save(); err != nil {
+				return err
+			}
+			if err := logAudit("disable", name, ""); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "disabled %s (revoke it at the issuer too; `arca enable %s` to restore)\n", name, name)
+			return nil
+		},
+	}
+}
+
+// newEnable clears a secret's expiry, making a `disable`d (or otherwise expired) secret usable
+// again. It drops any expiry date entirely — intent is recorded in the audit log (op "enable").
+func newEnable() *cobra.Command {
+	return &cobra.Command{
+		Use:   "enable NAME",
+		Short: "Re-enable a disabled/expired secret (clears its expiry)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			name := args[0]
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			sec := s.Secrets[name]
+			if sec == nil {
+				return fmt.Errorf("no such secret: %s", name)
+			}
+			sec.ExpiresAt = nil
+			if err := s.Save(); err != nil {
+				return err
+			}
+			if err := logAudit("enable", name, ""); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "enabled %s\n", name)
 			return nil
 		},
 	}
@@ -1410,6 +1491,19 @@ func newEnv() *cobra.Command {
 				}
 				if s.Secrets[name].NoPrint {
 					fmt.Fprintf(os.Stderr, "skip %s (--no-print)\n", name)
+					continue
+				}
+				// Don't let one unusable secret blank out the whole `eval "$(arca env)"`: skip the
+				// ones that simply can't be released here — disabled/expired (turned off) and
+				// require-grant (needs a command to authorize against). An interactive approval
+				// denial below is a deliberate "no" and still fails the command. Mirrors the
+				// --no-print / invalid-name skips above.
+				if s.Secrets[name].Expired(time.Now()) {
+					fmt.Fprintf(os.Stderr, "skip %s (disabled/expired)\n", name)
+					continue
+				}
+				if s.Secrets[name].RequireGrant {
+					fmt.Fprintf(os.Stderr, "skip %s (require-grant; use exec)\n", name)
 					continue
 				}
 				if err := gate(s.Secrets[name], name, ""); err != nil {
