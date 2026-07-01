@@ -71,7 +71,7 @@ func TestNewCommandsNoStore(t *testing.T) {
 	sandbox(t) // no init → no store
 	for _, args := range [][]string{
 		{"recipients"}, {"recipients", "add", "age1xyz"}, {"recipients", "rm", "age1xyz"},
-		{"reencrypt"}, {"rotate", "X"},
+		{"reencrypt"}, {"rotate", "X"}, {"disable", "X"}, {"enable", "X"},
 	} {
 		if err := runArcaErr("v", args...); err == nil {
 			t.Errorf("expected %v to fail with no store", args)

@@ -13,6 +13,8 @@
 | `show NAME` | Show one secret's metadata (no value) | `--json` |
 | `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing`, `--json` |
 | `rm NAME` | Remove a secret | — |
+| `disable NAME` | Suspend a secret — refused on every access path — without deleting it or changing its value (sets expiry to now) | — |
+| `enable NAME` | Re-enable a disabled/expired secret (clears its expiry) | — |
 | `edit NAME` | Edit a secret's value in `$EDITOR` (re-encrypted) | — |
 | `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
 | `recipients` | List age recipients; `add`/`rm` subcommands manage the set | — |
@@ -35,3 +37,23 @@ Values are always read from a TTY (no echo) or piped stdin — **never** passed 
 
 The per-secret policy flags (`--no-print`, `--require-approval`, `--canary`, `--require-grant`,
 `--rate`) are documented in [Policies](POLICIES.md).
+
+## Disabling a secret (fast, reversible kill switch)
+
+`disable NAME` is the quickest way to take a secret out of service without losing it: the value and
+all metadata stay in the store, but every access path — `get`, `exec`, `inject`, `env`, and the MCP
+tools — refuses it until you `enable` it again. Under the hood it just stamps the hard expiry at
+"now", so a disabled secret shows up as `EXPIRED` in `show`/`ls` and the audit log records the
+`disable`/`enable` intent.
+
+```bash
+arca disable GITHUB_TOKEN     # suspend it everywhere, keep the value
+arca enable  GITHUB_TOKEN     # bring it back (clears the expiry)
+```
+
+**This is a *local* kill switch, not revocation.** Disabling stops *arca* from handing the value out;
+it does nothing to a copy that already leaked. On a suspected compromise, **revoke the token at its
+issuer first** (GitHub, AWS, …), then `disable` or `rotate` it here.
+
+Note: `env` skips any secret it can't release — disabled/expired and `--require-grant` — instead of
+failing, so one suspended secret never blanks out `eval "$(arca env)"`.

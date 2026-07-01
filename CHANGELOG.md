@@ -7,6 +7,12 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`disable` / `enable` — a fast, reversible kill switch.** `arca disable NAME` suspends a secret
+  on every access path (`get`, `exec`, `inject`, `env`, MCP) without deleting it or changing its
+  value; `arca enable NAME` restores it. Implemented over the existing hard-expiry mechanism (no
+  store-schema change), so a disabled secret reads as `EXPIRED` in `show`/`ls` and the audit log
+  records the `disable`/`enable` intent. It's a *local* kill switch — revoke at the issuer for a
+  real compromise.
 - **Styled output.** `log`, `ls`, `grants`, and `handle ls` render as color-coded tables on a
   terminal — bold teal header, dimmed timestamps, ops tinted by kind (hand-rolled ANSI, no new
   dependency) — and fall back to plain tab-separated columns when the output is piped, so scripts
@@ -19,6 +25,10 @@ All notable changes to arca are documented here. The format follows
 - **Per-secret rate limiting.**
 
 ### Fixed
+- **`env` no longer aborts on one unusable secret.** `arca env` (used by `eval "$(arca env)"`)
+  previously bailed out entirely on the first expired/disabled or `--require-grant` secret, blanking
+  *every* export. It now skips secrets it can't release in a no-command context — matching how it
+  already skips `--no-print` — and still surfaces interactive approval denials as errors.
 - **MCP `run_with_secrets` now redacts the command's output** (like `arca exec`) before returning
   it to the agent — previously it returned the raw combined output, so a command that printed an
   injected secret leaked it straight into the model's context. `set`/`generate --rate N/DURATION` (e.g. `--rate 10/1h`) caps how
