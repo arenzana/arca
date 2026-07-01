@@ -80,23 +80,34 @@ func buildStamp() versionView {
 	return v
 }
 
-// formatVersion renders the build stamp for humans (the commit is short-hashed to 12 chars; the
-// commit/date lines are omitted when the values aren't embedded, e.g. a `go build` without VCS).
+// formatVersion renders the build stamp for humans as an aligned key/value table (the commit is
+// short-hashed to 12 chars; the commit/date rows are omitted when the values aren't embedded, e.g.
+// a `go build` without VCS). Label column width is computed so every value lines up.
 func formatVersion(v versionView) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "arca %s\n", v.Version)
-	if v.Commit != "" {
-		commit := v.Commit
-		if len(commit) > 12 {
-			commit = commit[:12]
-		}
-		fmt.Fprintf(&b, "  commit:   %s\n", commit)
+	commit := v.Commit
+	if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	rows := [][2]string{{"version", v.Version}}
+	if commit != "" {
+		rows = append(rows, [2]string{"commit", commit})
 	}
 	if v.Date != "" {
-		fmt.Fprintf(&b, "  built:    %s\n", v.Date)
+		rows = append(rows, [2]string{"built", v.Date})
 	}
-	fmt.Fprintf(&b, "  go:       %s\n", v.Go)
-	fmt.Fprintf(&b, "  platform: %s\n", v.Platform)
+	rows = append(rows, [2]string{"go", v.Go}, [2]string{"platform", v.Platform})
+
+	w := 0
+	for _, r := range rows {
+		if len(r[0]) > w {
+			w = len(r[0])
+		}
+	}
+	var b strings.Builder
+	b.WriteString("arca\n")
+	for _, r := range rows {
+		fmt.Fprintf(&b, "  %-*s  %s\n", w+1, r[0]+":", r[1])
+	}
 	return b.String()
 }
 
