@@ -99,7 +99,7 @@
   /* recipes */
   .recipes{display:grid; gap:16px}
   .recipe{background:var(--paper); border-radius:var(--radius); padding:20px 22px; box-shadow:var(--shadow); border-left:5px solid var(--teal)}
-  .recipe:nth-child(2){border-left-color:var(--coral)}
+  .recipe:nth-child(even){border-left-color:var(--coral)}
   .recipe h3{margin:0 0 .15em; font-size:1.16rem; color:var(--teal-deep)}
   .recipe p{margin:0 0 13px; color:var(--muted); font-size:.97rem}
   .recipe p i{color:var(--coral-deep); font-style:normal; font-weight:600}
@@ -179,17 +179,27 @@ footer .badges img{height:20px}
     <div class="card">
       <div class="ico">🪄</div>
       <h3>Use without revealing</h3>
-      <p>A command <code>exec</code>s with a secret, or a config <code>inject</code>s a reference — the value never reaches stdout or an agent's context.</p>
+      <p>A command <code>exec</code>s with a secret while the value stays out of stdout and the model's context — and if the command prints it anyway, arca <b>redacts</b> it from the output.</p>
     </div>
     <div class="card">
       <div class="ico">📓</div>
-      <h3>Audited &amp; fail-closed</h3>
-      <p>Every access is logged with the calling agent, version, and session. If it can't be recorded, it doesn't happen.</p>
+      <h3>Tamper-evident audit</h3>
+      <p>Every access is hash-chained and signed per session, so edits and deletions are detectable. <code>arca log --verify</code> proves the log is intact.</p>
+    </div>
+    <div class="card">
+      <div class="ico">🎣</div>
+      <h3>Canary secrets</h3>
+      <p>Plant realistic decoys with <code>canary --template stripe</code>. Any use trips a loud, signed alert of a leak detection.</p>
+    </div>
+    <div class="card">
+      <div class="ico">🎟️</div>
+      <h3>Just-in-time grants</h3>
+      <p>Bind a secret to <b>what</b> an agent does: a <code>grant</code> scoped to a command, a use count, and a time window — not just whether it can see the value.</p>
     </div>
     <div class="card">
       <div class="ico">🤖</div>
       <h3>Built for AI agents</h3>
-      <p>An <code>arca mcp</code> server exposes audited tools, plus per-secret <code>--no-print</code>, approval gates, and TTLs an agent can't bypass.</p>
+      <p>An <code>arca mcp</code> server exposes audited tools, plus <code>--no-print</code>, approval gates, and TTLs a detected agent can't bypass.</p>
     </div>
   </div>
 </section>
@@ -236,7 +246,8 @@ arca <span class="k">exec</span> -- terraform apply
 <span class="c"># generate, expire, and audit</span>
 arca <span class="k">generate</span> DB_PASSWORD --length 32 --no-print
 arca <span class="k">set</span> TMP_TOKEN --ttl 1h
-arca <span class="k">log</span> GITHUB_TOKEN</div></div>
+arca <span class="k">log</span> GITHUB_TOKEN
+arca <span class="k">log</span> --verify        <span class="c"># the log is hash-chained + signed</span></div></div>
 </section>
 
 <section id="recipes" class="wrap">
@@ -244,21 +255,29 @@ arca <span class="k">log</span> GITHUB_TOKEN</div></div>
   <h2>What makes it different</h2>
   <div class="recipes">
     <div class="recipe">
-      <h3>🪄 Use a secret without revealing it</h3>
-      <p>A command gets the value in its environment — it <i>never</i> touches stdout or an agent's context.</p>
-      <pre class="snip"><span class="d">$</span> arca exec -- terraform apply</pre>
+      <h3>🪄 Use a secret — and redact it if the command leaks it</h3>
+      <p>The value lands in the command's environment, <i>never</i> stdout. If the command prints it, arca swaps it for a marker before an agent can read it.</p>
+      <pre class="snip"><span class="d">$</span> arca exec --only DB_PASSWORD -- sh -c 'echo connecting with $DB_PASSWORD'
+connecting with «arca:DB_PASSWORD»   <span class="c"># the value never reaches the agent</span></pre>
     </div>
     <div class="recipe">
-      <h3>🤖 Hand an agent secrets it can't read</h3>
-      <p>Over MCP, an agent runs commands <i>with</i> a secret while the value stays out of the model.</p>
-      <pre class="snip"><span class="d">$</span> claude mcp add arca -- arca mcp
-<span class="c"># the agent calls run_with_secrets — it uses the value, never sees it</span></pre>
+      <h3>🎣 Catch an agent that grabs everything</h3>
+      <p>Plant a realistic decoy. The moment <i>anything</i> uses it, a signed alert fires and the trip is recorded in the tamper-evident log.</p>
+      <pre class="snip"><span class="d">$</span> arca canary AWS_PROD_KEY --template aws
+<span class="c"># ... later, if anything reads it ...</span>
+⚠  CANARY TRIPPED: "AWS_PROD_KEY" was accessed by malicious-agent</pre>
     </div>
     <div class="recipe">
-      <h3>⏳ Random, expiring, exec-only — and audited</h3>
-      <p>Generate a token that's never printed, expires in an hour, and logs every use.</p>
-      <pre class="snip"><span class="d">$</span> arca generate API_TOKEN --ttl 1h --no-print
-<span class="d">$</span> arca log API_TOKEN     <span class="c"># who used it, and when</span></pre>
+      <h3>🎟️ Grant a secret just for one job</h3>
+      <p>A <i>require-grant</i> secret is unusable until you scope it to a command, a use count, and a window — then it auto-expires.</p>
+      <pre class="snip"><span class="d">$</span> arca grant DEPLOY_KEY --command 'terraform *' --uses 3 --ttl 15m
+<span class="d">$</span> arca exec --only DEPLOY_KEY -- terraform apply   <span class="c"># allowed (1 of 3)</span></pre>
+    </div>
+    <div class="recipe">
+      <h3>📓 Prove the audit log wasn't tampered with</h3>
+      <p>Every event is hash-chained and signed per session. One command walks the chain and every signature.</p>
+      <pre class="snip"><span class="d">$</span> arca log --verify
+audit log OK: 128 event(s) chained, 128 signed</pre>
     </div>
   </div>
 </section>
