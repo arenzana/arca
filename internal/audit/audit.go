@@ -439,6 +439,19 @@ func (l *Log) LastOp(name, op string) (time.Time, int, error) {
 	return t, count, nil
 }
 
+// CountOpSince counts events for a secret with a given op at or after a time. Used to compute how
+// many times a just-in-time grant has been used (op="exec") since it was issued.
+func (l *Log) CountOpSince(name, op string, since time.Time) (int, error) {
+	var count int
+	row := l.db.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE name=? AND op=? AND ts>=?`,
+		name, op, since.UTC().Format(time.RFC3339))
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // Recent returns the latest events (newest first), optionally filtered to a single secret.
 func (l *Log) Recent(name string, limit int) ([]Event, error) {
 	q := `SELECT ts, op, name, ppid, caller, actor, agent, version, session FROM events`

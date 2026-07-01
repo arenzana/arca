@@ -41,6 +41,7 @@ type Secret struct {
 	NoPrint         bool              `json:"no_print,omitempty"`         // exec-only: never reveal to stdout
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
 	Canary          bool              `json:"canary,omitempty"`           // decoy: any use is a tripwire, alerted and audited
+	RequireGrant    bool              `json:"require_grant,omitempty"`    // usable only via exec/MCP with a matching active grant
 	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
 }
 

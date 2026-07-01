@@ -69,6 +69,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default; **hash-chained + per-session signed** so tampering is detectable (`log --verify`) |
 | **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human approval), least-privilege `exec --only` |
 | **Canary secrets** | Plant realistic decoys (`canary --template stripe`); any use trips a loud, signed audit alert — leak detection, not just prevention |
+| **JIT grants** | `--require-grant` secrets are usable only via a `grant` scoped to a command, a use count, and a time window — bind a secret to *what* an agent does, not just whether it can see it |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
 | **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
@@ -221,6 +222,16 @@ arca canary AWS_PROD_KEY --template aws    # a realistic decoy; using it should 
 arca canary --list                         # which canaries exist, and which have been tripped
 ```
 
+**Grant a secret just-in-time, scoped to a command**
+
+```sh
+arca set DEPLOY_KEY --require-grant                       # now unusable until granted
+arca grant DEPLOY_KEY --command 'terraform *' --uses 3 --ttl 15m
+arca exec --only DEPLOY_KEY -- terraform apply           # allowed (use 1 of 3)
+arca exec --only DEPLOY_KEY -- sh -c 'curl …'            # denied: command doesn't match
+arca grants                                              # secret, command, uses, expiry
+```
+
 **Render a config from a template** (the value only lands in the rendered file):
 
 ```sh
@@ -368,6 +379,9 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
 | `log [NAME]` | Access history (agent/session/actor); `--verify` checks the log's integrity | `--limit N`, `--json`, `--verify` |
 | `canary [NAME]` | Plant a decoy secret (any use trips a signed alert), or list canaries and their trips | `--template`, `--list`, `--tag`, `--desc` |
+| `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window | `--command`, `--uses`, `--ttl`, `--agent` |
+| `grants` | List active grants and their remaining uses | — |
+| `revoke SECRET` | Remove the active grant for a secret | — |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) | — |
 | `completion SHELL` | Shell completion script (bash/zsh/fish/powershell) | — |
 

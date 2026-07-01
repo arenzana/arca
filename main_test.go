@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/store"
@@ -405,6 +406,105 @@ func TestCanaryList(t *testing.T) {
 	}
 	if !strings.Contains(out, "FRESH") || !strings.Contains(out, "armed") {
 		t.Fatalf("an untripped canary should show as armed: %q", out)
+	}
+}
+
+// TestGrants covers the JIT/command-scoped grant lifecycle: a require-grant secret is unusable
+// without a matching grant, a grant authorizes a command pattern for a bounded number of uses,
+// and revoke removes it.
+func TestGrants(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "sekret", "set", "DEPLOY", "--require-grant")
+
+	// No grant: exec is denied, and get is refused (no command to authorize against).
+	if err := runArcaErr("", "exec", "--only", "DEPLOY", "--", "true"); err == nil {
+		t.Fatal("exec without a grant should be denied")
+	}
+	if err := runArcaErr("", "get", "DEPLOY"); err == nil {
+		t.Fatal("get of a require-grant secret should be denied")
+	}
+
+	// Grant 'true*' for 2 uses. A non-matching command is denied; matching is allowed twice.
+	runArca(t, "", "grant", "DEPLOY", "--command", "true*", "--uses", "2", "--ttl", "15m")
+	if err := runArcaErr("", "exec", "--only", "DEPLOY", "--", "sh", "-c", "echo x"); err == nil {
+		t.Fatal("a command not matching the grant pattern should be denied")
+	}
+	runArca(t, "", "exec", "--only", "DEPLOY", "--", "true")
+	runArca(t, "", "exec", "--only", "DEPLOY", "--", "true")
+	if err := runArcaErr("", "exec", "--only", "DEPLOY", "--", "true"); err == nil {
+		t.Fatal("the third use should be refused (grant exhausted)")
+	}
+
+	if out := runArca(t, "", "grants"); !strings.Contains(out, "DEPLOY") {
+		t.Fatalf("grants list = %q, want DEPLOY", out)
+	}
+
+	runArca(t, "", "revoke", "DEPLOY")
+	if err := runArcaErr("", "revoke", "DEPLOY"); err == nil {
+		t.Fatal("revoking a non-existent grant should error")
+	}
+}
+
+// TestGrantExpiryAndAgent covers the time and agent constraints by manipulating the grant store
+// directly (package-internal helpers).
+func TestGrantExpiryAndAgent(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "sekret", "set", "DEPLOY", "--require-grant")
+	runArca(t, "", "grant", "DEPLOY", "--ttl", "1h")
+
+	// Backdate the grant: an expired grant is refused.
+	grants, err := loadGrants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := grants["DEPLOY"]
+	g.ExpiresAt = time.Now().Add(-time.Hour)
+	grants["DEPLOY"] = g
+	if err := saveGrants(grants); err != nil {
+		t.Fatal(err)
+	}
+	if err := runArcaErr("", "exec", "--only", "DEPLOY", "--", "true"); err == nil {
+		t.Fatal("an expired grant should be refused")
+	}
+	if out := runArca(t, "", "grants"); !strings.Contains(out, "expired") {
+		t.Fatalf("grants list should mark the backdated grant expired: %q", out)
+	}
+
+	// Re-grant restricted to a different agent; the (non-agent) caller is refused.
+	runArca(t, "", "grant", "DEPLOY", "--ttl", "1h", "--agent", "some-other-agent")
+	if err := runArcaErr("", "exec", "--only", "DEPLOY", "--", "true"); err == nil {
+		t.Fatal("a grant restricted to another agent should be refused")
+	}
+}
+
+// TestGrantValidation covers grant input validation, the advisory notes, and the listing of
+// unlimited / any-command grants.
+func TestGrantValidation(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+
+	runArca(t, "", "grants") // empty: "no active grants"
+
+	if err := runArcaErr("", "grant", "bad-name", "--ttl", "1h"); err == nil {
+		t.Fatal("an invalid name should error")
+	}
+	if err := runArcaErr("", "grant", "X"); err == nil {
+		t.Fatal("a grant without --ttl should error")
+	}
+	if err := runArcaErr("", "grant", "X", "--ttl", "nonsense"); err == nil {
+		t.Fatal("a bad --ttl should error")
+	}
+
+	// Granting a not-yet-existing secret, and a plain (non-require-grant) secret, both succeed
+	// with an advisory note. The plain grant is unlimited (uses=0) and any-command.
+	runArca(t, "", "grant", "GHOST", "--ttl", "1h")
+	runArca(t, "sv", "set", "PLAIN")
+	runArca(t, "", "grant", "PLAIN", "--ttl", "1h")
+
+	if out := runArca(t, "", "grants"); !strings.Contains(out, "GHOST") || !strings.Contains(out, "unlimited") {
+		t.Fatalf("grants list = %q, want GHOST and an unlimited entry", out)
 	}
 }
 

@@ -55,6 +55,7 @@ func sandbox(t *testing.T) box {
 		"ARCA_STORE=" + filepath.Join(d, "store.json"),
 		"ARCA_AUDIT=" + filepath.Join(d, "audit.db"),
 		"ARCA_IDENTITY=" + filepath.Join(d, "id.txt"),
+		"XDG_STATE_HOME=" + filepath.Join(d, "state"), // keep grants.json + session keys out of $HOME
 	}}
 }
 
@@ -368,5 +369,48 @@ func TestMCPServer(t *testing.T) {
 	}
 	if !sawRun {
 		t.Fatal("run_with_secrets wrong or leaked a value")
+	}
+}
+
+// TestGrants drives the just-in-time grant flow through the real binary: a require-grant secret is
+// unusable until a matching, command-scoped, bounded grant is issued, and the grant-authorized
+// uses land in the signed audit log (which still verifies).
+func TestGrants(t *testing.T) {
+	needsSh(t)
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "deployval", "set", "DEPLOY", "--require-grant")
+
+	// No grant: exec and get both fail.
+	if _, _, code := b.run(t, "", "exec", "--only", "DEPLOY", "--", "true"); code == 0 {
+		t.Fatal("exec without a grant should fail")
+	}
+	if _, _, code := b.run(t, "", "get", "DEPLOY"); code == 0 {
+		t.Fatal("get of a require-grant secret should fail")
+	}
+
+	// Grant 'true*' for two uses; a non-matching command is refused, matching is allowed twice.
+	b.must(t, "", "grant", "DEPLOY", "--command", "true*", "--uses", "2", "--ttl", "15m")
+	if _, _, code := b.run(t, "", "exec", "--only", "DEPLOY", "--", "sh", "-c", "echo x"); code == 0 {
+		t.Fatal("a command not matching the grant pattern should fail")
+	}
+	b.must(t, "", "exec", "--only", "DEPLOY", "--", "true")
+	b.must(t, "", "exec", "--only", "DEPLOY", "--", "true")
+	if _, _, code := b.run(t, "", "exec", "--only", "DEPLOY", "--", "true"); code == 0 {
+		t.Fatal("the third use should be refused (grant exhausted)")
+	}
+
+	if out := b.must(t, "", "grants"); !strings.Contains(out, "DEPLOY") {
+		t.Fatalf("grants list = %q, want DEPLOY", out)
+	}
+
+	// The grant-authorized exec events are in the tamper-evident log, which still verifies.
+	if _, errOut, code := b.run(t, "", "log", "--verify"); code != 0 || !strings.Contains(errOut, "OK") {
+		t.Fatalf("log --verify: code=%d stderr=%q", code, errOut)
+	}
+
+	b.must(t, "", "revoke", "DEPLOY")
+	if _, _, code := b.run(t, "", "revoke", "DEPLOY"); code == 0 {
+		t.Fatal("revoking a non-existent grant should fail")
 	}
 }

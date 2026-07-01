@@ -75,6 +75,7 @@ func newRoot() *cobra.Command {
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newCanary(),
+		newGrant(), newGrants(), newRevoke(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
@@ -351,11 +352,13 @@ func approverWho() string {
 }
 
 // gate runs the approval check for a secret if it requires one. A no-op otherwise.
-func gate(sec *store.Secret, name string) error {
-	// A canary is a decoy that should never legitimately be used: any access through this gate
-	// (get / inject / exec / env / MCP) is a tripwire. Alert and record it, but let the access
-	// proceed — the value is fake, and letting the caller take it keeps the trap useful (an agent
-	// exfiltrating it doesn't learn it was caught).
+// gate enforces per-secret policy on every access path. cmdline is the command line the secret is
+// about to be used in — set by the command-bearing paths (exec, MCP run_with_secrets), empty for
+// the rest (get/env/inject, MCP read_secret).
+func gate(sec *store.Secret, name, cmdline string) error {
+	// A canary is a decoy that should never legitimately be used: any access through this gate is
+	// a tripwire. Alert and record it, but let the access proceed — the value is fake, and letting
+	// the caller take it keeps the trap useful (an agent exfiltrating it doesn't learn it was caught).
 	if sec.Canary {
 		tripCanary(name)
 	}
@@ -363,6 +366,16 @@ func gate(sec *store.Secret, name string) error {
 	// before any approval prompt or decryption.
 	if sec.Expired(time.Now()) {
 		return fmt.Errorf("%s expired at %s", name, sec.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	// A require-grant secret is usable only through a command-bearing path and only with a matching
+	// active grant. Without a command (get/env/inject), there's nothing to authorize against.
+	if sec.RequireGrant {
+		if cmdline == "" {
+			return fmt.Errorf("%s requires a grant and is usable only via exec / run_with_secrets", name)
+		}
+		if err := checkGrant(name, cmdline); err != nil {
+			return err
+		}
 	}
 	if sec.RequireApproval {
 		return approve(name, approverWho())
@@ -515,7 +528,7 @@ func newSet() *cobra.Command {
 	var tags []string
 	var desc, rotate, ttl, expiresAt string
 	var meta map[string]string
-	var noPrint, requireApproval, canary bool
+	var noPrint, requireApproval, canary, requireGrant bool
 	c := &cobra.Command{
 		Use:   "set NAME",
 		Short: "Add or update a secret (value from TTY or stdin)",
@@ -590,6 +603,9 @@ func newSet() *cobra.Command {
 			if cmd.Flags().Changed("canary") {
 				sec.Canary = canary
 			}
+			if cmd.Flags().Changed("require-grant") {
+				sec.RequireGrant = requireGrant
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -609,6 +625,7 @@ func newSet() *cobra.Command {
 	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
 	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
 	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
+	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
 	return c
 }
 
@@ -633,7 +650,7 @@ func newGet() *cobra.Command {
 			if sec.NoPrint {
 				return fmt.Errorf("%s is marked --no-print; use `exec` instead", name)
 			}
-			if err := gate(sec, name); err != nil {
+			if err := gate(sec, name, ""); err != nil {
 				return err
 			}
 			ids, err := loadIDs()
@@ -1077,7 +1094,7 @@ func newInject() *cobra.Command {
 					}
 					return m
 				}
-				if err := gate(sec, name); err != nil {
+				if err := gate(sec, name, ""); err != nil {
 					if firstErr == nil {
 						firstErr = err
 					}
@@ -1139,7 +1156,8 @@ func newExec() *cobra.Command {
 				return fmt.Errorf("--redact must be auto, on, or off (got %q)", redactMode)
 			}
 
-			caller := filepath.Base(args[0]) // recorded as the audit "caller"
+			caller := filepath.Base(args[0])   // recorded as the audit "caller"
+			cmdline := strings.Join(args, " ") // matched against a require-grant secret's command pattern
 			env := os.Environ()
 			var injected []redactPattern
 			for _, name := range names {
@@ -1153,7 +1171,7 @@ func newExec() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "skip %q: not a valid env name\n", name)
 					continue
 				}
-				if err := gate(sec, name); err != nil {
+				if err := gate(sec, name, cmdline); err != nil {
 					return err
 				}
 				plain, err := crypto.Decrypt(sec.Value, ids)
@@ -1267,7 +1285,7 @@ func newEnv() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "skip %s (--no-print)\n", name)
 					continue
 				}
-				if err := gate(s.Secrets[name], name); err != nil {
+				if err := gate(s.Secrets[name], name, ""); err != nil {
 					return err
 				}
 				plain, err := crypto.Decrypt(s.Secrets[name].Value, ids)

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -174,7 +175,7 @@ func mcpReadSecret(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	if sec.NoPrint {
 		return mcp.NewToolResultError(name + " is marked --no-print; use run_with_secrets"), nil
 	}
-	if err := gate(sec, name); err != nil {
+	if err := gate(sec, name, ""); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	ids, err := loadIDs()
@@ -208,6 +209,7 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+	cmdline := strings.TrimSpace(command + " " + strings.Join(argStrings(req, "args"), " "))
 	env := os.Environ()
 	for _, name := range names {
 		sec := s.Secrets[name]
@@ -218,7 +220,7 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		if err := validName(name); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		if err := gate(sec, name); err != nil {
+		if err := gate(sec, name, cmdline); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		plain, err := crypto.Decrypt(sec.Value, ids)
