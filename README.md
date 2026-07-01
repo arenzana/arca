@@ -218,7 +218,7 @@ connecting with «arca:PASSWORD»          # the value never reaches the agent's
 ```sh
 arca canary AWS_PROD_KEY --template aws    # a realistic decoy; using it should never happen
 # ... later, if anything reads it ...
-#   ⚠  CANARY TRIPPED: "AWS_PROD_KEY" was accessed by claude-code (session …)
+#   ⚠  CANARY TRIPPED: "AWS_PROD_KEY" was accessed by malicious-agent (session …)
 arca canary --list                         # which canaries exist, and which have been tripped
 ```
 
