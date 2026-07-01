@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -211,10 +210,8 @@ func newHandleLs() *cobra.Command {
 				ids = append(ids, id)
 			}
 			sort.Strings(ids)
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			defer w.Flush()
-			fmt.Fprintln(w, "HANDLE\tSECRET\tAS\tCOMMAND\tEXPIRES")
 			now := time.Now()
+			rows := make([][]string, 0, len(ids))
 			for _, id := range ids {
 				h := handles[id]
 				command := h.Command
@@ -225,8 +222,9 @@ func newHandleLs() *cobra.Command {
 				if now.After(h.ExpiresAt) {
 					expires += " (expired)"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id, h.Secret, h.EnvName, command, expires)
+				rows = append(rows, []string{id, h.Secret, h.EnvName, command, expires})
 			}
+			renderTable([]string{"HANDLE", "SECRET", "AS", "COMMAND", "EXPIRES"}, rows)
 			return nil
 		},
 	}

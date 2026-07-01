@@ -74,6 +74,8 @@ otherwise mean reimplementing something security-sensitive. The whole runtime se
   builds reproducible and cross-compilation trivial).
 - **`github.com/mark3labs/mcp-go`** — the MCP server SDK.
 - **`golang.org/x/term`** — no-echo TTY reads.
+- **`github.com/charmbracelet/lipgloss`** — styled, bordered tables for `log`/`ls`/`grants`/etc.
+  (styling only, no TUI/event loop; output falls back to plain columns when piped).
 
 **Selecting** one: a new direct dependency needs a clear reason in the PR, a compatible
 license, and a healthy upstream; prefer the standard library or a small, well-scoped module
