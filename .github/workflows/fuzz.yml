@@ -1,0 +1,56 @@
+# Runs every Go fuzz target for a short time on a schedule, so the fuzzers keep hunting for
+# regressions (leaks, panics, injection) continuously rather than only when run by hand. A failing
+# target writes its crash input under testdata/fuzz/, which is uploaded as an artifact.
+name: fuzz
+
+on:
+  schedule:
+    - cron: '17 4 * * *' # nightly, 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: seconds to fuzz each target
+        default: '60'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz each target
+        env:
+          FUZZTIME: ${{ github.event.inputs.fuzztime || '60' }}
+        run: |
+          set -uo pipefail
+          fail=0
+          for pkg in . ./internal/store ./internal/crypto; do
+            for t in $(go test -list '^Fuzz' "$pkg" 2>/dev/null | grep '^Fuzz' || true); do
+              echo "::group::$t ($pkg)"
+              if ! go test -run '^$' -fuzz "^${t}$" -fuzztime "${FUZZTIME}s" "$pkg"; then
+                echo "::error::fuzz target $t in $pkg found a failure"
+                fail=1
+              fi
+              echo "::endgroup::"
+            done
+          done
+          exit $fail
+
+      - name: Upload crash corpus
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fuzz-crashers
+          path: '**/testdata/fuzz/**'
+          if-no-files-found: ignore

@@ -4,14 +4,72 @@ import (
 	"database/sql"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/arenzana/arca/internal/audit"
+	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
 )
+
+// TestEnvEvalSafety is an end-to-end injection-safety check: a secret value full of shell
+// metacharacters, emitted by `arca env` and evaluated by a real shell, must reconstruct exactly —
+// never execute. This exercises the whole env → shellQuote → eval path.
+func TestEnvEvalSafety(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("needs sh")
+	}
+	sandbox(t)
+	runArca(t, "", "init")
+	nasty := `p@ss'w0rd; rm -rf / #$(id)` + "`whoami`" + `|& "x" ${HOME}`
+	runArca(t, nasty, "set", "SECRET")
+
+	envOut := runArca(t, "", "env") // export SECRET='...'
+	out, err := exec.Command("sh", "-c", envOut+"\nprintf %s \"$SECRET\"").Output()
+	if err != nil {
+		t.Fatalf("eval of `arca env` output failed: %v", err)
+	}
+	if string(out) != nasty {
+		t.Fatalf("env → eval produced %q, want the original value %q", out, nasty)
+	}
+}
+
+// TestInjectEdgeCases covers reference resolution: repeated references both resolve, and an
+// arca:// prefix followed by a separator stops at the name boundary.
+func TestInjectEdgeCases(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "val1", "set", "A")
+
+	out := runArca(t, "a=arca://A;b=arca://A|end\n", "inject")
+	if strings.Count(out, "val1") != 2 {
+		t.Fatalf("expected two resolutions, got %q", out)
+	}
+	if strings.Contains(out, "arca://A") {
+		t.Fatalf("a reference was left unresolved: %q", out)
+	}
+}
+
+// TestReencryptRoundTrip adds a second recipient, re-wraps the store, and confirms the original
+// identity can still decrypt (it remains a recipient).
+func TestReencryptRoundTrip(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "topsecret", "set", "API")
+
+	_, rec, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "recipients", "add", rec)
+	runArca(t, "", "reencrypt")
+	if out := runArca(t, "", "get", "API"); out != "topsecret" {
+		t.Fatalf("after reencrypt, get = %q, want topsecret", out)
+	}
+}
 
 // execArca runs the root command with args, feeding stdin and capturing stdout.
 //

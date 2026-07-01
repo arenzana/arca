@@ -39,6 +39,33 @@ func text(t *testing.T, res *mcp.CallToolResult) string {
 	return tc.Text
 }
 
+// TestMCPBadArgs feeds each tool malformed, missing, or wrong-typed arguments and confirms it
+// returns a tool error (or ignores them) rather than panicking — the MCP surface faces an agent.
+func TestMCPBadArgs(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "A")
+
+	// wrong-typed / missing names resolve to "" and are reported as not-found.
+	if !call(t, mcpShowSecret, map[string]any{"name": 123}).IsError {
+		t.Fatal("show_secret with a non-string name should error")
+	}
+	if !call(t, mcpReadSecret, map[string]any{}).IsError {
+		t.Fatal("read_secret with no name should error")
+	}
+	// secrets/handles given the wrong shape.
+	if !call(t, mcpRunWithSecrets, map[string]any{"command": "true", "secrets": "notarray"}).IsError {
+		t.Fatal("run_with_secrets with a non-array secrets should error")
+	}
+	if !call(t, mcpRunWithHandle, map[string]any{"command": "true"}).IsError {
+		t.Fatal("run_with_handle with no handle should error")
+	}
+	// audit_log must tolerate junk limits without panicking.
+	_ = text(t, call(t, mcpAuditLog, map[string]any{"limit": "not-a-number"}))
+	_ = text(t, call(t, mcpAuditLog, map[string]any{"limit": -5.0}))
+	_ = text(t, call(t, mcpAuditLog, map[string]any{"name": 42}))
+}
+
 // TestMCPHandle covers the opaque-handle path: an agent runs a command via a handle without the
 // secret's name or value, the command scope is enforced, and printed values are redacted.
 func TestMCPHandle(t *testing.T) {

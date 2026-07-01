@@ -429,6 +429,54 @@ func TestHandles(t *testing.T) {
 	}
 }
 
+// TestMCPMalformed feeds the real MCP server a garbage line and an unknown-tool call, then a valid
+// request — the server must survive the junk (not crash) and still answer the later valid call.
+func TestMCPMalformed(t *testing.T) {
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "topsecret", "set", "API")
+
+	cmd := exec.Command(bin, "mcp")
+	cmd.Env = append(os.Environ(), b.env...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`this is not json at all {{{`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"show_secret","arguments":{"name":"API"}}}`,
+	} {
+		io.WriteString(stdin, m+"\n")
+	}
+	stdin.Close()
+	_ = cmd.Wait()
+
+	var answered bool
+	for _, line := range strings.Split(out.String(), "\n") {
+		var resp struct {
+			ID     int             `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}
+		if strings.TrimSpace(line) == "" || json.Unmarshal([]byte(line), &resp) != nil {
+			continue
+		}
+		if resp.ID == 3 && strings.Contains(string(resp.Result), "API") {
+			answered = true
+		}
+	}
+	if !answered {
+		t.Fatalf("MCP server did not survive malformed input and answer a later valid request:\n%s", out.String())
+	}
+}
+
 // TestRateLimit drives the per-secret rate cap through the real binary: N uses succeed within the
 // window and the next is refused.
 func TestRateLimit(t *testing.T) {
