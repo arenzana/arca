@@ -7,7 +7,17 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- **Per-secret rate limiting.** `set`/`generate --rate N/DURATION` (e.g. `--rate 10/1h`) caps how
+- **MCP capability handles.** `arca handle create SECRET --ttl 1h [--command 'psql *'] [--as ENV]`
+  mints an opaque token (`hdl_…`) that lets an agent *use* a secret through the new MCP
+  `run_with_handle` tool — inject it into a command — without learning the secret's name or value,
+  and without being able to enumerate the store. The handle carries the command scope, expiry, and
+  the env-var name the value is injected under. `arca handle ls` / `revoke` manage them.
+- **Per-secret rate limiting.**
+
+### Fixed
+- **MCP `run_with_secrets` now redacts the command's output** (like `arca exec`) before returning
+  it to the agent — previously it returned the raw combined output, so a command that printed an
+  injected secret leaked it straight into the model's context. `set`/`generate --rate N/DURATION` (e.g. `--rate 10/1h`) caps how
   often a secret may be *used* (read/exec/env/inject) within a rolling window. Once the cap is
   reached the access is refused and the throttle is recorded (`op=ratelimit`); a note warns on the
   last permitted use. The count is computed from the audit log, so it needs no extra state. Shown

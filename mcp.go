@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -57,6 +58,13 @@ func registerMCPTools(s *server.MCPServer) {
 		mcp.WithArray("args", mcp.Description("command arguments"), mcp.Items(map[string]any{"type": "string"})),
 		mcp.WithArray("secrets", mcp.Required(), mcp.Description("names of the secrets to inject as env vars"), mcp.Items(map[string]any{"type": "string"}))),
 		mcpRunWithSecrets)
+
+	s.AddTool(mcp.NewTool("run_with_handle",
+		mcp.WithDescription("Run a command using an opaque capability handle (hdl_…) instead of a secret name. The handle, issued out-of-band by the operator, injects a secret as an env var without revealing the secret's name or value; its command scope and expiry are enforced. Output is redacted. Use this when you were given a handle rather than a secret name."),
+		mcp.WithString("handle", mcp.Required(), mcp.Description("the capability handle (hdl_…)")),
+		mcp.WithString("command", mcp.Required(), mcp.Description("executable to run")),
+		mcp.WithArray("args", mcp.Description("command arguments"), mcp.Items(map[string]any{"type": "string"}))),
+		mcpRunWithHandle)
 
 	s.AddTool(mcp.NewTool("read_secret",
 		mcp.WithDescription("Reveal a secret's value into the response. Refused for --no-print secrets, gated by human approval for --require-approval, and always audited. Use only when the value must enter the model context; otherwise prefer run_with_secrets."),
@@ -211,6 +219,7 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	}
 	cmdline := strings.TrimSpace(command + " " + strings.Join(argStrings(req, "args"), " "))
 	env := os.Environ()
+	var pats []redactPattern
 	for _, name := range names {
 		sec := s.Secrets[name]
 		if sec == nil {
@@ -228,20 +237,96 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		env = append(env, name+"="+string(plain))
+		pats = append(pats, redactPattern{name: name, value: plain})
 		if err := logAudit("exec", name, command); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 	}
-	cmd := exec.CommandContext(ctx, command, argStrings(req, "args")...) //#nosec G204 -- the command is the agent's explicit request; running it with injected secrets is this tool's purpose
+	out, exitCode, err := runRedacted(ctx, command, argStrings(req, "args"), env,
+		buildRedactPatterns(pats, false, os.Stderr))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("run %s: %v", command, err)), nil
+	}
+	return jsonResult(map[string]any{"output": out, "exit_code": exitCode})
+}
+
+// runRedacted runs a command with env, capturing combined stdout+stderr with any secret value in
+// pats replaced by its marker — so a command that prints an injected secret can't leak it into the
+// model's response. stdout and stderr use separate redacting writers (each written by one os/exec
+// goroutine) to avoid a data race, then are concatenated.
+func runRedacted(ctx context.Context, command string, args, env []string, pats []redactPattern) (string, int, error) {
+	cmd := exec.CommandContext(ctx, command, args...) //#nosec G204 -- the command is the agent's explicit request; running it with injected secrets is this tool's purpose
 	cmd.Env = env
-	out, runErr := cmd.CombinedOutput()
+	var outB, errB bytes.Buffer
+	rwOut := newRedactWriter(&outB, pats)
+	rwErr := newRedactWriter(&errB, pats)
+	cmd.Stdout, cmd.Stderr = rwOut, rwErr
+	runErr := cmd.Run()
+	_ = rwOut.Flush()
+	_ = rwErr.Flush()
 	exitCode := 0
 	if ee, ok := runErr.(*exec.ExitError); ok {
 		exitCode = ee.ExitCode()
 	} else if runErr != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("run %s: %v", command, runErr)), nil
+		return "", 0, runErr
 	}
-	return jsonResult(map[string]any{"output": string(out), "exit_code": exitCode})
+	return outB.String() + errB.String(), exitCode, nil
+}
+
+// mcpRunWithHandle runs a command using an opaque handle instead of a secret name: the agent never
+// learns which secret it is, nor its value. The handle carries the scope (command glob, expiry) and
+// the env-var name the value is injected under. Output is redacted like run_with_secrets.
+func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id := argString(req, "handle")
+	command := argString(req, "command")
+	if id == "" || command == "" {
+		return mcp.NewToolResultError("handle and command are required"), nil
+	}
+	args := argStrings(req, "args")
+	cmdline := strings.TrimSpace(command + " " + strings.Join(args, " "))
+	h, err := resolveHandle(id, cmdline)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	s, err := openStore()
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	sec := s.Secrets[h.Secret]
+	if sec == nil {
+		return mcp.NewToolResultError("handle target no longer exists"), nil
+	}
+	// The handle is the authorization to *use* the secret, so grant/approval gating is bypassed;
+	// but a canary trips, an expired secret is refused, and a rate limit still applies.
+	if sec.Canary {
+		tripCanary(h.Secret)
+	}
+	if sec.Expired(time.Now()) {
+		return mcp.NewToolResultError("the secret behind this handle has expired"), nil
+	}
+	if sec.RateLimit > 0 {
+		if err := checkRateLimit(sec, h.Secret); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+	}
+	ids, err := loadIDs()
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	plain, err := crypto.Decrypt(sec.Value, ids)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	env := append(os.Environ(), h.EnvName+"="+string(plain))
+	if err := logAudit("exec", h.Secret, id); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	out, exitCode, err := runRedacted(ctx, command, args, env,
+		buildRedactPatterns([]redactPattern{{name: h.EnvName, value: plain}}, false, os.Stderr))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("run %s: %v", command, err)), nil
+	}
+	return jsonResult(map[string]any{"output": out, "exit_code": exitCode})
 }
 
 func mcpAuditLog(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

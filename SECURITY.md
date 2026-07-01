@@ -43,6 +43,12 @@ not a hostile local user (who could bypass arca entirely). Specifically:
   audit log and records each refusal, which stops a runaway agent hammering a secret and surfaces
   the burst. It is heuristic: a patient caller can stay under the cap by spreading use out, and the
   window is best-effort (it trusts the audit timestamps).
+- **Capability handles reduce discovery, not misuse.** An `hdl_…` lets an agent *use* a secret via
+  MCP `run_with_handle` without its name or value, and without listing the store — so a leaked
+  handle exposes only that one scoped, expiring capability, not the whole store. It does not stop
+  the agent from using the handle for its sanctioned purpose; the command run under it has the
+  value in its environment (its output is redacted, but the command itself could still transform
+  and emit it). Treat a handle like a scoped bearer token: revocable, expiring, and audited.
 - **`--no-print` blocks *disclosure*, not *use*.** It refuses `get`/`env`/`inject`, but `exec`
   / MCP `run_with_secrets` deliberately let a command **use** the secret. If the command prints
   an injected value, `arca exec` **redacts it from the captured output** (replacing it with

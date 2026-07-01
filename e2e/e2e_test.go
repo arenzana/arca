@@ -372,6 +372,63 @@ func TestMCPServer(t *testing.T) {
 	}
 }
 
+// TestHandles drives the opaque-handle flow through the real binary: a handle is minted for a
+// secret, then an agent runs a command via run_with_handle over MCP using only the handle — never
+// the secret's name or value.
+func TestHandles(t *testing.T) {
+	needsSh(t)
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "topsecret", "set", "API") // 9 chars
+
+	id := strings.TrimSpace(b.must(t, "", "handle", "create", "API", "--as", "TOK", "--command", "sh *", "--ttl", "1h"))
+	if !strings.HasPrefix(id, "hdl_") {
+		t.Fatalf("handle id = %q", id)
+	}
+	if out := b.must(t, "", "handle", "ls"); !strings.Contains(out, id) {
+		t.Fatalf("handle ls = %q", out)
+	}
+
+	cmd := exec.Command(bin, "mcp")
+	cmd.Env = append(os.Environ(), b.env...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_with_handle","arguments":{"handle":"` + id + `","command":"sh","args":["-c","echo len=${#TOK}"]}}}`,
+	} {
+		io.WriteString(stdin, m+"\n")
+	}
+	stdin.Close()
+	_ = cmd.Wait()
+
+	var sawRun bool
+	for _, line := range strings.Split(out.String(), "\n") {
+		var resp struct {
+			ID     int             `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}
+		if strings.TrimSpace(line) == "" || json.Unmarshal([]byte(line), &resp) != nil {
+			continue
+		}
+		if resp.ID == 2 {
+			s := string(resp.Result)
+			sawRun = strings.Contains(s, "len=9") && !strings.Contains(s, "topsecret")
+		}
+	}
+	if !sawRun {
+		t.Fatalf("run_with_handle over MCP failed or leaked: %s", out.String())
+	}
+}
+
 // TestRateLimit drives the per-secret rate cap through the real binary: N uses succeed within the
 // window and the next is refused.
 func TestRateLimit(t *testing.T) {

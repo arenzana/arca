@@ -39,6 +39,76 @@ func text(t *testing.T, res *mcp.CallToolResult) string {
 	return tc.Text
 }
 
+// TestMCPHandle covers the opaque-handle path: an agent runs a command via a handle without the
+// secret's name or value, the command scope is enforced, and printed values are redacted.
+func TestMCPHandle(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "topsecret", "set", "API") // 9 chars
+
+	id := strings.TrimSpace(runArca(t, "", "handle", "create", "API", "--as", "TOK", "--command", "sh *", "--ttl", "1h"))
+	if !strings.HasPrefix(id, "hdl_") {
+		t.Fatalf("handle id = %q", id)
+	}
+
+	// The command runs with the value in $TOK; arca returns output, never the value.
+	out := text(t, call(t, mcpRunWithHandle, map[string]any{
+		"handle": id, "command": "sh", "args": []any{"-c", "echo len=${#TOK}"},
+	}))
+	if !strings.Contains(out, "len=9") || strings.Contains(out, "topsecret") {
+		t.Fatalf("run_with_handle = %q", out)
+	}
+
+	// A command that prints the value has it redacted, not leaked.
+	red := text(t, call(t, mcpRunWithHandle, map[string]any{
+		"handle": id, "command": "sh", "args": []any{"-c", "echo secret is $TOK"},
+	}))
+	if strings.Contains(red, "topsecret") {
+		t.Fatalf("run_with_handle leaked the value: %q", red)
+	}
+	if !strings.Contains(red, "«arca:TOK»") {
+		t.Fatalf("expected redaction marker, got %q", red)
+	}
+
+	// A command outside the handle's scope, an unknown handle, and a missing handle are refused.
+	if !call(t, mcpRunWithHandle, map[string]any{"handle": id, "command": "psql"}).IsError {
+		t.Fatal("a command not matching the handle scope should error")
+	}
+	if !call(t, mcpRunWithHandle, map[string]any{"handle": "hdl_bogus", "command": "sh"}).IsError {
+		t.Fatal("an unknown handle should error")
+	}
+	if !call(t, mcpRunWithHandle, map[string]any{"command": "sh"}).IsError {
+		t.Fatal("a missing handle should error")
+	}
+
+	// A handle whose target secret was removed errors clearly.
+	runArca(t, "v", "set", "GONE")
+	gid := strings.TrimSpace(runArca(t, "", "handle", "create", "GONE", "--command", "sh *", "--ttl", "1h"))
+	runArca(t, "", "rm", "GONE")
+	if !call(t, mcpRunWithHandle, map[string]any{"handle": gid, "command": "sh", "args": []any{"-c", "true"}}).IsError {
+		t.Fatal("a handle whose secret is gone should error")
+	}
+
+	// A rate-limited secret is throttled through a handle too.
+	runArca(t, "v", "set", "RL", "--rate", "1/1h")
+	rid := strings.TrimSpace(runArca(t, "", "handle", "create", "RL", "--as", "RLV", "--command", "sh *", "--ttl", "1h"))
+	call(t, mcpRunWithHandle, map[string]any{"handle": rid, "command": "sh", "args": []any{"-c", "true"}}) // use 1
+	if !call(t, mcpRunWithHandle, map[string]any{"handle": rid, "command": "sh", "args": []any{"-c", "true"}}).IsError {
+		t.Fatal("a rate-limited secret should be throttled via a handle")
+	}
+
+	// A canary behind a handle still trips (and is allowed, as a decoy).
+	runArca(t, "", "canary", "TRAP")
+	cid := strings.TrimSpace(runArca(t, "", "handle", "create", "TRAP", "--as", "TRAPV", "--command", "sh *", "--ttl", "1h"))
+	call(t, mcpRunWithHandle, map[string]any{"handle": cid, "command": "sh", "args": []any{"-c", "true"}})
+
+	// A command that can't be executed surfaces a run error.
+	bid := strings.TrimSpace(runArca(t, "", "handle", "create", "API", "--command", "nope*", "--ttl", "1h"))
+	if !call(t, mcpRunWithHandle, map[string]any{"handle": bid, "command": "nope_missing_xyz"}).IsError {
+		t.Fatal("an unrunnable command should surface an error")
+	}
+}
+
 func TestMCPTools(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
