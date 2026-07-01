@@ -71,6 +71,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Canary secrets** | Plant realistic decoys (`canary --template stripe`); any use trips a loud, signed audit alert — leak detection, not just prevention |
 | **JIT grants** | `--require-grant` secrets are usable only via a `grant` scoped to a command, a use count, and a time window — bind a secret to *what* an agent does, not just whether it can see it |
 | **Rate limiting** | `set --rate 10/1h` caps how often a secret may be used in a rolling window; the throttle is recorded, so a runaway agent hammering a secret is stopped and surfaced |
+| **Capability handles** | `handle create` mints an opaque `hdl_…` token; over MCP an agent uses it (`run_with_handle`) without ever learning the secret's name or value, or being able to enumerate the store |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
 | **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
@@ -240,6 +241,16 @@ arca set SIGNING_KEY --rate 5/1h        # at most 5 uses per rolling hour
 arca get SIGNING_KEY                     # ... the 6th within the hour is refused and recorded
 ```
 
+**Hand an agent a secret it can't name, read, or enumerate**
+
+```sh
+# operator mints an opaque, command-scoped, expiring handle
+arca handle create DB_PASSWORD --as PGPASSWORD --command 'psql *' --ttl 1h
+#   hdl_3fd698a47ed0c05e21c41d30
+# the agent, over MCP, runs a command via the handle — never seeing the name or value:
+#   run_with_handle(handle="hdl_…", command="psql", args=["-c","select 1"])
+```
+
 **Render a config from a template** (the value only lands in the rendered file):
 
 ```sh
@@ -390,6 +401,8 @@ Each event is tagged with the calling AI agent, auto-detected from the environme
 | `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window | `--command`, `--uses`, `--ttl`, `--agent` |
 | `grants` | List active grants and their remaining uses | — |
 | `revoke SECRET` | Remove the active grant for a secret | — |
+| `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value | `--ttl`, `--command`, `--as` |
+| `handle ls` / `handle revoke ID` | List or revoke handles | — |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) | — |
 | `completion SHELL` | Shell completion script (bash/zsh/fish/powershell) | — |
 
@@ -476,7 +489,8 @@ an agent accesses secrets through controlled, **audited tools** instead of raw s
 |---|---|
 | `list_secrets` | Names + metadata (tags, policy, last read) — **never values** |
 | `show_secret` | Metadata for one secret |
-| `run_with_secrets` | Run a command with named secrets injected as env; returns the command's **output**, not the values |
+| `run_with_secrets` | Run a command with named secrets injected as env; returns the command's **output** (redacted), not the values |
+| `run_with_handle` | Run a command via an opaque `hdl_…` handle — uses a secret **without its name or value**, enforcing the handle's command scope and expiry |
 | `read_secret` | Reveal a value (refused for `--no-print`, requires `--require-approval` confirmation, audited) — the escape hatch |
 | `audit_log` | Recent access events |
 

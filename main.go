@@ -75,7 +75,7 @@ func newRoot() *cobra.Command {
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newCanary(),
-		newGrant(), newGrants(), newRevoke(),
+		newGrant(), newGrants(), newRevoke(), newHandle(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
