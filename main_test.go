@@ -409,6 +409,73 @@ func TestCanaryList(t *testing.T) {
 	}
 }
 
+// TestParseRate covers the --rate N/DURATION parser.
+func TestParseRate(t *testing.T) {
+	if n, w, err := parseRate("10/2h"); err != nil || n != 10 || w != "2h" {
+		t.Fatalf("parseRate(10/2h) = %d,%q,%v", n, w, err)
+	}
+	for _, bad := range []string{"", "10", "abc/1h", "0/1h", "-1/1h", "5/notaduration"} {
+		if _, _, err := parseRate(bad); err == nil {
+			t.Fatalf("parseRate(%q) should error", bad)
+		}
+	}
+}
+
+// TestRateLimit covers the per-secret rate cap: N uses are allowed within the window, the next is
+// refused and recorded, and clearing the rate lifts the cap.
+func TestRateLimit(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "topsecret", "set", "API", "--rate", "2/1h")
+
+	if out := runArca(t, "", "show", "API"); !strings.Contains(out, "rate-limited (2 per 1h)") {
+		t.Fatalf("show should surface the rate policy, got %q", out)
+	}
+
+	runArca(t, "", "get", "API")
+	runArca(t, "", "get", "API")
+	if err := runArcaErr("", "get", "API"); err == nil {
+		t.Fatal("the third use in the window should be rate-limited")
+	}
+
+	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	_, n, _ := a.LastOp("API", "ratelimit")
+	a.Close()
+	if n == 0 {
+		t.Fatal("a throttled access was not recorded")
+	}
+
+	// Clearing the rate lifts the cap.
+	runArca(t, "topsecret", "set", "API", "--rate", "")
+	runArca(t, "", "get", "API")
+}
+
+// TestRateLimitDefaultWindow covers a secret whose RateWindow is unset (e.g. hand-edited), which
+// defaults to 1h in enforcement and display.
+func TestRateLimitDefaultWindow(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "API")
+
+	s, err := store.Load(filepath.Join(dir, "store.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Secrets["API"].RateLimit = 1
+	s.Secrets["API"].RateWindow = "" // triggers the 1h default
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if out := runArca(t, "", "show", "API"); !strings.Contains(out, "per 1h") {
+		t.Fatalf("show should default the window to 1h, got %q", out)
+	}
+	runArca(t, "", "get", "API") // use 1
+	if err := runArcaErr("", "get", "API"); err == nil {
+		t.Fatal("the second use should be throttled under the default window")
+	}
+}
+
 // TestGrants covers the JIT/command-scoped grant lifecycle: a require-grant secret is unusable
 // without a matching grant, a grant authorizes a command pattern for a bounded number of uses,
 // and revoke removes it.

@@ -70,6 +70,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human approval), least-privilege `exec --only` |
 | **Canary secrets** | Plant realistic decoys (`canary --template stripe`); any use trips a loud, signed audit alert — leak detection, not just prevention |
 | **JIT grants** | `--require-grant` secrets are usable only via a `grant` scoped to a command, a use count, and a time window — bind a secret to *what* an agent does, not just whether it can see it |
+| **Rate limiting** | `set --rate 10/1h` caps how often a secret may be used in a rolling window; the throttle is recorded, so a runaway agent hammering a secret is stopped and surfaced |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
 | **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
@@ -230,6 +231,13 @@ arca grant DEPLOY_KEY --command 'terraform *' --uses 3 --ttl 15m
 arca exec --only DEPLOY_KEY -- terraform apply           # allowed (use 1 of 3)
 arca exec --only DEPLOY_KEY -- sh -c 'curl …'            # denied: command doesn't match
 arca grants                                              # secret, command, uses, expiry
+```
+
+**Rate-limit a secret an agent might hammer**
+
+```sh
+arca set SIGNING_KEY --rate 5/1h        # at most 5 uses per rolling hour
+arca get SIGNING_KEY                     # ... the 6th within the hour is refused and recorded
 ```
 
 **Render a config from a template** (the value only lands in the rendered file):

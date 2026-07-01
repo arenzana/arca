@@ -63,6 +63,7 @@ func newGenerate() *cobra.Command {
 	var charset, desc, ttl, expiresAt string
 	var tags []string
 	var noPrint, requireApproval, show, canary, requireGrant bool
+	var rate string
 	c := &cobra.Command{
 		Use:   "generate NAME",
 		Short: "Create a secret with a random value",
@@ -122,6 +123,17 @@ func newGenerate() *cobra.Command {
 			if cmd.Flags().Changed("require-grant") {
 				sec.RequireGrant = requireGrant
 			}
+			if cmd.Flags().Changed("rate") {
+				if rate == "" {
+					sec.RateLimit, sec.RateWindow = 0, ""
+				} else {
+					n, w, err := parseRate(rate)
+					if err != nil {
+						return err
+					}
+					sec.RateLimit, sec.RateWindow = n, w
+				}
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -146,5 +158,6 @@ func newGenerate() *cobra.Command {
 	c.Flags().BoolVar(&show, "show", false, "also print the generated value to stdout")
 	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
 	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
+	c.Flags().StringVar(&rate, "rate", "", "rate limit as N/DURATION (e.g. 10/1h)")
 	return c
 }

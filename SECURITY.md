@@ -39,6 +39,10 @@ not a hostile local user (who could bypass arca entirely). Specifically:
   enforces *intent* but can be sidestepped by an agent that controls argv — renaming a binary or
   wrapping it in `sh -c`. Treat it as expressing and auditing "this secret is for this job," not as
   a containment boundary; every grant, revoke, and use is recorded.
+- **`--rate` is a throttle, not a quota guarantee.** It caps uses per rolling window from the
+  audit log and records each refusal, which stops a runaway agent hammering a secret and surfaces
+  the burst. It is heuristic: a patient caller can stay under the cap by spreading use out, and the
+  window is best-effort (it trusts the audit timestamps).
 - **`--no-print` blocks *disclosure*, not *use*.** It refuses `get`/`env`/`inject`, but `exec`
   / MCP `run_with_secrets` deliberately let a command **use** the secret. If the command prints
   an injected value, `arca exec` **redacts it from the captured output** (replacing it with

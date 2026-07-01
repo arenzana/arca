@@ -7,7 +7,27 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestCountUsesSince(t *testing.T) {
+	l, _ := openChained(t)
+	for _, op := range []string{"read", "exec", "set", "inject"} { // set is not a "use"
+		if err := l.Record(op, "X", "", Identity{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.Record("read", "Y", "", Identity{}); err != nil { // different secret
+		t.Fatal(err)
+	}
+	n, err := l.CountUsesSince("X", time.Now().Add(-time.Hour))
+	if err != nil || n != 3 { // read + exec + inject, not set
+		t.Fatalf("CountUsesSince = %d, %v; want 3", n, err)
+	}
+	if n, _ := l.CountUsesSince("X", time.Now().Add(time.Hour)); n != 0 { // window in the future
+		t.Fatalf("future-window count = %d, want 0", n)
+	}
+}
 
 // TestRecordAndQuery exercises the audit DB end to end: record a few events (including agent
 // identity) and confirm the aggregates (LastRead count) and ordering (Recent, newest-first)
@@ -191,6 +211,12 @@ func TestQueriesAfterClose(t *testing.T) {
 	}
 	if _, err := l.Recent("", 10); err == nil {
 		t.Fatal("Recent on a closed log should error")
+	}
+	if _, err := l.CountUsesSince("X", time.Now()); err == nil {
+		t.Fatal("CountUsesSince on a closed log should error")
+	}
+	if _, err := l.CountOpSince("X", "exec", time.Now()); err == nil {
+		t.Fatal("CountOpSince on a closed log should error")
 	}
 }
 
