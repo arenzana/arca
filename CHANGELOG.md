@@ -6,6 +6,10 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`arca version` output is now an aligned key/value table** — the version is a labeled row like
+  the others, so every value lines up in one column.
+
 ## [0.6.0] - 2026-07-01
 
 ### Added
