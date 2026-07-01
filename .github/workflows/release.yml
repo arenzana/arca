@@ -48,15 +48,19 @@ jobs:
           # resolve; the skip_upload guards then no-op the push when a token is empty.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           SCOOP_GITHUB_TOKEN: ${{ secrets.SCOOP_GITHUB_TOKEN }}
-      # GitHub-native build provenance for every released artifact.
+      # GitHub-native build provenance for every released artifact. Best-effort: every asset is
+      # already cosign-signed (the primary signature), so a transient Sigstore/Rekor outage must
+      # not strand a fully-built, signed release as an unpublished draft. continue-on-error lets
+      # the publish step below run regardless; re-attest out-of-band if a run's provenance is missed.
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        continue-on-error: true
         with:
           subject-path: |
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
-      # Publish only now that every asset and attestation is in place. With immutable
-      # releases enabled, publishing locks the tag + assets, so this must be the last step.
+      # Publish now that every asset is built and cosign-signed (provenance attested best-effort
+      # above). With immutable releases enabled, publishing locks the tag + assets, so this is last.
       - name: publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

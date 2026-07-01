@@ -6,6 +6,19 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`arca version` subcommand.** Prints the version, VCS commit, build date, Go toolchain, and
+  platform (with `--json` for scripts/agents); `arca --version` still prints just the version.
+- **Shippable agent skill.** `skills/arca/SKILL.md` teaches an AI agent arca's "use, don't reveal"
+  workflow and audited MCP tools; `skills/README.md` covers installing it and registering the MCP
+  server. See [skills/](skills/).
+
+### Fixed
+- **Releases no longer strand as an unpublished draft when SLSA provenance flakes.** The
+  build-provenance attestation (supplementary — every asset is already cosign-signed) is now
+  best-effort (`continue-on-error`), so a transient Sigstore/Rekor outage can't block the final
+  publish step. (A v0.5.0 release was stranded as a draft this way and published manually.)
+
 ## [0.5.0] - 2026-07-01
 
 ### Added

@@ -31,6 +31,7 @@
 | `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value | `--ttl`, `--command`, `--as` |
 | `handle ls` / `handle revoke ID` | List or revoke handles | — |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) — see [MCP](MCP.md) | — |
+| `version` | Print version, commit, build date, and toolchain (`arca --version` prints just the version) | `--json` |
 | `completion SHELL` | Shell completion script (bash/zsh/fish/powershell) | — |
 
 Values are always read from a TTY (no echo) or piped stdin — **never** passed as arguments.

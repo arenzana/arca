@@ -24,6 +24,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -54,6 +55,72 @@ func appVersion() string {
 	return version
 }
 
+// versionView is the full build stamp: version plus the VCS commit/date Go embeds and the
+// toolchain/platform. Emitted by `arca version` (and `--json` for scripts/agents).
+type versionView struct {
+	Version  string `json:"version"`
+	Commit   string `json:"commit,omitempty"`
+	Date     string `json:"date,omitempty"`
+	Go       string `json:"go"`
+	Platform string `json:"platform"`
+}
+
+func buildStamp() versionView {
+	v := versionView{Version: appVersion(), Go: runtime.Version(), Platform: runtime.GOOS + "/" + runtime.GOARCH}
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				v.Commit = s.Value
+			case "vcs.time":
+				v.Date = s.Value
+			}
+		}
+	}
+	return v
+}
+
+// formatVersion renders the build stamp for humans (the commit is short-hashed to 12 chars; the
+// commit/date lines are omitted when the values aren't embedded, e.g. a `go build` without VCS).
+func formatVersion(v versionView) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "arca %s\n", v.Version)
+	if v.Commit != "" {
+		commit := v.Commit
+		if len(commit) > 12 {
+			commit = commit[:12]
+		}
+		fmt.Fprintf(&b, "  commit:   %s\n", commit)
+	}
+	if v.Date != "" {
+		fmt.Fprintf(&b, "  built:    %s\n", v.Date)
+	}
+	fmt.Fprintf(&b, "  go:       %s\n", v.Go)
+	fmt.Fprintf(&b, "  platform: %s\n", v.Platform)
+	return b.String()
+}
+
+// newVersion prints the build stamp. `arca --version` already prints just the version string;
+// this subcommand adds the commit, build date, and toolchain, and a --json form.
+func newVersion() *cobra.Command {
+	var jsonOut bool
+	c := &cobra.Command{
+		Use:   "version",
+		Short: "Print version, commit, and build info",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			v := buildStamp()
+			if jsonOut {
+				return emitJSON(v)
+			}
+			fmt.Print(formatVersion(v))
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
+	return c
+}
+
 func main() {
 	// Cobra prints the error itself (SilenceErrors=false); we just set the exit code.
 	if err := newRoot().Execute(); err != nil {
@@ -76,7 +143,7 @@ func newRoot() *cobra.Command {
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newDisable(), newEnable(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newCanary(),
-		newGrant(), newGrants(), newRevoke(), newHandle(),
+		newGrant(), newGrants(), newRevoke(), newHandle(), newVersion(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
