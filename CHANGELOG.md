@@ -7,6 +7,10 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Styled output.** `log`, `ls`, `grants`, and `handle ls` render as color-coded tables on a
+  terminal — bold teal header, dimmed timestamps, ops tinted by kind (hand-rolled ANSI, no new
+  dependency) — and fall back to plain tab-separated columns when the output is piped, so scripts
+  stay parseable.
 - **MCP capability handles.** `arca handle create SECRET --ttl 1h [--command 'psql *'] [--as ENV]`
   mints an opaque token (`hdl_…`) that lets an agent *use* a secret through the new MCP
   `run_with_handle` tool — inject it into a command — without learning the secret's name or value,

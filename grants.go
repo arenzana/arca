@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -241,10 +240,8 @@ func newGrants() *cobra.Command {
 			}
 			sort.Strings(names)
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-			defer w.Flush()
-			fmt.Fprintln(w, "SECRET\tAGENT\tCOMMAND\tUSES\tEXPIRES")
 			now := time.Now()
+			rows := make([][]string, 0, len(names))
 			for _, n := range names {
 				g := grants[n]
 				agent, command := g.Agent, g.Command
@@ -263,8 +260,9 @@ func newGrants() *cobra.Command {
 				if now.After(g.ExpiresAt) {
 					expires += " (expired)"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", n, agent, command, uses, expires)
+				rows = append(rows, []string{n, agent, command, uses, expires})
 			}
+			renderTable([]string{"SECRET", "AGENT", "COMMAND", "USES", "EXPIRES"}, rows)
 			return nil
 		},
 	}
