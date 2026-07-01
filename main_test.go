@@ -179,6 +179,68 @@ func TestDetectIdentityClaude(t *testing.T) {
 	}
 }
 
+// TestActorFallback verifies the audit actor falls back to the OS user when $ARCA_ACTOR is unset,
+// while an explicit $ARCA_ACTOR still wins.
+func TestActorFallback(t *testing.T) {
+	if osUser() == "" {
+		t.Skip("no OS user resolvable in this environment")
+	}
+	for _, e := range []string{"ARCA_ACTOR", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
+		t.Setenv(e, "")
+	}
+	if id := detectIdentity(); id.Actor == "" || id.Actor != osUser() {
+		t.Fatalf("actor = %q, want the OS user %q", id.Actor, osUser())
+	}
+	t.Setenv("ARCA_ACTOR", "explicit")
+	if detectIdentity().Actor != "explicit" {
+		t.Fatal("an explicit $ARCA_ACTOR should take precedence over the OS user")
+	}
+}
+
+// TestPsCommand exercises both branches of the ps-based parent lookup (it runs on Linux too, so
+// the CI coverage platform covers what /proc otherwise shadows).
+func TestPsCommand(t *testing.T) {
+	_ = psCommand(os.Getpid()) // success path (ps present on Linux/macOS); value is host-dependent
+	if got := psCommand(-999999); got != "" {
+		t.Fatalf("psCommand(bogus pid) = %q, want empty", got)
+	}
+}
+
+// TestRm covers removing a secret and the missing-secret error.
+func TestRm(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "X")
+	runArca(t, "", "rm", "X")
+	if err := runArcaErr("", "get", "X"); err == nil {
+		t.Fatal("a removed secret should be gone")
+	}
+	if err := runArcaErr("", "rm", "NOPE"); err == nil {
+		t.Fatal("removing a missing secret should error")
+	}
+}
+
+// TestStrictAudit covers the fail-closed default and the agent-can't-weaken-it invariant.
+func TestStrictAudit(t *testing.T) {
+	for _, e := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
+		t.Setenv(e, "")
+	}
+	t.Setenv("ARCA_STRICT_AUDIT", "") // default is strict
+	if !strictAudit() {
+		t.Fatal("auditing should be strict by default")
+	}
+	t.Setenv("ARCA_STRICT_AUDIT", "0") // a non-agent may opt into best-effort
+	if strictAudit() {
+		t.Fatal("a non-agent should be able to relax strict auditing")
+	}
+	// A detected agent cannot weaken it, even with the lax override set.
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "s")
+	if !strictAudit() {
+		t.Fatal("a detected agent must not be able to disable fail-closed auditing")
+	}
+}
+
 // TestDetectIdentityGeneric verifies the fallback parser for the generic AI_AGENT convention
 // (name_version_agent), used for agents arca doesn't special-case.
 func TestDetectIdentityGeneric(t *testing.T) {
@@ -473,6 +535,27 @@ func TestRateLimitDefaultWindow(t *testing.T) {
 	runArca(t, "", "get", "API") // use 1
 	if err := runArcaErr("", "get", "API"); err == nil {
 		t.Fatal("the second use should be throttled under the default window")
+	}
+}
+
+// TestRateLimitBadWindow covers the parse-failure fallback: an unparseable window still enforces
+// (falling back to 1h) rather than erroring the access.
+func TestRateLimitBadWindow(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "API")
+	s, err := store.Load(filepath.Join(dir, "store.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Secrets["API"].RateLimit = 1
+	s.Secrets["API"].RateWindow = "bogus"
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "get", "API") // use 1
+	if err := runArcaErr("", "get", "API"); err == nil {
+		t.Fatal("a bad window should still throttle (fallback to 1h), not error open")
 	}
 }
 
