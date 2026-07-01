@@ -12,7 +12,7 @@ func TestVersionCommand(t *testing.T) {
 	sandbox(t)
 
 	out := runArca(t, "", "version")
-	if !strings.Contains(out, "arca ") || !strings.Contains(out, "platform:") || !strings.Contains(out, "go:") {
+	if !strings.Contains(out, "version:") || !strings.Contains(out, "platform:") || !strings.Contains(out, "go:") {
 		t.Fatalf("version output missing fields: %q", out)
 	}
 
@@ -32,10 +32,29 @@ func TestFormatVersion(t *testing.T) {
 		Version: "v1.2.3", Commit: "abcdef0123456789", Date: "2026-07-01T00:00:00Z",
 		Go: "go1.26", Platform: "darwin/arm64",
 	})
-	if !strings.Contains(full, "arca v1.2.3") || !strings.Contains(full, "commit:   abcdef012345") ||
-		!strings.Contains(full, "built:    2026-07-01") || strings.Contains(full, "abcdef0123456789") {
-		t.Fatalf("full stamp wrong: %q", full)
+	for _, want := range []string{"version:", "v1.2.3", "commit:", "abcdef012345", "built:", "2026-07-01", "platform:"} {
+		if !strings.Contains(full, want) {
+			t.Fatalf("full stamp missing %q: %q", want, full)
+		}
 	}
+	if strings.Contains(full, "abcdef0123456789") { // commit must be truncated to 12
+		t.Fatalf("commit not truncated: %q", full)
+	}
+	// Every value must start at the same column (aligned key/value table).
+	var col = -1
+	for _, line := range strings.Split(strings.TrimRight(full, "\n"), "\n") {
+		i := strings.Index(line, ": ")
+		if i < 0 { // the "arca" header line has no "key: value"
+			continue
+		}
+		valCol := len(line) - len(strings.TrimLeft(line[i+1:], " ")) // first non-space after the colon
+		if col == -1 {
+			col = valCol
+		} else if valCol != col {
+			t.Fatalf("values not aligned (want col %d, got %d): %q", col, valCol, line)
+		}
+	}
+
 	bare := formatVersion(versionView{Version: "dev", Go: "go1.26", Platform: "linux/amd64"})
 	if strings.Contains(bare, "commit:") || strings.Contains(bare, "built:") {
 		t.Fatalf("bare stamp should omit commit/date: %q", bare)
