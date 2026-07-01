@@ -4,7 +4,21 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+// TestSaveGrantsError covers the mkdir-failure path when the state dir can't be created.
+func TestSaveGrantsError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil { // a file where a dir is needed
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", blocker)
+	if err := saveGrants(map[string]Grant{"S": {Secret: "S", ExpiresAt: time.Now()}}); err == nil {
+		t.Fatal("saveGrants should fail when the state dir can't be created")
+	}
+}
 
 func TestGlobMatch(t *testing.T) {
 	cases := []struct {

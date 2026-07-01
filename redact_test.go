@@ -118,6 +118,24 @@ func TestPartialMarker(t *testing.T) {
 	}
 }
 
+// TestRedactMultipleSecrets checks that several injected secrets are all redacted from one stream,
+// including a value that appears more than once, with no leaks — at every chunk size.
+func TestRedactMultipleSecrets(t *testing.T) {
+	pats := []redactPattern{pat("A", "alpha99"), pat("B", "bravo1234"), pat("C", "charlieXY")}
+	input := "start alpha99 then bravo1234 mid charlieXY and alpha99 again end"
+	for chunk := 1; chunk <= len(input); chunk++ {
+		out, _ := feed(t, pats, chunk, input)
+		for _, v := range []string{"alpha99", "bravo1234", "charlieXY"} {
+			if strings.Contains(out, v) {
+				t.Fatalf("chunk=%d leaked %q: %q", chunk, v, out)
+			}
+		}
+		if !strings.Contains(out, "«arca:A»") || !strings.Contains(out, "«arca:B»") || !strings.Contains(out, "«arca:C»") {
+			t.Fatalf("chunk=%d missing a marker: %q", chunk, out)
+		}
+	}
+}
+
 func TestBuildRedactPatternsSkipsShort(t *testing.T) {
 	var warn bytes.Buffer
 	in := []redactPattern{{name: "OK", value: []byte("longenough")}, {name: "TINY", value: []byte("ab")}}
