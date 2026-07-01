@@ -42,6 +42,8 @@ type Secret struct {
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
 	Canary          bool              `json:"canary,omitempty"`           // decoy: any use is a tripwire, alerted and audited
 	RequireGrant    bool              `json:"require_grant,omitempty"`    // usable only via exec/MCP with a matching active grant
+	RateLimit       int               `json:"rate_limit,omitempty"`       // max uses per RateWindow (0 = unlimited)
+	RateWindow      string            `json:"rate_window,omitempty"`      // the window for RateLimit (e.g. "1h"); empty defaults to 1h
 	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
 }
 

@@ -377,10 +377,66 @@ func gate(sec *store.Secret, name, cmdline string) error {
 			return err
 		}
 	}
+	// A rate-limited secret is refused once it has been used its allowed number of times within the
+	// window — a throttle on a secret an agent is hammering.
+	if sec.RateLimit > 0 {
+		if err := checkRateLimit(sec, name); err != nil {
+			return err
+		}
+	}
 	if sec.RequireApproval {
 		return approve(name, approverWho())
 	}
 	return nil
+}
+
+// checkRateLimit enforces a per-secret "N uses per window" cap using the audit log. The current
+// access hasn't been recorded yet, so it is allowed iff the prior uses within the window are below
+// the cap. A refusal is itself recorded (op=ratelimit) as a throttle signal.
+func checkRateLimit(sec *store.Secret, name string) error {
+	winStr := sec.RateWindow
+	if winStr == "" {
+		winStr = "1h"
+	}
+	win, err := parseTTL(winStr)
+	if err != nil {
+		win = time.Hour
+		winStr = "1h"
+	}
+	a, err := audit.Open(auditPath())
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	used, err := a.CountUsesSince(name, time.Now().Add(-win))
+	if err != nil {
+		return err
+	}
+	if used >= sec.RateLimit {
+		_ = logAudit("ratelimit", name, "")
+		return fmt.Errorf("%s rate limit reached: %d use(s) in the last %s (max %d)", name, used, winStr, sec.RateLimit)
+	}
+	if used+1 == sec.RateLimit {
+		fmt.Fprintf(os.Stderr, "note: %s is at its last permitted use in this %s window\n", name, winStr)
+	}
+	return nil
+}
+
+// parseRate parses a "--rate N/DURATION" value (e.g. "10/1h") into a use cap and a window string.
+func parseRate(s string) (int, string, error) {
+	n, dur, ok := strings.Cut(strings.TrimSpace(s), "/")
+	if !ok {
+		return 0, "", fmt.Errorf("rate must look like N/DURATION, e.g. 10/1h")
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(n))
+	if err != nil || count <= 0 {
+		return 0, "", fmt.Errorf("rate count must be a positive integer (got %q)", strings.TrimSpace(n))
+	}
+	dur = strings.TrimSpace(dur)
+	if _, err := parseTTL(dur); err != nil {
+		return 0, "", fmt.Errorf("rate window %q: %w", dur, err)
+	}
+	return count, dur, nil
 }
 
 // tripCanary records and announces that a decoy secret was used — a strong signal that something
@@ -529,6 +585,7 @@ func newSet() *cobra.Command {
 	var desc, rotate, ttl, expiresAt string
 	var meta map[string]string
 	var noPrint, requireApproval, canary, requireGrant bool
+	var rate string
 	c := &cobra.Command{
 		Use:   "set NAME",
 		Short: "Add or update a secret (value from TTY or stdin)",
@@ -606,6 +663,17 @@ func newSet() *cobra.Command {
 			if cmd.Flags().Changed("require-grant") {
 				sec.RequireGrant = requireGrant
 			}
+			if cmd.Flags().Changed("rate") {
+				if rate == "" {
+					sec.RateLimit, sec.RateWindow = 0, ""
+				} else {
+					n, w, err := parseRate(rate)
+					if err != nil {
+						return err
+					}
+					sec.RateLimit, sec.RateWindow = n, w
+				}
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -626,6 +694,7 @@ func newSet() *cobra.Command {
 	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
 	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
 	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
+	c.Flags().StringVar(&rate, "rate", "", "rate limit as N/DURATION (e.g. 10/1h); empty clears it")
 	return c
 }
 
@@ -792,6 +861,13 @@ func newShow() *cobra.Command {
 			}
 			if sec.RequireApproval {
 				fmt.Printf("policy:       requires approval\n")
+			}
+			if sec.RateLimit > 0 {
+				win := sec.RateWindow
+				if win == "" {
+					win = "1h"
+				}
+				fmt.Printf("policy:       rate-limited (%d per %s)\n", sec.RateLimit, win)
 			}
 			if len(sec.Tags) > 0 {
 				fmt.Printf("tags:         %s\n", strings.Join(sec.Tags, ", "))

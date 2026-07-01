@@ -6,6 +6,13 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Per-secret rate limiting.** `set`/`generate --rate N/DURATION` (e.g. `--rate 10/1h`) caps how
+  often a secret may be *used* (read/exec/env/inject) within a rolling window. Once the cap is
+  reached the access is refused and the throttle is recorded (`op=ratelimit`); a note warns on the
+  last permitted use. The count is computed from the audit log, so it needs no extra state. Shown
+  by `show`; clear it with `--rate ""`. Heuristic by design — a patient caller can spread use out.
+
 ## [0.4.0] - 2026-07-01
 
 ### Added

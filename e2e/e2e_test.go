@@ -372,6 +372,19 @@ func TestMCPServer(t *testing.T) {
 	}
 }
 
+// TestRateLimit drives the per-secret rate cap through the real binary: N uses succeed within the
+// window and the next is refused.
+func TestRateLimit(t *testing.T) {
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "topsecret", "set", "API", "--rate", "2/1h")
+	b.must(t, "", "get", "API")
+	b.must(t, "", "get", "API")
+	if _, _, code := b.run(t, "", "get", "API"); code == 0 {
+		t.Fatal("the third use in the window should be rate-limited")
+	}
+}
+
 // TestGrants drives the just-in-time grant flow through the real binary: a require-grant secret is
 // unusable until a matching, command-scoped, bounded grant is issued, and the grant-authorized
 // uses land in the signed audit log (which still verifies).

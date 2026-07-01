@@ -452,6 +452,20 @@ func (l *Log) CountOpSince(name, op string, since time.Time) (int, error) {
 	return count, nil
 }
 
+// CountUsesSince counts "use" events (read/exec/env/inject) for a secret at or after a time — the
+// same op set as LastRead — for per-secret rate limiting.
+func (l *Log) CountUsesSince(name string, since time.Time) (int, error) {
+	var count int
+	row := l.db.QueryRow(
+		`SELECT COUNT(*) FROM events
+		   WHERE name=? AND op IN ('read','exec','env','inject') AND ts>=?`,
+		name, since.UTC().Format(time.RFC3339))
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // Recent returns the latest events (newest first), optionally filtered to a single secret.
 func (l *Log) Recent(name string, limit int) ([]Event, error) {
 	q := `SELECT ts, op, name, ppid, caller, actor, agent, version, session FROM events`
