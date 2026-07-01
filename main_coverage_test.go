@@ -236,10 +236,15 @@ func TestApproverWho(t *testing.T) {
 	if w := approverWho(); w != "alice" {
 		t.Fatalf("actor descriptor = %q", w)
 	}
-	// fallback branch
+	// fallback branch: with no agent and no explicit actor, the OS user stands in (or the literal
+	// "this process" when even that can't be resolved).
 	t.Setenv("ARCA_ACTOR", "")
-	if w := approverWho(); w != "this process" {
-		t.Fatalf("fallback descriptor = %q", w)
+	want := osUser()
+	if want == "" {
+		want = "this process"
+	}
+	if w := approverWho(); w != want {
+		t.Fatalf("fallback descriptor = %q, want %q", w, want)
 	}
 }
 

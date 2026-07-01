@@ -21,11 +21,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -152,6 +154,11 @@ func logAudit(op, name, caller string) error {
 
 // recordAudit opens the audit log and writes one event with the auto-detected identity.
 func recordAudit(op, name, caller string) error {
+	// When the caller isn't set explicitly (exec/run_with_secrets pass the command), record the
+	// process that invoked arca — so `log` shows who ran a get/set, not a blank.
+	if caller == "" {
+		caller = parentCommand()
+	}
 	a, err := audit.Open(auditPath())
 	if err != nil {
 		return err
@@ -180,12 +187,58 @@ func strictAudit() bool {
 	return true
 }
 
+// osUser returns the local OS username, used as the default audit actor when $ARCA_ACTOR isn't set.
+func osUser() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if v := os.Getenv("USER"); v != "" {
+		return v
+	}
+	return os.Getenv("USERNAME") // Windows
+}
+
+// parentCommand best-effort resolves the command that invoked arca (the parent process), used as
+// the default audit caller. It's memoized because a short-lived arca process has one parent, and
+// the macOS/BSD path shells out to `ps`.
+var (
+	parentOnce sync.Once
+	parentVal  string
+)
+
+func parentCommand() string {
+	parentOnce.Do(func() { parentVal = computeParentCommand() })
+	return parentVal
+}
+
+func computeParentCommand() string {
+	ppid := os.Getppid()
+	// Linux exposes the parent's name directly.
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", ppid)); err == nil { //#nosec G304 -- /proc path built from our own ppid
+		return strings.TrimSpace(string(b))
+	}
+	return psCommand(ppid) // macOS / BSD fallback
+}
+
+// psCommand asks `ps` for a pid's command name. Split out so it's directly testable (ps exists on
+// Linux too, even though computeParentCommand prefers /proc there).
+func psCommand(pid int) string {
+	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output() //#nosec G204 -- fixed args; pid is an int
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(filepath.Base(strings.TrimSpace(string(out))), "-") // strip login-shell "-"
+}
+
 // detectIdentity figures out who/what is accessing a secret: the explicit $ARCA_ACTOR plus an
 // auto-detected AI agent (name, version, session) from well-known environment variables. This
 // is what lets `arca log` attribute access to a specific agent session without the user
 // having to configure anything.
 func detectIdentity() audit.Identity {
 	id := audit.Identity{Actor: os.Getenv("ARCA_ACTOR")}
+	if id.Actor == "" {
+		id.Actor = osUser() // fall back to the OS user so the actor is never blank
+	}
 	switch {
 	case envSet("CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
 		id.Agent = "claude-code"
