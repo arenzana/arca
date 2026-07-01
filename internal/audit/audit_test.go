@@ -6,9 +6,93 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
+
+// TestRecordVerifyWeirdInputs checks the canonical serialization + chain handle awkward field
+// values — unicode, NUL bytes, embedded separators, very long strings, empty — without corrupting
+// the chain.
+func TestRecordVerifyWeirdInputs(t *testing.T) {
+	l, _ := openChained(t)
+	cases := []Identity{
+		{Actor: "a", Agent: "claude-code", Version: "1.0", Session: "s"},
+		{Actor: "act\x00or", Agent: "«weird»", Session: "s\t2"},
+		{Actor: "emoji🔐", Version: "9.9.9"},
+		{},
+	}
+	names := []string{"SEC", "na\x00me", "emoji🔐", "x"}
+	ops := []string{"read", "", "«op»", "read"}
+	for i, id := range cases {
+		if err := l.Record(ops[i], names[i], "cal ler", id); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+	r, err := l.Verify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.OK || r.Checked != len(cases) {
+		t.Fatalf("weird-input chain should verify: %+v", r)
+	}
+}
+
+// TestConcurrentRecordVerifies checks the hash chain survives concurrent writers: the single
+// connection + BEGIN IMMEDIATE must serialize appends so no two events fork the chain.
+func TestConcurrentRecordVerifies(t *testing.T) {
+	l, _ := openChained(t)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	l.UseSigner(&Signer{SessionID: "s1", Priv: priv, Pub: pub})
+
+	const workers, per = 8, 20
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < per; i++ {
+				if err := l.Record("read", "SEC", "", Identity{Session: "s1"}); err != nil {
+					t.Errorf("concurrent record: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	r, err := l.Verify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.OK || r.Checked != workers*per {
+		t.Fatalf("after %d concurrent records: verify = %+v", workers*per, r)
+	}
+}
+
+// TestChainPropertyRandomTamper is a property test: for many random op sequences the fresh chain
+// verifies, and mutating any single row is always detected.
+func TestChainPropertyRandomTamper(t *testing.T) {
+	ops := []string{"read", "set", "exec", "canary", "ratelimit", "rotate", "env", "inject"}
+	for seed := 0; seed < 25; seed++ {
+		l, p := openChained(t)
+		n := 3 + seed%9
+		for i := 0; i < n; i++ {
+			op := ops[(i*7+seed*3)%len(ops)]
+			if err := l.Record(op, "S", "", Identity{Session: "x"}); err != nil {
+				t.Fatalf("seed %d: record: %v", seed, err)
+			}
+		}
+		if r, _ := l.Verify(); !r.OK || r.Checked != n {
+			t.Fatalf("seed %d: fresh chain should verify, got %+v", seed, r)
+		}
+		id := 1 + seed%n // mutate a row in range
+		tamper(t, p, "UPDATE events SET name='HACKED' WHERE id=?", id)
+		if r, _ := l.Verify(); r.OK {
+			t.Fatalf("seed %d: tampering row %d was not detected", seed, id)
+		}
+	}
+}
 
 func TestCountUsesSince(t *testing.T) {
 	l, _ := openChained(t)

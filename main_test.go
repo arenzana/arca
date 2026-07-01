@@ -206,6 +206,31 @@ func TestPsCommand(t *testing.T) {
 	}
 }
 
+// TestPolicyInteraction checks that per-secret policies compose in the right gate order: a secret
+// that is both a canary and rate-limited trips the canary on *every* access attempt (even the one
+// the rate limiter then refuses), and the throttle is recorded.
+func TestPolicyInteraction(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "decoyvalue", "set", "BAIT", "--canary", "--rate", "1/1h")
+
+	runArca(t, "", "get", "BAIT") // use 1: canary trips, allowed
+	if err := runArcaErr("", "get", "BAIT"); err == nil {
+		t.Fatal("the second use should be rate-limited")
+	}
+
+	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	_, canaryN, _ := a.LastOp("BAIT", "canary")
+	_, rlN, _ := a.LastOp("BAIT", "ratelimit")
+	a.Close()
+	if canaryN < 2 {
+		t.Fatalf("canary should trip on both attempts (incl. the throttled one), got %d", canaryN)
+	}
+	if rlN == 0 {
+		t.Fatal("the rate-limit refusal should be recorded")
+	}
+}
+
 // TestRm covers removing a secret and the missing-secret error.
 func TestRm(t *testing.T) {
 	sandbox(t)
