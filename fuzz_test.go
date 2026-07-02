@@ -38,13 +38,18 @@ func FuzzGlobMatch(f *testing.F) {
 	for _, p := range []string{"terraform *", "a*b*c", "*", "exact", "", "kubectl * pods", "*x"} {
 		f.Add(p, "terraform apply")
 	}
+	f.Add("*", "\n") // regression: `*` must match a newline (globMatch is byte-based, not `.`-based)
 	f.Fuzz(func(t *testing.T, pattern, s string) {
 		got := globMatch(pattern, s)
 		parts := strings.Split(pattern, "*")
 		for i := range parts {
 			parts[i] = regexp.QuoteMeta(parts[i])
 		}
-		re, err := regexp.Compile("^" + strings.Join(parts, ".*") + "$")
+		// globMatch is byte-based (HasPrefix/Index/HasSuffix), so `*` matches any byte, newlines
+		// included — the intended behaviour for matching a command string against a grant pattern.
+		// The reference must use (?s) so `.` also matches newline; without it `^.*$` spuriously
+		// rejects a value containing "\n" and disagrees with globMatch.
+		re, err := regexp.Compile("(?s)^" + strings.Join(parts, ".*") + "$")
 		if err != nil {
 			return
 		}
