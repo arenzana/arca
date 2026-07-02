@@ -39,6 +39,14 @@ func newEdit() *cobra.Command {
 			if err := gate(sec, name, ""); err != nil {
 				return err
 			}
+			// A --no-print secret must never have its plaintext revealed. gate() doesn't check
+			// NoPrint (each reader does), and edit would otherwise hand the current value to
+			// $EDITOR — which the caller controls (EDITOR=cat / EDITOR='cp {} …'), turning `edit`
+			// into a read primitive that get/inject/env/read_secret all refuse. Rotate to change
+			// the value of a --no-print secret without disclosing the old one.
+			if sec.NoPrint {
+				return fmt.Errorf("%s is --no-print; editing would expose its value — use `rotate %s` to replace it without revealing the current value", name, name)
+			}
 			ids, err := loadIDs()
 			if err != nil {
 				return err

@@ -9,9 +9,10 @@ documented in [SECURITY.md](../SECURITY.md#trust-model--boundaries).
 
 ## `--no-print` (exec-only)
 
-Refuses `get` / `env` / `inject` for a secret, so its value can never be printed to stdout — only
-`exec` (or MCP `run_with_secrets`) can inject it into a subprocess. It blocks *disclosure*, not
-*use*.
+Refuses `get` / `env` / `inject` / `edit` for a secret, so its value can never be printed to stdout
+or opened in an editor — only `exec` (or MCP `run_with_secrets`) can inject it into a subprocess. It
+blocks *disclosure*, not *use*. To change a `--no-print` secret's value without revealing the old
+one, use `rotate` (which prompts for a new value) rather than `edit`.
 
 ```sh
 arca set PROD_DB_PASSWORD --no-print
