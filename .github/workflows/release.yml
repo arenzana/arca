@@ -4,6 +4,17 @@ on:
   push:
     tags: ['v*']
 
+# A single tag push has been observed to deliver the push event twice (v0.6.1: two runs, same
+# commit, one second apart). With no guard, two goreleaser runs raced: each built independently and
+# — because the archives are not byte-reproducible — produced different checksums, so the GitHub
+# release ended up with one build's assets while the Homebrew cask got the other's, breaking
+# `brew upgrade` on a SHA-256 mismatch. Serialize by tag ref and cancel any older run of the same
+# tag, so exactly one build ever publishes a given tag. Distinct tags use distinct groups, so a
+# normal sequence of releases is unaffected; only a duplicate of the *same* tag is cancelled.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 # Least privilege at the top level; the release job elevates only what it needs.
 permissions:
   contents: read
@@ -65,3 +76,39 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "${GITHUB_REF_NAME}" --draft=false --repo "${GITHUB_REPOSITORY}"
+      # Guardrail: confirm the Homebrew cask goreleaser just pushed to the tap carries the same
+      # checksums as the release assets we just published (both come from this one build, so within
+      # a single run they must match). This turns a silent divergence — the class of failure that
+      # shipped a broken v0.6.1 cask — into an immediate red release instead of a user's failed
+      # `brew upgrade`. Skipped when no tap token is configured (the cask isn't pushed then).
+      - name: verify the published cask matches the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "no tap token configured — goreleaser did not push a cask; skipping cask verification"
+            exit 0
+          fi
+          ver="${GITHUB_REF_NAME#v}"
+          # The tap push can lag a few seconds behind goreleaser; retry until the cask shows this version.
+          cask=""
+          for _ in 1 2 3 4 5 6; do
+            cask=$(gh api "repos/${GITHUB_REPOSITORY_OWNER}/homebrew-tap/contents/Casks/arca.rb" --jq '.content' 2>/dev/null | base64 -d || true)
+            grep -q "version \"${ver}\"" <<<"$cask" && break
+            sleep 5
+          done
+          grep -q "version \"${ver}\"" <<<"$cask" || { echo "::error::could not read the ${ver} cask from the tap"; exit 1; }
+          fail=0
+          for plat in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+            want=$(awk -v f="arca_${ver}_${plat}.tar.gz" '$2==f{print $1}' dist/checksums.txt)
+            # In the cask the sha256 line precedes the matching url line.
+            got=$(grep -B1 "arca_#{version}_${plat}.tar.gz" <<<"$cask" | grep -oiE '[0-9a-f]{64}' | head -1 || true)
+            if [ -z "$want" ] || [ "$want" != "$got" ]; then
+              echo "::error::cask ${plat} checksum '${got:-<none>}' != release '${want:-<none>}'"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "cask checksums match the published release ✓"

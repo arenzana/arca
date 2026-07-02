@@ -6,6 +6,15 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Release pipeline no longer ships a Homebrew cask whose checksums don't match the release.** A
+  single `v*` tag push can be delivered twice, and with no `concurrency` guard two goreleaser runs
+  raced: since the archives aren't byte-reproducible, the GitHub release and the cask ended up with
+  checksums from *different* builds, so `brew upgrade` failed on a SHA-256 mismatch (hit on v0.6.1;
+  the cask was corrected out-of-band). The release workflow now serializes by tag ref
+  (`concurrency` with `cancel-in-progress`) so exactly one build publishes a tag, and a post-publish
+  step verifies the pushed cask's checksums against the release, failing loudly on any divergence.
+
 ## [0.6.1] - 2026-07-02
 
 ### Security
