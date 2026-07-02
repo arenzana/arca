@@ -6,6 +6,8 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-02
+
 ### Security
 - **Reserved environment-variable names are refused as secret names** (SEC-01). A name that is a
   valid identifier but would hijack a child process when injected — `PATH`, `LD_PRELOAD`,
@@ -193,7 +195,8 @@ All notable changes to arca are documented here. The format follows
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/arenzana/arca/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/arenzana/arca/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/arenzana/arca/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/arenzana/arca/compare/v0.3.0...v0.4.0
