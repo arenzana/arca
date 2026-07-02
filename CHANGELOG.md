@@ -6,6 +6,16 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **Canary designation is no longer stored in the synced store** (SEC-04). The "this is a decoy"
+  flag used to be a cleartext `canary` field in `store.json` — so anyone who obtained the store (the
+  exact exfiltration a canary exists to catch) could tell the decoys from the real secrets and step
+  around them. It now lives in a local registry (`$XDG_STATE_HOME/arca/canaries.json`), never synced;
+  the decoy's value remains an ordinary-looking store entry. Canaries planted before this release
+  keep working (the legacy store flag is still honored), and re-running `arca canary NAME` migrates
+  the designation into the private registry. Trade-off: the registry is local, so a canary is armed
+  per-machine — plant it on each machine where arca runs.
+
 ### Fixed
 - **Release pipeline no longer ships a Homebrew cask whose checksums don't match the release.** A
   single `v*` tag push can be delivered twice, and with no `concurrency` guard two goreleaser runs

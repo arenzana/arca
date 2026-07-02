@@ -40,7 +40,7 @@ type Secret struct {
 	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`       // hard expiry: reads/use refuse the value after this (also how `disable` suspends a secret)
 	NoPrint         bool              `json:"no_print,omitempty"`         // exec-only: never reveal to stdout
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
-	Canary          bool              `json:"canary,omitempty"`           // decoy: any use is a tripwire, alerted and audited
+	Canary          bool              `json:"canary,omitempty"`           // DEPRECATED (pre-0.6.2): decoy flag. Read for back-compat but no longer written — the designation now lives in the local canary registry, out of the synced store (SEC-04).
 	RequireGrant    bool              `json:"require_grant,omitempty"`    // usable only via exec/MCP with a matching active grant
 	RateLimit       int               `json:"rate_limit,omitempty"`       // max uses per RateWindow (0 = unlimited)
 	RateWindow      string            `json:"rate_window,omitempty"`      // the window for RateLimit (e.g. "1h"); empty defaults to 1h
