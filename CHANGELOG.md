@@ -6,6 +6,16 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **Reserved environment-variable names are refused as secret names** (SEC-01). A name that is a
+  valid identifier but would hijack a child process when injected — `PATH`, `LD_PRELOAD`,
+  `DYLD_*`, `IFS`, `BASH_ENV`, `PROMPT_COMMAND`, `PYTHONPATH`, `NODE_OPTIONS`, and kin — is now
+  rejected on write and re-checked (case-insensitively) at every injection site (`exec`, `env`,
+  `run_with_secrets`, `handle`). Previously the shape check let these through, so anyone able to
+  write the (git-synced) store could plant a correctly-encrypted `LD_PRELOAD` entry and get code
+  execution on the operator's next `arca exec`. The store keeps recipient public keys in cleartext,
+  so this needed no private key.
+
 ## [0.6.0] - 2026-07-01
 
 ### Added
