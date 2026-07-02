@@ -15,6 +15,11 @@ All notable changes to arca are documented here. The format follows
   write the (git-synced) store could plant a correctly-encrypted `LD_PRELOAD` entry and get code
   execution on the operator's next `arca exec`. The store keeps recipient public keys in cleartext,
   so this needed no private key.
+- **`edit` no longer exposes a `--no-print` secret** (SEC-02). `edit` gated the access but never
+  checked `--no-print` before decrypting and handing the plaintext to `$EDITOR` — and the caller
+  controls `$EDITOR` (`EDITOR=cat`, `EDITOR='cp {} …'`), so `arca edit` was a read primitive that
+  `get`/`inject`/`env`/`read_secret` all refuse. It now refuses a `--no-print` secret and points to
+  `rotate` (which replaces the value without revealing the old one).
 
 ## [0.6.0] - 2026-07-01
 

@@ -35,6 +35,42 @@ func TestEditCommand(t *testing.T) {
 	}
 }
 
+// TestEditRefusesNoPrint covers SEC-02: `edit` must refuse a --no-print secret rather than hand
+// its plaintext to $EDITOR, which the caller controls (e.g. EDITOR=cat). Every other read path
+// (get/inject/env/read_secret) already rejects --no-print; edit was the gap.
+func TestEditRefusesNoPrint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake editor is a /bin/sh script")
+	}
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "topsecret", "set", "SEALED", "--no-print")
+
+	// A fake $EDITOR that would exfiltrate the plaintext if edit ever decrypted it.
+	leak := filepath.Join(t.TempDir(), "leak.txt")
+	ed := filepath.Join(t.TempDir(), "ed.sh")
+	if err := os.WriteFile(ed, []byte("#!/bin/sh\ncat \"$1\" > \""+leak+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", ed)
+
+	if err := runArcaErr("", "edit", "SEALED"); err == nil {
+		t.Fatal("edit of a --no-print secret must be refused")
+	}
+	if b, err := os.ReadFile(leak); err == nil && len(b) > 0 {
+		t.Fatalf("edit exposed a --no-print value to $EDITOR: %q", b)
+	}
+	// A normal (printable) secret still edits fine.
+	runArca(t, "orig", "set", "OPEN")
+	if err := os.WriteFile(ed, []byte("#!/bin/sh\nprintf 'changed' > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "edit", "OPEN")
+	if out := runArca(t, "", "get", "OPEN"); out != "changed" {
+		t.Fatalf("edit of a normal secret broke: %q", out)
+	}
+}
+
 func TestEditErrors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses the unix `false`/`true` utilities as fake editors")
