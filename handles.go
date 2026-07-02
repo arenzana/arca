@@ -105,6 +105,7 @@ func newHandle() *cobra.Command {
 
 func newHandleCreate() *cobra.Command {
 	var ttl, command, as string
+	var override bool
 	c := &cobra.Command{
 		Use:   "create SECRET",
 		Short: "Mint a handle letting an agent use SECRET (via MCP run_with_handle) without its name or value",
@@ -121,12 +122,36 @@ func newHandleCreate() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// A handle is a bearer capability that lets its holder use the secret via
+			// run_with_handle, which bypasses the grant/approval gates. Minting one is therefore a
+			// privileged, operator-only act: a detected agent must not be able to mint a handle for
+			// itself (that would let it self-issue the very authorization those gates withhold).
+			// This mirrors the agent-can't-self-approve invariant (see approve()).
+			if id := detectIdentity(); id.Agent != "" {
+				return fmt.Errorf("refusing to mint a handle: %s looks like an AI agent, and handles are operator-issued capabilities", id.Agent)
+			}
 			s, err := openStore()
 			if err != nil {
 				return err
 			}
-			if s.Secrets[name] == nil {
+			sec := s.Secrets[name]
+			if sec == nil {
 				return fmt.Errorf("no such secret: %s", name)
+			}
+			// run_with_handle bypasses grant/approval, so minting a handle for such a secret converts
+			// "authorize/approve each use" into "approve once, use freely for the TTL". Make that an
+			// explicit, audited operator decision rather than a silent laundering of the policy.
+			if (sec.RequireApproval || sec.RequireGrant) && !override {
+				var which string
+				switch {
+				case sec.RequireApproval && sec.RequireGrant:
+					which = "--require-approval and --require-grant"
+				case sec.RequireApproval:
+					which = "--require-approval"
+				default:
+					which = "--require-grant"
+				}
+				return fmt.Errorf("%s is %s; a handle would bypass that per-use gate. Re-run with --override to accept this", name, which)
 			}
 			env := as
 			if env == "" {
@@ -148,7 +173,14 @@ func newHandleCreate() *cobra.Command {
 			if err := saveHandles(handles); err != nil {
 				return err
 			}
-			if err := logAudit("handle-create", name, id); err != nil {
+			// Record an --override mint distinctly, so authorizing a handle past an approval/grant
+			// gate leaves a clear audit trail rather than looking like an ordinary handle.
+			op := "handle-create"
+			if override && (sec.RequireApproval || sec.RequireGrant) {
+				op = "handle-override"
+				fmt.Fprintf(os.Stderr, "warning: handle for %s bypasses its per-use gate for %s\n", name, ttl)
+			}
+			if err := logAudit(op, name, id); err != nil {
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "handle for %s (injected as $%s), valid until %s:\n",
@@ -160,6 +192,7 @@ func newHandleCreate() *cobra.Command {
 	c.Flags().StringVar(&ttl, "ttl", "", "how long the handle is valid (e.g. 1h, 2h) — required")
 	c.Flags().StringVar(&command, "command", "", "only authorize a command line matching this glob (e.g. 'psql *')")
 	c.Flags().StringVar(&as, "as", "", "env var to inject the value under (default: the secret name)")
+	c.Flags().BoolVar(&override, "override", false, "allow minting a handle for a --require-approval/--require-grant secret (the handle bypasses that per-use gate)")
 	return c
 }
 

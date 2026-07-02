@@ -28,7 +28,7 @@
 | `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window | `--command`, `--uses`, `--ttl`, `--agent` |
 | `grants` | List active grants and their remaining uses | — |
 | `revoke SECRET` | Remove the active grant for a secret | — |
-| `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value | `--ttl`, `--command`, `--as` |
+| `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value — operator-only (refused for a detected agent) | `--ttl`, `--command`, `--as`, `--override` |
 | `handle ls` / `handle revoke ID` | List or revoke handles | — |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) — see [MCP](MCP.md) | — |
 | `version` | Print version, commit, build date, and toolchain (`arca --version` prints just the version) | `--json` |

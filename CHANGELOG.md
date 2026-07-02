@@ -7,6 +7,14 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Handle creation is operator-only and won't silently launder past an approval/grant gate**
+  (SEC-05). `run_with_handle` intentionally bypasses the `--require-grant`/`--require-approval`
+  gates (the handle *is* the operator's pre-authorization), but `handle create` only checked that
+  the secret existed — so a detected agent could mint itself a handle and use it to get exactly the
+  authorization those gates withhold. `handle create` now (1) refuses when the caller looks like an
+  AI agent, mirroring the agent-can't-self-approve invariant, and (2) requires an explicit
+  `--override` to mint a handle for a `--require-approval` or `--require-grant` secret, recording it
+  as a distinct `handle-override` audit event.
 - **Canary designation is no longer stored in the synced store** (SEC-04). The "this is a decoy"
   flag used to be a cleartext `canary` field in `store.json` — so anyone who obtained the store (the
   exact exfiltration a canary exists to catch) could tell the decoys from the real secrets and step
