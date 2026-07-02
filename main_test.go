@@ -444,6 +444,43 @@ func TestLogVerify(t *testing.T) {
 	}
 }
 
+// TestLogVerifyRequireSigned covers SEC-03 at the CLI: --require-signed passes on a normally-signed
+// log, fails once signatures are stripped (even though the chain stays valid), and is rejected
+// without --verify.
+func TestLogVerifyRequireSigned(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "get", "A")
+
+	// Real CLI events are signed, so require-signed is satisfied.
+	if err := runArcaErr("", "log", "--verify", "--require-signed"); err != nil {
+		t.Fatalf("require-signed on a signed log should pass: %v", err)
+	}
+	// It's only meaningful with --verify.
+	if err := runArcaErr("", "log", "--require-signed"); err == nil {
+		t.Fatal("--require-signed without --verify should be rejected")
+	}
+
+	// Strip signatures out of band: the chain is still intact (plain --verify passes) but
+	// --require-signed must now fail.
+	db, err := sql.Open("sqlite", filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE events SET sig=NULL, signer_id=NULL"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if err := runArcaErr("", "log", "--verify"); err != nil {
+		t.Fatalf("plain verify should still pass with an intact chain: %v", err)
+	}
+	if err := runArcaErr("", "log", "--verify", "--require-signed"); err == nil {
+		t.Fatal("require-signed should fail once signatures are stripped")
+	}
+}
+
 // TestCanaryValue checks the decoy templates produce realistically-shaped tokens.
 func TestCanaryValue(t *testing.T) {
 	for tmpl, prefix := range map[string]string{"stripe": "sk_live_", "github": "ghp_", "aws": "AKIA", "slack": "xoxb-"} {

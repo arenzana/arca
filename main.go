@@ -231,9 +231,13 @@ func recordAudit(op, name, caller string) error {
 	}
 	defer a.Close()
 	// Sign events with the session key so the log is tamper-evident and attributable. If the key
-	// can't be set up, still record (chained but unsigned) rather than dropping the audit entry.
+	// can't be set up, still record (chained but unsigned) rather than dropping the audit entry —
+	// but warn, because a silently unsigned event is indistinguishable from a stripped signature at
+	// verify time (see `log --verify --require-signed`).
 	if s, err := auditSigner(); err == nil {
 		a.UseSigner(s)
+	} else {
+		fmt.Fprintf(os.Stderr, "arca: warning: recording an UNSIGNED audit event (signer unavailable: %v)\n", err)
 	}
 	return a.Record(op, name, caller, detectIdentity())
 }
@@ -1635,7 +1639,7 @@ func newEnv() *cobra.Command {
 // newLog prints the access history, including the attributed AI agent and session.
 func newLog() *cobra.Command {
 	var limit int
-	var jsonOut, verify bool
+	var jsonOut, verify, requireSigned bool
 	c := &cobra.Command{
 		Use:   "log [NAME]",
 		Short: "Show access history (--verify checks the log's integrity)",
@@ -1651,7 +1655,10 @@ func newLog() *cobra.Command {
 			}
 			defer a.Close()
 			if verify {
-				return verifyLog(a)
+				return verifyLog(a, requireSigned)
+			}
+			if requireSigned {
+				return fmt.Errorf("--require-signed is only valid with --verify")
 			}
 			evs, err := a.Recent(name, limit)
 			if err != nil {
@@ -1685,12 +1692,15 @@ func newLog() *cobra.Command {
 	c.Flags().IntVar(&limit, "limit", 50, "max events")
 	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
 	c.Flags().BoolVar(&verify, "verify", false, "verify the audit log's hash chain and signatures instead of printing it")
+	c.Flags().BoolVar(&requireSigned, "require-signed", false, "with --verify, also fail if any chained event is unsigned")
 	return c
 }
 
 // verifyLog runs an integrity check of the audit log and prints the result. It returns a non-zero
-// error when the chain or a signature is broken, so it can gate a cron/CI check.
-func verifyLog(a *audit.Log) error {
+// error when the chain or a signature is broken, so it can gate a cron/CI check. With requireSigned
+// it also fails when any chained event lacks a signature (a stripped or never-applied signature),
+// which a default verify only reports as a count.
+func verifyLog(a *audit.Log, requireSigned bool) error {
 	r, err := a.Verify()
 	if err != nil {
 		return err
@@ -1701,7 +1711,13 @@ func verifyLog(a *audit.Log) error {
 		}
 		return fmt.Errorf("audit log integrity FAILED: %s", r.Reason)
 	}
+	if requireSigned && r.Unsigned > 0 {
+		return fmt.Errorf("audit log integrity FAILED: %d of %d chained event(s) are unsigned (--require-signed)", r.Unsigned, r.Checked)
+	}
 	fmt.Fprintf(os.Stderr, "audit log OK: %d event(s) chained, %d signed", r.Checked, r.Signed)
+	if r.Unsigned > 0 {
+		fmt.Fprintf(os.Stderr, ", %d UNSIGNED", r.Unsigned)
+	}
 	if r.Legacy > 0 {
 		fmt.Fprintf(os.Stderr, ", %d legacy (pre-chain, unverifiable)", r.Legacy)
 	}

@@ -20,6 +20,15 @@ All notable changes to arca are documented here. The format follows
   controls `$EDITOR` (`EDITOR=cat`, `EDITOR='cp {} …'`), so `arca edit` was a read primitive that
   `get`/`inject`/`env`/`read_secret` all refuse. It now refuses a `--no-print` secret and points to
   `rotate` (which replaces the value without revealing the old one).
+- **`log --verify` no longer returns a false green after the audit log is rewritten** (SEC-03).
+  Three ways a DB-writer could fake a clean verification are now refused instead of reported as
+  benign: (1) a *legacy downgrade* that NULLs every row's hash so the chain walk skips them — a
+  born-chained DB is recorded in `PRAGMA user_version`, so a legacy row appearing later fails; (2)
+  deleting the `audit_head` row (the truncation anchor) — a missing head on a chained DB fails; (3)
+  *signature stripping* — unsigned chained rows are now counted and shown, and the new
+  `log --verify --require-signed` fails when any chained event is unsigned. `recordAudit` also warns
+  on stderr when it has to record an unsigned event (previously silent), since a silently-unsigned
+  event is indistinguishable from a stripped one at verify time.
 
 ## [0.6.0] - 2026-07-01
 
