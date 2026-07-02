@@ -10,7 +10,7 @@ import (
 // --- H1: secret-name validation -------------------------------------------------------------
 
 func TestValidName(t *testing.T) {
-	good := []string{"A", "_x", "API_TOKEN", "a1", "lower_case", "_"}
+	good := []string{"A", "_x", "API_TOKEN", "a1", "lower_case", "_", "MY_PATH", "PATHFINDER", "LDAP_URL"}
 	bad := []string{"", "1a", "a-b", "a b", "a;b", "a=b", "PATH/x", "föö", "x;touch /tmp/p"}
 	for _, n := range good {
 		if err := validName(n); err != nil {
@@ -21,6 +21,57 @@ func TestValidName(t *testing.T) {
 		if validName(n) == nil {
 			t.Errorf("validName(%q) = nil, want error", n)
 		}
+	}
+}
+
+// TestValidNameRejectsReserved covers SEC-01: a name that is shaped like a valid identifier but
+// would hijack a child process's environment when injected (PATH, LD_PRELOAD, DYLD_*, IFS, …)
+// must be refused. Case-insensitive; the LD_/DYLD_ prefixes are dynamic.
+func TestValidNameRejectsReserved(t *testing.T) {
+	reserved := []string{
+		"PATH", "path", "Path", "LD_PRELOAD", "ld_preload", "LD_LIBRARY_PATH",
+		"DYLD_INSERT_LIBRARIES", "IFS", "BASH_ENV", "ENV", "SHELLOPTS", "PROMPT_COMMAND",
+		"PS1", "PYTHONPATH", "NODE_OPTIONS", "PERL5LIB", "GIT_SSH_COMMAND", "EDITOR",
+	}
+	for _, n := range reserved {
+		if err := validName(n); err == nil {
+			t.Errorf("validName(%q) = nil, want reserved-name error", n)
+		}
+	}
+	// Names that merely contain or extend a reserved token stay valid.
+	for _, n := range []string{"LDAP", "LD", "DYLD", "MY_PATH", "PATH_TO_KEY", "ENVOY", "EDITORS"} {
+		if err := validName(n); err != nil {
+			t.Errorf("validName(%q) = %v, want nil (not reserved)", n, err)
+		}
+	}
+}
+
+// TestExecRefusesPoisonedReservedName covers the defense-in-depth re-check: even if a reserved
+// name is smuggled directly into a git-synced store, `exec` must not inject it into the child
+// (which would hijack the process, e.g. LD_PRELOAD loading an attacker .so).
+func TestExecRefusesPoisonedReservedName(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "good-val", "set", "GOOD")
+
+	// Poison the store directly, bypassing set's validation, with a reserved env name.
+	s, err := store.Load(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Secrets["LD_PRELOAD"] = s.Secrets["GOOD"]
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// exec must still run, but must NOT export LD_PRELOAD into the child.
+	out := runArca(t, "", "exec", "--", "sh", "-c", "echo LD=[${LD_PRELOAD:-unset}]")
+	if !strings.Contains(out, "LD=[unset]") {
+		t.Fatalf("exec injected a poisoned reserved name into the child: %q", out)
+	}
+	// env must not emit it either.
+	if e := runArca(t, "", "env"); strings.Contains(e, "LD_PRELOAD") {
+		t.Fatalf("env emitted a poisoned reserved name: %q", e)
 	}
 }
 

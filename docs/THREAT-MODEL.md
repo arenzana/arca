@@ -53,9 +53,14 @@ central invariant and is covered by dedicated tests.
 
 ### T3 — Shell / environment injection via crafted secret names
 A hand-edited or synced store containing a name like `x=...; rm -rf` could break
-out of `eval "$(arca env)"` or hijack an environment variable. *Addressed:* names
-are validated against `^[A-Za-z_][A-Za-z0-9_]*$` on write, and invalid names are
-skipped by `env`/`exec`.
+out of `eval "$(arca env)"`, or a name like `LD_PRELOAD`/`PATH` could hijack the
+child process when injected by `exec`. *Addressed:* names are validated against
+`^[A-Za-z_][A-Za-z0-9_]*$` on write, **and** rejected if they collide with a
+reserved environment variable (`PATH`, `LD_*`, `DYLD_*`, `IFS`, `BASH_ENV`,
+`PROMPT_COMMAND`, the language-runtime hooks, …). Both checks are re-applied at
+every injection site (`env`, `exec`, `run_with_secrets`, `handle`), so an
+already-poisoned store is refused there too — a reserved or malformed name is
+never emitted or exported.
 
 ### T4 — Audit log is bypassed, rewritten, or made unreliable
 *Addressed (within scope):* auditing is fail-closed by default — a read aborts
