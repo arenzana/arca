@@ -27,11 +27,26 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo); registers the "sqlite" driver
+)
+
+// Schema markers recorded in SQLite's PRAGMA user_version, set once when a DB is first migrated:
+//
+//   - schemaLegacy: the DB already held pre-chain (NULL-hash) rows when hash-chaining was applied.
+//     Its legacy prefix is genuine history and is tolerated by Verify.
+//   - schemaChained: the DB has only ever held chained rows. A NULL-hash (legacy) row appearing in
+//     such a DB — or a missing head — is therefore a tamper signal, not benign history: it's how a
+//     "legacy downgrade" (NULL every hash, drop the head) tries to fake a clean verification.
+//
+// A DB predating this marker reads as user_version 0 and is treated as schemaLegacy for leniency.
+const (
+	schemaLegacy  = 1
+	schemaChained = 2
 )
 
 // Log is an open handle to the audit database.
@@ -187,6 +202,31 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+
+	// Record, once, whether this DB has ever carried pre-chain (NULL-hash) rows. A DB that has only
+	// ever held chained rows is marked schemaChained, so a legacy row (or a deleted head) appearing
+	// afterwards is treated by Verify as tamper rather than benign history. A DB with a genuine
+	// pre-chain prefix is marked schemaLegacy and keeps tolerating those rows. Marked only when the
+	// version is still 0 (a fresh DB, or one predating this marker) so the decision is made once.
+	var uv int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&uv); err != nil {
+		return err
+	}
+	if uv == 0 {
+		var legacy int
+		if err := db.QueryRow("SELECT COUNT(*) FROM events WHERE hash IS NULL").Scan(&legacy); err != nil {
+			return err
+		}
+		mark := schemaChained
+		if legacy > 0 {
+			mark = schemaLegacy
+		}
+		// user_version can't be a bound parameter; mark is a trusted in-process constant, never
+		// attacker input.
+		if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version=%d", mark)); err != nil { //#nosec G201 -- mark is a constant, not user input
+			return err
+		}
+	}
 	return nil
 }
 
@@ -277,6 +317,7 @@ type VerifyResult struct {
 	Checked  int    // number of hash-chained events verified
 	Legacy   int    // rows predating chaining (NULL hash), not verifiable
 	Signed   int    // events with a valid signature
+	Unsigned int    // chained events with NO signature (a stripped sig looks like this)
 	BrokenID int64  // event id where verification first failed (0 if OK)
 	Reason   string // why it failed
 }
@@ -296,12 +337,18 @@ func (l *Log) Verify() (VerifyResult, error) {
 	if err != nil {
 		return VerifyResult{}, err
 	}
+	// schema tells us whether this DB is allowed to contain legacy (NULL-hash) rows. A born-chained
+	// DB (schemaChained) that suddenly has them — or has lost its head — has been tampered with.
+	var schema int
+	if err := l.db.QueryRow("PRAGMA user_version").Scan(&schema); err != nil {
+		return VerifyResult{}, err
+	}
 
 	res := VerifyResult{OK: true}
 	var expect []byte // expected prev_hash of the next chained row
 	first := true
 	fail := func(id int64, reason string) VerifyResult {
-		return VerifyResult{Checked: res.Checked, Legacy: res.Legacy, Signed: res.Signed, BrokenID: id, Reason: reason}
+		return VerifyResult{Checked: res.Checked, Legacy: res.Legacy, Signed: res.Signed, Unsigned: res.Unsigned, BrokenID: id, Reason: reason}
 	}
 
 	for _, e := range evs {
@@ -326,9 +373,21 @@ func (l *Log) Verify() (VerifyResult, error) {
 				return fail(e.id, "invalid signature for the recording session"), nil
 			}
 			res.Signed++
+		} else {
+			res.Unsigned++ // a chained-but-unsigned row (also what a stripped signature looks like)
 		}
 		res.Checked++
 		expect = e.hash
+	}
+
+	// A legacy (NULL-hash) row in a DB that has only ever been chained is not benign history: it's
+	// how a "legacy downgrade" (NULL every hash so the chain loop skips them) fakes a clean verify.
+	// Fail loudly instead of reporting the rows as unverifiable-but-OK.
+	if schema >= schemaChained && res.Legacy > 0 {
+		return VerifyResult{
+			Checked: res.Checked, Legacy: res.Legacy, Signed: res.Signed, Unsigned: res.Unsigned,
+			Reason: "unchained (legacy) rows in a fully-chained log — possible legacy-downgrade tamper, or an older arca binary wrote to this DB",
+		}, nil
 	}
 
 	// Compare against the recorded head: a smaller count or different last hash suggests the tail
@@ -338,10 +397,18 @@ func (l *Log) Verify() (VerifyResult, error) {
 	switch err := l.db.QueryRow("SELECT last_hash, n FROM audit_head WHERE id=1").Scan(&headHash, &headN); err {
 	case nil:
 		if res.Checked != headN || (expect != nil && !bytes.Equal(expect, headHash)) {
-			return VerifyResult{Checked: res.Checked, Legacy: res.Legacy, Signed: res.Signed, Reason: "head mismatch: recent events may have been truncated"}, nil
+			return VerifyResult{Checked: res.Checked, Legacy: res.Legacy, Signed: res.Signed, Unsigned: res.Unsigned, Reason: "head mismatch: recent events may have been truncated"}, nil
 		}
 	case sql.ErrNoRows:
-		// no head recorded (e.g. only legacy rows) — nothing to compare
+		// A missing head is normal only for a genuinely empty log (or a pure pre-chain legacy DB
+		// that never chained anything). If any chained rows were verified, or this is a born-chained
+		// DB that holds any rows at all, the head — the truncation anchor — was deleted: a tamper.
+		if res.Checked > 0 || (schema >= schemaChained && res.Legacy > 0) {
+			return VerifyResult{
+				Checked: res.Checked, Legacy: res.Legacy, Signed: res.Signed, Unsigned: res.Unsigned,
+				Reason: "audit_head is missing — the integrity anchor (truncation guard) was deleted",
+			}, nil
+		}
 	default:
 		return VerifyResult{}, err
 	}

@@ -68,14 +68,21 @@ before disclosure if the access cannot be recorded; an agent cannot turn this
 off. The log is also **tamper-evident**: each event is hash-chained into the
 previous one (`hashᵢ = SHA-256(hashᵢ₋₁ ‖ canonical(eventᵢ))`) and signed with the
 recording session's Ed25519 key, so editing, deleting, or reordering past events
-breaks the chain or a signature and is caught by `arca log --verify`. *Residual /
+breaks the chain or a signature and is caught by `arca log --verify`. `--verify`
+also refuses three ways a DB-writer could try to fake a clean result rather than
+report them as benign: a "legacy downgrade" that NULLs every hash so the chain
+loop skips the rows (a born-chained DB is marked in `PRAGMA user_version`, so a
+legacy row appearing later fails); deletion of the `audit_head` truncation anchor
+(a missing head on a chained DB fails); and signature stripping (unsigned chained
+rows are counted, and `--verify --require-signed` fails on any). *Residual /
 documented limitation:* it is tamper-*evident*, not tamper-proof — arca runs as
 the user, so by default the session signing key is reachable by the machine
-owner, who can add new fake entries going forward (full non-repudiation needs the
-key in a TPM / hardware token / remote signer). Identity *input* remains
-advisory: the agent name/`ARCA_ACTOR` come from the environment, so the log binds
-each event to a session key but records the *claimed* human/agent identity. Tail
-truncation is detectable only against the recorded head or an external anchor.
+owner, who can add new fake entries going forward *and* could also reset
+`user_version` and re-sign a rewritten chain (full non-repudiation needs the key
+in a TPM / hardware token / remote signer, and truncation needs an external
+anchor beyond the in-DB head). Identity *input* remains advisory: the agent
+name/`ARCA_ACTOR` come from the environment, so the log binds each event to a
+session key but records the *claimed* human/agent identity.
 
 ### T5 — Malformed or hostile store input
 A corrupted, oversized, or version-mismatched store file. *Addressed:* `Load`

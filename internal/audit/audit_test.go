@@ -373,6 +373,63 @@ func TestVerifyDetectsTruncation(t *testing.T) {
 	}
 }
 
+// TestVerifyDetectsLegacyDowngrade covers SEC-03: a "legacy downgrade" — NULL every row's hash so
+// the chain loop skips them, and delete the head — must NOT verify clean in a born-chained DB.
+// Previously this reported Checked=0/Legacy=N/OK=true (a false green).
+func TestVerifyDetectsLegacyDowngrade(t *testing.T) {
+	l, p := openChained(t) // fresh DB => user_version = schemaChained
+	recordN(t, l, 5)
+	tamper(t, p, "UPDATE events SET hash=NULL, prev_hash=NULL, sig=NULL")
+	tamper(t, p, "DELETE FROM audit_head")
+	if r, _ := l.Verify(); r.OK {
+		t.Fatalf("legacy-downgrade tamper verified clean: %+v", r)
+	}
+}
+
+// TestVerifyDetectsHeadDeletion covers SEC-03: deleting the audit_head row (the truncation anchor)
+// on a chained DB must fail verification. Previously a missing head was silently "nothing to
+// compare" and passed.
+func TestVerifyDetectsHeadDeletion(t *testing.T) {
+	l, p := openChained(t)
+	recordN(t, l, 4)
+	tamper(t, p, "DELETE FROM audit_head")
+	if r, _ := l.Verify(); r.OK {
+		t.Fatalf("head deletion verified clean: %+v", r)
+	}
+}
+
+// TestVerifyCountsUnsigned covers SEC-03: chained-but-unsigned rows are counted (so a stripped or
+// never-applied signature is visible) while the chain itself still verifies.
+func TestVerifyCountsUnsigned(t *testing.T) {
+	l, _ := openChained(t) // no signer attached => events are unsigned
+	recordN(t, l, 3)
+	r, err := l.Verify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.OK || r.Checked != 3 || r.Signed != 0 || r.Unsigned != 3 {
+		t.Fatalf("verify = %+v, want OK with 3 checked / 0 signed / 3 unsigned", r)
+	}
+}
+
+// TestVerifyDetectsSigStripping covers SEC-03: recomputing the whole chain after an edit and NULLing
+// every signature (an attacker without any session key) leaves a valid chain — but the Unsigned
+// count exposes it, and --require-signed (exercised at the CLI layer) turns it into a failure.
+func TestVerifyDetectsSigStripping(t *testing.T) {
+	l, p := openChained(t)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	l.UseSigner(&Signer{SessionID: "s1", Priv: priv, Pub: pub})
+	recordN(t, l, 3)
+	tamper(t, p, "UPDATE events SET sig=NULL, signer_id=NULL")
+	r, _ := l.Verify()
+	if !r.OK { // the chain is intact, so a default verify still passes...
+		t.Fatalf("stripping signatures should leave the chain valid: %+v", r)
+	}
+	if r.Signed != 0 || r.Unsigned != 3 { // ...but every row is now flagged unsigned
+		t.Fatalf("verify = %+v, want 0 signed / 3 unsigned after stripping", r)
+	}
+}
+
 // TestMigrateLegacyDB checks that a DB created before chaining gets the new columns, and that its
 // pre-chain rows are reported as legacy while new events chain and verify normally.
 func TestMigrateLegacyDB(t *testing.T) {
