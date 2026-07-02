@@ -170,6 +170,10 @@ func newRename() *cobra.Command {
 			if err := s.Save(); err != nil {
 				return err
 			}
+			// Move any canary designation so a renamed decoy keeps tripping (SEC-04).
+			if err := renameCanary(old, dst); err != nil {
+				return fmt.Errorf("renamed %s but failed to move its canary state: %w", old, err)
+			}
 			if err := logAudit("rename", old, dst); err != nil {
 				return err
 			}

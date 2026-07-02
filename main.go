@@ -518,7 +518,9 @@ func gate(sec *store.Secret, name, cmdline string) error {
 	// A canary is a decoy that should never legitimately be used: any access through this gate is
 	// a tripwire. Alert and record it, but let the access proceed — the value is fake, and letting
 	// the caller take it keeps the trap useful (an agent exfiltrating it doesn't learn it was caught).
-	if sec.Canary {
+	// The designation lives in the local registry, not the synced store (SEC-04); isCanary also
+	// honors the legacy pre-0.6.2 store flag.
+	if isCanary(name, sec) {
 		tripCanary(name)
 	}
 	// Hard expiry is checked next: an expired secret is refused on every access path,
@@ -816,8 +818,9 @@ func newSet() *cobra.Command {
 			if cmd.Flags().Changed("require-approval") {
 				sec.RequireApproval = requireApproval
 			}
-			if cmd.Flags().Changed("canary") {
-				sec.Canary = canary
+			canaryChanged := cmd.Flags().Changed("canary")
+			if canaryChanged {
+				sec.Canary = false // never persist the designation to the (synced) store — SEC-04
 			}
 			if cmd.Flags().Changed("require-grant") {
 				sec.RequireGrant = requireGrant
@@ -835,6 +838,15 @@ func newSet() *cobra.Command {
 			}
 			if err := s.Save(); err != nil {
 				return err
+			}
+			if canaryChanged {
+				update := unmarkCanary
+				if canary {
+					update = markCanary
+				}
+				if err := update(name); err != nil {
+					return fmt.Errorf("saved %s but failed to update its canary state: %w", name, err)
+				}
 			}
 			if err := logAudit("set", name, ""); err != nil {
 				return err
@@ -1086,6 +1098,7 @@ func newRm() *cobra.Command {
 			if err := s.Save(); err != nil {
 				return err
 			}
+			_ = unmarkCanary(name) // best-effort registry cleanup (SEC-04); a stale entry is harmless
 			if err := logAudit("rm", name, ""); err != nil {
 				return err
 			}

@@ -298,7 +298,7 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 	// The handle is the authorization to *use* the secret, so grant/approval gating is bypassed;
 	// but a canary trips, an expired secret is refused, and a rate limit still applies.
-	if sec.Canary {
+	if isCanary(h.Secret, sec) {
 		tripCanary(h.Secret)
 	}
 	if sec.Expired(time.Now()) {

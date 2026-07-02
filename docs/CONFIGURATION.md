@@ -16,8 +16,8 @@ All paths are overridable so the store can live in your dotfiles while the audit
 | `ARCA_APPROVAL` | short-circuit the approval prompt | — (`allow`/`deny`; else interactive `/dev/tty`) |
 | `XDG_CONFIG_HOME` / `XDG_STATE_HOME` | base dirs | `~/.config` / `~/.local/state` |
 
-Local operational state (session signing keys, grants, handles) lives under `$XDG_STATE_HOME/arca/`
-alongside the audit DB — never synced.
+Local operational state (session signing keys, grants, handles, the canary registry) lives under
+`$XDG_STATE_HOME/arca/` alongside the audit DB — never synced.
 
 **Typical deployment:** point `ARCA_STORE` at a (private) dotfiles repo to version the store;
 leave the audit DB local and gitignored. The age private key is your single decrypt root — back

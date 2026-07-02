@@ -117,8 +117,9 @@ func newGenerate() *cobra.Command {
 			if cmd.Flags().Changed("require-approval") {
 				sec.RequireApproval = requireApproval
 			}
-			if cmd.Flags().Changed("canary") {
-				sec.Canary = canary
+			canaryChanged := cmd.Flags().Changed("canary")
+			if canaryChanged {
+				sec.Canary = false // never persist the designation to the (synced) store — SEC-04
 			}
 			if cmd.Flags().Changed("require-grant") {
 				sec.RequireGrant = requireGrant
@@ -136,6 +137,15 @@ func newGenerate() *cobra.Command {
 			}
 			if err := s.Save(); err != nil {
 				return err
+			}
+			if canaryChanged {
+				update := unmarkCanary
+				if canary {
+					update = markCanary
+				}
+				if err := update(name); err != nil {
+					return fmt.Errorf("generated %s but failed to update its canary state: %w", name, err)
+				}
 			}
 			if err := logAudit("generate", name, ""); err != nil {
 				return err

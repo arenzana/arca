@@ -58,8 +58,15 @@ arca canary AWS_PROD_KEY --template aws     # stripe | github | aws | slack | ge
 arca canary --list                          # which canaries exist, and which were tripped
 ```
 
-*Boundary:* a canary is a tripwire, not a barrier — an attacker who inspects metadata can identify
-and avoid one. Its value is catching the common case of an agent that uses what it can read.
+The "this is a decoy" designation is kept in a **local registry** (`$XDG_STATE_HOME/arca/canaries.json`),
+never in the git-synced store — so someone who obtains the store file, the exact exfiltration a canary
+exists to catch, can't tell the decoys from the real secrets. The decoy's value is an ordinary-looking
+store entry. (Canaries planted before 0.6.2 kept the flag in the store; those are still honored, and
+re-running `arca canary NAME` moves the designation into the private registry.)
+
+*Boundary:* a canary is a tripwire, not a barrier. Because the registry is local, the designation
+doesn't sync across machines — arm the decoy on each machine where arca runs. Its value is catching
+the common case of an agent (or attacker) that uses what it can reach through arca.
 
 ## Just-in-time grants (`--require-grant`)
 

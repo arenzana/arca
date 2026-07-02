@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"text/tabwriter"
 	"time"
 
@@ -12,6 +15,109 @@ import (
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
 )
+
+// The canary registry records which secrets are decoys. It lives in the local state dir — NOT in
+// the git-synced store — so someone who obtains the store file (the exact exfiltration a canary
+// exists to catch) cannot tell the decoys from the real secrets and step around them. The decoy's
+// value is an ordinary-looking store entry; only the "this is a canary" designation is kept private
+// here. See SEC-04. The pre-0.6.2 store flag (store.Secret.Canary) is still honored on read for
+// backward compatibility (see isCanary), but new canaries are never written to the store.
+func canariesPath() string { return filepath.Join(stateDir(), "canaries.json") }
+
+type canaryFile struct {
+	Canaries []string `json:"canaries"`
+}
+
+func loadCanaries() (map[string]bool, error) {
+	b, err := os.ReadFile(canariesPath()) //#nosec G304 -- path derives from the operator's state dir
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]bool{}, nil
+		}
+		return nil, err
+	}
+	var cf canaryFile
+	if err := json.Unmarshal(b, &cf); err != nil {
+		return nil, fmt.Errorf("parse canaries: %w", err)
+	}
+	set := make(map[string]bool, len(cf.Canaries))
+	for _, n := range cf.Canaries {
+		set[n] = true
+	}
+	return set, nil
+}
+
+func saveCanaries(set map[string]bool) error {
+	if err := os.MkdirAll(filepath.Dir(canariesPath()), 0o700); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names) // deterministic on-disk order
+	b, err := json.MarshalIndent(canaryFile{Canaries: names}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := canariesPath() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil { //#nosec G304 -- operator state dir
+		return err
+	}
+	return os.Rename(tmp, canariesPath())
+}
+
+// isCanary reports whether name is a decoy: present in the local registry, or carrying the legacy
+// pre-0.6.2 store flag. A registry read error is announced but treated as "not a canary" so it
+// never blocks an access — canary alerting is best-effort by design (see tripCanary).
+func isCanary(name string, sec *store.Secret) bool {
+	if sec != nil && sec.Canary { // legacy store flag (pre-SEC-04)
+		return true
+	}
+	set, err := loadCanaries()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "arca: warning: could not read canary registry: %v\n", err)
+		return false
+	}
+	return set[name]
+}
+
+// markCanary records name as a decoy in the local registry (idempotent).
+func markCanary(name string) error {
+	set, err := loadCanaries()
+	if err != nil {
+		return err
+	}
+	set[name] = true
+	return saveCanaries(set)
+}
+
+// unmarkCanary removes name from the local registry (idempotent).
+func unmarkCanary(name string) error {
+	set, err := loadCanaries()
+	if err != nil {
+		return err
+	}
+	if !set[name] {
+		return nil
+	}
+	delete(set, name)
+	return saveCanaries(set)
+}
+
+// renameCanary moves a registry entry when a secret is renamed, so a decoy keeps its designation.
+func renameCanary(oldName, newName string) error {
+	set, err := loadCanaries()
+	if err != nil {
+		return err
+	}
+	if !set[oldName] {
+		return nil
+	}
+	delete(set, oldName)
+	set[newName] = true
+	return saveCanaries(set)
+}
 
 // canaryValue produces a realistic-looking decoy token so a planted canary is tempting and not
 // obviously fake at a glance. The value is random — it authenticates nothing — but matches the
@@ -91,7 +197,7 @@ func newCanary() *cobra.Command {
 			}
 			sec.Value = armored
 			sec.UpdatedAt = now
-			sec.Canary = true
+			sec.Canary = false // never persist the designation to the (synced) store — SEC-04
 			if len(tags) > 0 {
 				sec.Tags = tags
 			}
@@ -100,6 +206,10 @@ func newCanary() *cobra.Command {
 			}
 			if err := s.Save(); err != nil {
 				return err
+			}
+			// Record the decoy designation in the local registry, not the store.
+			if err := markCanary(name); err != nil {
+				return fmt.Errorf("planted %s but failed to arm it as a canary: %w", name, err)
 			}
 			if err := logAudit("set", name, ""); err != nil {
 				return err
@@ -125,6 +235,10 @@ func listCanaries() error {
 		return err
 	}
 	defer a.Close()
+	reg, err := loadCanaries()
+	if err != nil {
+		return err
+	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	defer w.Flush()
@@ -132,7 +246,7 @@ func listCanaries() error {
 	any := false
 	for _, name := range s.Names() { // Names() is sorted
 		sec := s.Secrets[name]
-		if sec == nil || !sec.Canary {
+		if sec == nil || (!reg[name] && !sec.Canary) { // registry, or the legacy pre-0.6.2 store flag
 			continue
 		}
 		any = true
