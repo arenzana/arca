@@ -2,12 +2,44 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
+
+// TestMCPAuditLogHidesHandleName covers SEC-09: the audit_log tool must not reveal the real secret
+// name behind a handle. A handle-issued event records the name with the handle id as caller, so it
+// is masked to the handle id — an agent can't map hdl_… → name via the log.
+func TestMCPAuditLogHidesHandleName(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "topsecret", "set", "REALNAME")
+	id := strings.TrimSpace(runArca(t, "", "handle", "create", "REALNAME", "--command", "sh *", "--ttl", "1h"))
+	call(t, mcpRunWithHandle, map[string]any{"handle": id, "command": "sh", "args": []any{"-c", "true"}})
+
+	out := text(t, call(t, mcpAuditLog, map[string]any{"limit": 50.0}))
+	var evs []map[string]any
+	if err := json.Unmarshal([]byte(out), &evs); err != nil {
+		t.Fatalf("audit_log output is not JSON: %v (%q)", err, out)
+	}
+	sawMasked := false
+	for _, e := range evs {
+		if e["caller"] == id {
+			if e["name"] == "REALNAME" {
+				t.Fatalf("audit_log leaked the secret name behind handle %s: %v", id, e)
+			}
+			if e["name"] == id {
+				sawMasked = true
+			}
+		}
+	}
+	if !sawMasked {
+		t.Fatalf("expected a handle event masked to the handle id in %q", out)
+	}
+}
 
 // callTool builds a CallToolRequest with the given arguments.
 func callTool(args map[string]any) mcp.CallToolRequest {

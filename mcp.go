@@ -343,5 +343,20 @@ func mcpAuditLog(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return jsonResult(evs)
+	// Don't reveal the real secret name behind a handle. A handle-issued exec records the secret's
+	// name with the handle id (hdl_…) as caller, so an agent could otherwise call audit_log and read
+	// back the hdl_… → name mapping that the handle exists to hide (SEC-09). Mask such events' name
+	// to the handle id the agent already holds.
+	views := make([]eventView, 0, len(evs))
+	for _, e := range evs {
+		name := e.Name
+		if strings.HasPrefix(e.Caller, "hdl_") {
+			name = e.Caller
+		}
+		views = append(views, eventView{
+			Time: e.TS, Op: e.Op, Name: name, Agent: e.Agent,
+			Version: e.Version, Session: e.Session, Actor: e.Actor, Caller: e.Caller,
+		})
+	}
+	return jsonResult(views)
 }

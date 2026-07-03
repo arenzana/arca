@@ -36,7 +36,7 @@ an agent accesses secrets through controlled, **audited tools** instead of raw s
 | `run_with_secrets` | Run a command with named secrets injected as env; returns the command's **output** (redacted), not the values |
 | `run_with_handle` | Run a command via an opaque `hdl_…` handle — uses a secret **without its name or value**, enforcing the handle's command scope and expiry. A handle bypasses the grant/approval gates, so it's the operator's pre-authorization: `arca handle create` is operator-only (refused for a detected agent) and needs `--override` to mint one for a `--require-approval`/`--require-grant` secret |
 | `read_secret` | Reveal a value (refused for `--no-print`, requires `--require-approval` confirmation, audited) — the escape hatch |
-| `audit_log` | Recent access events |
+| `audit_log` | Recent access events (a handle-issued event's secret name is masked to the handle id, so it can't map a handle back to the secret it wraps) |
 
 The intended flow is *use, don't reveal*: an agent calls `run_with_secrets` (or `run_with_handle`)
 so a command can use a secret, reserving `read_secret` for when the value genuinely must enter the
