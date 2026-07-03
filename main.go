@@ -612,9 +612,11 @@ func tripCanary(name string) {
 	if who == "" {
 		who = "an unidentified caller"
 	}
-	fmt.Fprintf(os.Stderr, "⚠  CANARY TRIPPED: %q was accessed by %s", name, who)
+	// who/session are attacker-controlled for a detected agent; sanitize before writing to the
+	// operator's terminal so a crafted $AI_AGENT/$ARCA_ACTOR can't inject escapes (SEC-07).
+	fmt.Fprintf(os.Stderr, "⚠  CANARY TRIPPED: %q was accessed by %s", sanitize(name), sanitize(who))
 	if id.Session != "" {
-		fmt.Fprintf(os.Stderr, " (session %s)", shortID(id.Session))
+		fmt.Fprintf(os.Stderr, " (session %s)", sanitize(shortID(id.Session)))
 	}
 	fmt.Fprintln(os.Stderr, " — this secret is a decoy and should never be used.")
 	_ = logAudit("canary", name, "") // best-effort: never block the access on the alert itself
@@ -981,9 +983,9 @@ func newLs() *cobra.Command {
 					if !lr.IsZero() {
 						lrs = lr.Local().Format("2006-01-02 15:04")
 					}
-					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, lrs, strconv.Itoa(cnt), desc})
+					rows = append(rows, sanitizeAll([]string{name, strings.Join(sec.Tags, ","), updated, lrs, strconv.Itoa(cnt), desc}))
 				} else {
-					rows = append(rows, []string{name, strings.Join(sec.Tags, ","), updated, desc})
+					rows = append(rows, sanitizeAll([]string{name, strings.Join(sec.Tags, ","), updated, desc}))
 				}
 			}
 			renderTable(headers, rows)
@@ -1045,10 +1047,10 @@ func newShow() *cobra.Command {
 				fmt.Printf("policy:       rate-limited (%d per %s)\n", sec.RateLimit, win)
 			}
 			if len(sec.Tags) > 0 {
-				fmt.Printf("tags:         %s\n", strings.Join(sec.Tags, ", "))
+				fmt.Printf("tags:         %s\n", sanitize(strings.Join(sec.Tags, ", ")))
 			}
 			if sec.Description != "" {
-				fmt.Printf("description:  %s\n", sec.Description)
+				fmt.Printf("description:  %s\n", sanitize(sec.Description))
 			}
 			if sec.RotateAfter != nil {
 				fmt.Printf("rotate after: %s\n", sec.RotateAfter.Format("2006-01-02"))
@@ -1064,7 +1066,7 @@ func newShow() *cobra.Command {
 				}
 			}
 			for k, v := range sec.Meta {
-				fmt.Printf("meta.%s: %s\n", k, v)
+				fmt.Printf("meta.%s: %s\n", sanitize(k), sanitize(v))
 			}
 			return nil
 		},
@@ -1693,9 +1695,12 @@ func newLog() *cobra.Command {
 				if e.Version != "" {
 					agent += "/" + e.Version
 				}
+				// Sanitize the untrusted columns (name, and the agent/session/actor/caller strings,
+				// which for a detected agent come from its own environment); colorOp(op) is a trusted
+				// enum. See SEC-07.
 				rows = append(rows, []string{
-					e.TS.Local().Format("2006-01-02 15:04:05"), colorOp(e.Op), e.Name,
-					agent, shortID(e.Session), e.Actor, e.Caller,
+					e.TS.Local().Format("2006-01-02 15:04:05"), colorOp(e.Op), sanitize(e.Name),
+					sanitize(agent), sanitize(shortID(e.Session)), sanitize(e.Actor), sanitize(e.Caller),
 				})
 			}
 			renderTable([]string{"TIME", "OP", "NAME", "AGENT", "SESSION", "ACTOR", "CALLER"}, rows)
@@ -1829,7 +1834,7 @@ func newStale() *cobra.Command {
 					if jsonOut {
 						views = append(views, viewOf(name, sec, time.Time{}, 0))
 					} else {
-						rows = append(rows, []string{name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02")})
+						rows = append(rows, sanitizeAll([]string{name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02")}))
 					}
 				}
 				if jsonOut {
@@ -1874,7 +1879,7 @@ func newStale() *cobra.Command {
 				if jsonOut {
 					views = append(views, staleView{Name: name, RotateAfter: sec.RotateAfter, ExpiresAt: sec.ExpiresAt, Status: status})
 				} else {
-					rows = append(rows, []string{name, ra, ex, strings.Join(status, ", ")})
+					rows = append(rows, sanitizeAll([]string{name, ra, ex, strings.Join(status, ", ")}))
 				}
 			}
 			if jsonOut {

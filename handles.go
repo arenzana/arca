@@ -255,7 +255,7 @@ func newHandleLs() *cobra.Command {
 				if now.After(h.ExpiresAt) {
 					expires += " (expired)"
 				}
-				rows = append(rows, []string{id, h.Secret, h.EnvName, command, expires})
+				rows = append(rows, sanitizeAll([]string{id, h.Secret, h.EnvName, command, expires}))
 			}
 			renderTable([]string{"HANDLE", "SECRET", "AS", "COMMAND", "EXPIRES"}, rows)
 			return nil

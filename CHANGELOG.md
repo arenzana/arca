@@ -7,6 +7,14 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Terminal-control characters are stripped from rendered metadata and audit columns** (SEC-07).
+  `ls` / `log` / `show` (and `grants`, `handle ls`, `canary --list`, canary alerts) wrote secret
+  descriptions/tags/meta and the audit log's agent/actor/caller/session columns to the terminal
+  raw. Those fields are attacker-influenced — a poisoned synced store, or a detected agent setting a
+  crafted `$ARCA_ACTOR`/`$AI_AGENT` — so a crafted value could smuggle ANSI/OSC escapes into the
+  operator's terminal to spoof or hide audit rows, rewrite the display, or set the window title.
+  Untrusted fields are now sanitized (C0/C1 controls, DEL, ESC dropped) before rendering; arca's own
+  colors, applied to trusted strings afterward, are unaffected.
 - **Handle creation is operator-only and won't silently launder past an approval/grant gate**
   (SEC-05). `run_with_handle` intentionally bypasses the `--require-grant`/`--require-approval`
   gates (the handle *is* the operator's pre-authorization), but `handle create` only checked that
