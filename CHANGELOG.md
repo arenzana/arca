@@ -14,6 +14,10 @@ All notable changes to arca are documented here. The format follows
   to the commit date makes two builds of a commit produce identical archive checksums (verified with
   two local snapshot builds), so divergence is now impossible, not just serialized-against.
 
+### Changed
+- **`arca version` output is now an aligned key/value table** — the version is a labeled row like
+  the others, so every value lines up in one column.
+
 ### Security
 - **Follow-up hardening from the post-fix verification audit.**
   - **`list_secrets` (MCP) no longer exposes per-secret last-read time** — it advanced when a handle
