@@ -92,7 +92,13 @@ annotated where `gosec` flags them.
 
 ### T6 — Concurrent writers corrupt the store
 Two arca processes mutating the store at once. *Addressed:* an `O_EXCL` lockfile
-guards mutations, with stale-lock stealing after a timeout.
+guards mutations. The lock carries a per-acquisition token, so release removes it
+only if the process still owns it and a stale lock is reclaimed by winning an
+atomic rename (not a blind unlink) — a process can neither delete a successor's
+lock nor have two processes both reclaim the same one. A holder heartbeats the
+lock's mtime while held, so a live-but-slow writer (e.g. `edit` across an
+`$EDITOR` session) is not mistaken for a crash and stolen; only a stopped process
+ages out.
 
 ### T7 — Supply-chain compromise of a release
 A tampered binary, a malicious dependency, or a poisoned build. *Addressed:*
