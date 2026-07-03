@@ -53,14 +53,16 @@ func TestGetEnvFlags(t *testing.T) {
 	}
 }
 
-// TestMCPListSecretsLastRead covers the last-read enrichment branch in list_secrets.
-func TestMCPListSecretsLastRead(t *testing.T) {
+// TestMCPListSecretsNoLastRead covers FU-1 (SEC-09 completion): the MCP list_secrets tool must NOT
+// expose per-secret last-read time, because it advances when a handle is used and would let an agent
+// correlate a before/after list_secrets to recover which secret an opaque handle wraps.
+func TestMCPListSecretsNoLastRead(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "API")
-	runArca(t, "", "get", "API") // populate last_read
-	if out := text(t, call(t, mcpListSecrets, nil)); !strings.Contains(out, "last_read") {
-		t.Fatalf("expected last_read in list_secrets: %q", out)
+	runArca(t, "", "get", "API") // would populate last_read
+	if out := text(t, call(t, mcpListSecrets, nil)); strings.Contains(out, "last_read") {
+		t.Fatalf("list_secrets must not expose last_read to an agent (handle deanonymization): %q", out)
 	}
 }
 

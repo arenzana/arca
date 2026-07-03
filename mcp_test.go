@@ -10,6 +10,30 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// TestRunWithHandleRevalidatesEnvName covers FU-2: run_with_handle must re-validate the handle's
+// env name at injection time, so a tampered handles.json can't inject a reserved name (LD_PRELOAD)
+// into the child process.
+func TestRunWithHandleRevalidatesEnvName(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "SECRET")
+	id := strings.TrimSpace(runArca(t, "", "handle", "create", "SECRET", "--command", "sh *", "--ttl", "1h"))
+
+	handles, err := loadHandles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := handles[id]
+	h.EnvName = "LD_PRELOAD" // simulate a tampered handles.json
+	handles[id] = h
+	if err := saveHandles(handles); err != nil {
+		t.Fatal(err)
+	}
+	if !call(t, mcpRunWithHandle, map[string]any{"handle": id, "command": "sh", "args": []any{"-c", "true"}}).IsError {
+		t.Fatal("run_with_handle must refuse a reserved env name from a tampered handle")
+	}
+}
+
 // TestMCPAuditLogHidesHandleName covers SEC-09: the audit_log tool must not reveal the real secret
 // name behind a handle. A handle-issued event records the name with the handle id as caller, so it
 // is masked to the handle id — an agent can't map hdl_… → name via the log.

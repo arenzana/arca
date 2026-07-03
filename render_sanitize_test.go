@@ -3,7 +3,30 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/arenzana/arca/internal/store"
 )
+
+// TestShowSanitizesName covers FU-3: `show` must sanitize the secret name it prints, so a poisoned
+// store key containing a terminal escape can't inject into the operator's terminal.
+func TestShowSanitizesName(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "GOOD")
+	s, err := store.Load(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := "EVIL\x1b]0;pwned\x07"
+	s.Secrets[bad] = s.Secrets["GOOD"] // poison a name directly, bypassing set's validation
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	out := runArca(t, "", "show", bad)
+	if strings.ContainsRune(out, 0x1b) || strings.ContainsRune(out, 0x07) {
+		t.Fatalf("show leaked a terminal escape from a poisoned name: %q", out)
+	}
+}
 
 // TestSanitize covers the control-character stripper: escapes and other control bytes are removed,
 // ordinary printable text and multi-byte Unicode are preserved, and clean text is returned as-is.

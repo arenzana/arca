@@ -6,6 +6,18 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **Follow-up hardening from the post-fix verification audit.**
+  - **`list_secrets` (MCP) no longer exposes per-secret last-read time** — it advanced when a handle
+    was used, letting an agent correlate a before/after `list_secrets` to recover which secret an
+    opaque handle wraps (completing SEC-09; the operator keeps full read history via the CLI).
+  - **`run_with_handle` re-validates the handle's env-var name** at injection time, so a tampered
+    `handles.json` can't inject a reserved name like `LD_PRELOAD` into the child.
+  - **`show` sanitizes the secret name it prints** — the one render site the control-char sweep
+    (SEC-07) missed.
+  - **`rename --force` onto an existing canary clears the stale registry entry**, so the real value
+    now at that name doesn't raise a false-positive canary alert.
+
 ### Added
 - **`annotate` — edit a secret's tags, description, and metadata without touching its value.**
   `arca annotate NAME [--tag …] [--add-tag …] [--rm-tag …] [--desc …] [--meta k=v] [--rm-meta k]`

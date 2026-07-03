@@ -100,6 +100,16 @@ lock's mtime while held, so a live-but-slow writer (e.g. `edit` across an
 `$EDITOR` session) is not mistaken for a crash and stolen; only a stopped process
 ages out.
 
+### T8 — A store reader identifies which secrets are decoys
+Canaries (honeytokens) only work if an attacker can't tell them from real
+secrets. *Addressed:* the "this is a decoy" designation is kept in a **local
+registry** under the state dir, never in the git-synced store — so someone who
+obtains the store file (the exfiltration a canary exists to catch) sees only
+ordinary-looking entries. The decoy's value is an ordinary age ciphertext. This
+defends the *exfiltration* boundary; a same-UID local user who can read the state
+dir is out of scope by design (they own the machine). Trade-off: because the
+registry is local, a canary is armed per-machine.
+
 ### T7 — Supply-chain compromise of a release
 A tampered binary, a malicious dependency, or a poisoned build. *Addressed:*
 reproducible builds (`CGO_ENABLED=0`, `-trimpath`, stripped); keyless **cosign**
