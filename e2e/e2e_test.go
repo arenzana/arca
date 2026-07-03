@@ -57,10 +57,12 @@ func sandbox(t *testing.T) box {
 		"ARCA_IDENTITY=" + filepath.Join(d, "id.txt"),
 		"XDG_STATE_HOME=" + filepath.Join(d, "state"), // keep grants.json + session keys out of $HOME
 		// Clear AI-agent detection so the suite is deterministic no matter what launched it: running
-		// e2e from inside a Claude Code session (CLAUDECODE set) must not make the arca subprocess
-		// treat every call as an agent (e.g. `handle create` refuses agents). Tests that exercise
-		// agent behavior set AI_AGENT explicitly via runEnv's `extra`, which overrides these.
-		"CLAUDECODE=", "CLAUDE_CODE_SESSION_ID=", "CURSOR_TRACE_ID=", "AI_AGENT=",
+		// e2e from inside an agent session (e.g. CLAUDECODE set) must not make the arca subprocess
+		// treat every call as an agent (e.g. `handle create` refuses agents). Keep in sync with the
+		// detection table in main.go (agentSignatures). Tests that exercise agent behavior set the
+		// marker explicitly via runEnv's `extra`, which overrides these.
+		"CLAUDECODE=", "CLAUDE_CODE_SESSION_ID=", "CLAUDE_CODE_EXECPATH=", "CURSOR_TRACE_ID=",
+		"GEMINI_CLI=", "CODEX_SANDBOX=", "CODEX_SANDBOX_NETWORK_DISABLED=", "AI_AGENT=", "ARCA_AGENT_MARKERS=",
 	}}
 }
 

@@ -6,6 +6,14 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Broader AI-agent detection** for audit attribution and output redaction. Detection is now an
+  extensible table: built in are Claude Code, Cursor, **Gemini CLI** (`GEMINI_CLI`), and **OpenAI
+  Codex** (`CODEX_SANDBOX`). Any other agent (opencode, Kimi, Aider, Copilot CLI, …) can self-identify
+  via `AI_AGENT=name`, or you can register a marker with `ARCA_AGENT_MARKERS="name=ENVVAR,…"`.
+  Detection keys only on runtime markers, never on API-key variables, and remains advisory (it does
+  not gate approval — see SEC-06).
+
 ### Security
 - **`--require-approval` now requires an interactive terminal, with no environment bypass** (SEC-06).
   Approval was gated by env-var-based agent detection: `ARCA_APPROVAL=allow` pre-approved a release for
