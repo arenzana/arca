@@ -7,6 +7,15 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Store lock is now ownership-checked, with a heartbeat so a live holder isn't stolen** (SEC-08).
+  The lock released by deleting the lock file by path and reclaimed a stale lock with a blind
+  unlink, which had two races: a process whose lock was reclaimed could delete its *successor's*
+  lock on release, and two processes could both "steal" the same stale lock (→ two writers, the
+  lost update the lock exists to prevent). The lock file now carries a per-acquisition token: release
+  removes it only if we still own it, and a stale lock is reclaimed by winning an atomic `rename`
+  rather than an unlink. A holder also heartbeats the lock's mtime while held, so a live-but-slow
+  writer — notably `arca edit` across an interactive `$EDITOR` session — is no longer mistaken for a
+  crash and stolen; only a process that has actually stopped ages out.
 - **Terminal-control characters are stripped from rendered metadata and audit columns** (SEC-07).
   `ls` / `log` / `show` (and `grants`, `handle ls`, `canary --list`, canary alerts) wrote secret
   descriptions/tags/meta and the audit log's agent/actor/caller/session columns to the terminal
