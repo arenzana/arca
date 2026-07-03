@@ -914,10 +914,16 @@ func newGet() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("decrypt %s: %w", name, err)
 			}
-			// Log before revealing: under fail-closed auditing, a read that cannot be
-			// recorded must not disclose the value. --no-log may suppress the record for a
-			// human, but an AI agent can never suppress its own audit trail.
-			if !noLog || detectIdentity().Agent != "" {
+			// Log before revealing: under fail-closed auditing, a read that cannot be recorded must
+			// not disclose the value. --no-log may suppress the record for a human, but never for an
+			// AI agent (which can't suppress its own trail) and never for a rate-limited secret — the
+			// audit log IS the rate counter, so honoring --no-log there would let a human bypass the
+			// limit by reading in a loop (SEC-12).
+			agent := detectIdentity().Agent != ""
+			if !noLog || agent || sec.RateLimit > 0 {
+				if noLog && !agent && sec.RateLimit > 0 {
+					fmt.Fprintf(os.Stderr, "note: --no-log ignored for %s (it is rate-limited)\n", name)
+				}
 				if err := logAudit("read", name, ""); err != nil {
 					return err
 				}
@@ -1535,6 +1541,11 @@ func newExec() *cobra.Command {
 			// redacts only a stream that isn't an interactive terminal — i.e. one being captured —
 			// and passes a real TTY straight through (a human at a prompt, no buffering latency).
 			pats := buildRedactPatterns(injected, reveal, os.Stderr)
+			// `auto` redacts a captured (non-terminal) stream and steps aside for a human at a real
+			// TTY. But an AI agent commonly allocates a PTY to capture a child's output, which would
+			// otherwise disable redaction — so a detected agent always gets redaction regardless of
+			// the TTY check (SEC-11).
+			agent := detectIdentity().Agent != ""
 			redactStream := func(f *os.File) bool {
 				switch redactMode {
 				case "off":
@@ -1542,7 +1553,7 @@ func newExec() *cobra.Command {
 				case "on":
 					return true
 				default:
-					return len(pats) > 0 && !term.IsTerminal(int(f.Fd()))
+					return len(pats) > 0 && (agent || !term.IsTerminal(int(f.Fd())))
 				}
 			}
 			var redactors []*redactWriter

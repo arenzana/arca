@@ -10,7 +10,7 @@ import (
 func TestMCPRunWithSecretsExitPaths(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
-	runArca(t, "v", "set", "API")
+	runArca(t, "longvalue", "set", "API") // >= minRedactLen so run isn't refused for a short value
 
 	r := call(t, mcpRunWithSecrets, map[string]any{
 		"command": "sh", "args": []any{"-c", "exit 3"}, "secrets": []any{"API"},

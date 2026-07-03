@@ -136,6 +136,21 @@ func (w *redactWriter) matchAt(buf []byte, i int) *redactPattern {
 	return nil
 }
 
+// tooShortToRedact returns the name of the first injected value shorter than minRedactLen — which
+// buildRedactPatterns can't scan for and so would leave un-redacted in a command's output. The MCP
+// tools use it to *refuse* rather than silently return output that might contain such a value: on
+// the CLI a skipped value is warned to the operator's terminal, but over MCP that warning is
+// invisible and the output flows straight into the model's context (FU-7). Returns "" if all
+// injected values are long enough to redact.
+func tooShortToRedact(injected []redactPattern) string {
+	for _, p := range injected {
+		if len(p.value) < minRedactLen {
+			return p.name
+		}
+	}
+	return ""
+}
+
 // buildRedactPatterns turns injected name→value pairs into patterns, skipping values too short to
 // scan for safely (reported via warn) and applying the chosen marker style.
 func buildRedactPatterns(injected []redactPattern, reveal bool, warn io.Writer) []redactPattern {
