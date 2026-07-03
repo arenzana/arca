@@ -1,0 +1,23 @@
+# Code owners — mandatory reviewers for changes.
+#
+# Enforcement requires enabling "Require review from Code Owners" in the branch
+# protection rules for `main` (this file alone only assigns reviewers).
+#
+# High-leverage / security-sensitive surfaces are called out explicitly so a PR
+# that touches them can't merge without a maintainer's review:
+#   - skills/**            ships behavioral instructions to downstream AI agents;
+#                          a malicious edit is a prompt-injection supply-chain
+#                          attack on every consumer (invisible to code scanners).
+#   - .github/workflows/** the CI/release pipeline (signing, provenance, tokens).
+#   - .goreleaser.yaml     the release build + artifact definitions.
+#   - docs/THREAT-MODEL.md, docs/SECURITY.md  the security contract.
+
+# Default owner for everything.
+*                       @arenzana
+
+# Explicit, security-critical paths (kept last so they win over the catch-all).
+/skills/                @arenzana
+/.github/               @arenzana
+/.goreleaser.yaml       @arenzana
+/docs/THREAT-MODEL.md   @arenzana
+/docs/SECURITY.md       @arenzana

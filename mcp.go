@@ -237,6 +237,9 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 	}
+	if n := tooShortToRedact(pats); n != "" {
+		return mcp.NewToolResultError(fmt.Sprintf("refusing to run: %s is too short (<%d chars) to reliably redact from the command's output", n, minRedactLen)), nil
+	}
 	out, exitCode, err := runRedacted(ctx, command, argStrings(req, "args"), env,
 		buildRedactPatterns(pats, false, os.Stderr))
 	if err != nil {
@@ -321,8 +324,12 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err := logAudit("exec", h.Secret, id); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+	pats := []redactPattern{{name: h.EnvName, value: plain}}
+	if n := tooShortToRedact(pats); n != "" {
+		return mcp.NewToolResultError(fmt.Sprintf("refusing to run: the secret is too short (<%d chars) to reliably redact from the command's output", minRedactLen)), nil
+	}
 	out, exitCode, err := runRedacted(ctx, command, args, env,
-		buildRedactPatterns([]redactPattern{{name: h.EnvName, value: plain}}, false, os.Stderr))
+		buildRedactPatterns(pats, false, os.Stderr))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("run %s: %v", command, err)), nil
 	}

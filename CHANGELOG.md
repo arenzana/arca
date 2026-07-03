@@ -6,6 +6,23 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **`--no-log` can't evade a rate limit** (SEC-12). Rate limits are counted from the audit log, but
+  `get --no-log` skipped the read record — so a human could read a rate-limited secret in a loop and
+  never hit the cap. `--no-log` is now ignored (with a note) for a rate-limited secret; it still
+  suppresses the record for ordinary secrets, and never suppresses an agent's trail.
+- **`exec` redaction is forced on for a detected agent even at a PTY** (SEC-11). `--redact auto`
+  steps aside for a human at a real terminal, but an agent commonly allocates a PTY to capture
+  output — which disabled redaction. A detected agent now always gets its injected values redacted
+  from the child's output, regardless of the terminal check.
+- **The MCP run tools refuse a secret too short to redact** (FU-7). Values under 4 characters can't
+  be scanned for reliably; on the CLI the skip is warned to the operator, but over MCP that warning
+  is invisible and the output goes to the model. `run_with_secrets`/`run_with_handle` now refuse
+  rather than risk returning an un-redacted short value.
+- **`CODEOWNERS` requires maintainer review of security-sensitive paths** (SEC-17) — `skills/**`
+  (agent instructions shipped downstream), `.github/**`, `.goreleaser.yaml`, and the threat-model /
+  security docs. (Enforcement also needs "require Code Owner review" enabled in branch protection.)
+
 ## [0.6.2] - 2026-07-03
 
 ### Fixed

@@ -173,7 +173,7 @@ func TestMCPHandle(t *testing.T) {
 	}
 
 	// A rate-limited secret is throttled through a handle too.
-	runArca(t, "v", "set", "RL", "--rate", "1/1h")
+	runArca(t, "ratelimited", "set", "RL", "--rate", "1/1h") // >= minRedactLen so the run isn't refused as too-short
 	rid := strings.TrimSpace(runArca(t, "", "handle", "create", "RL", "--as", "RLV", "--command", "sh *", "--ttl", "1h"))
 	call(t, mcpRunWithHandle, map[string]any{"handle": rid, "command": "sh", "args": []any{"-c", "true"}}) // use 1
 	if !call(t, mcpRunWithHandle, map[string]any{"handle": rid, "command": "sh", "args": []any{"-c", "true"}}).IsError {
