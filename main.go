@@ -210,7 +210,51 @@ func identityPath() string {
 // Shared helpers.
 // ----------------------------------------------------------------------------
 
-func openStore() (*store.Store, error) { return store.Load(storePath()) }
+// openStore loads the JSON store and warns if it looks rolled back — its monotonic generation
+// counter went backwards versus the highest we've recorded locally. That catches a git revert, a
+// sync conflict, or an attacker restoring an old copy to resurrect a rotated or deleted secret
+// (SEC-14). It's a best-effort *warning*, not a hard stop: the high-water mark is a local heuristic
+// (a machine owner can delete it), and a store can legitimately be fresh on a new machine.
+func openStore() (*store.Store, error) {
+	s, err := store.Load(storePath())
+	if err != nil {
+		return nil, err
+	}
+	warnIfStoreRolledBack(s.Generation)
+	return s, nil
+}
+
+// storeGenPath is the local high-water mark of the store generation (state dir, never synced).
+func storeGenPath() string { return filepath.Join(stateDir(), "store.gen") }
+
+func warnIfStoreRolledBack(gen int) {
+	if regressed, prev := recordStoreGeneration(gen); regressed {
+		fmt.Fprintf(os.Stderr, "arca: warning: the store looks rolled back (generation %d < last seen %d) — a rotated or deleted secret may have been resurrected; check the store's git history\n", gen, prev)
+	}
+}
+
+// recordStoreGeneration compares gen against the local high-water mark, advances the mark when gen
+// is higher, and reports whether gen regressed (a possible rollback) plus the mark it was compared
+// against. A rollback does NOT lower the mark, so the warning persists until the store advances
+// past it again. All file I/O is best-effort — a warning heuristic must never break a command.
+func recordStoreGeneration(gen int) (regressed bool, prev int) {
+	hwm := 0
+	if b, err := os.ReadFile(storeGenPath()); err == nil { //#nosec G304 -- our own state-dir path
+		hwm, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+	}
+	if gen < hwm {
+		return true, hwm
+	}
+	if gen > hwm {
+		if err := os.MkdirAll(filepath.Dir(storeGenPath()), 0o700); err == nil {
+			tmp := storeGenPath() + ".tmp"
+			if os.WriteFile(tmp, []byte(strconv.Itoa(gen)), 0o600) == nil { //#nosec G304 -- our own state-dir path
+				_ = os.Rename(tmp, storeGenPath())
+			}
+		}
+	}
+	return false, hwm
+}
 func loadIDs() ([]age.Identity, error) { return crypto.LoadIdentities(identityPath()) }
 
 // logAudit records one access event. Auditing is fail-closed by DEFAULT: if the audit log

@@ -58,7 +58,8 @@ func (s *Secret) Expired(now time.Time) bool {
 // Store is the whole document. path is where it loads from / saves to (not serialized).
 type Store struct {
 	Version    int                `json:"version"`
-	Recipients []string           `json:"recipients"` // age recipients re-encrypted to on `set`
+	Generation int                `json:"generation,omitempty"` // monotonic save counter; bumped on every Save so a rollback (a restored older copy) is detectable (SEC-14)
+	Recipients []string           `json:"recipients"`           // age recipients re-encrypted to on `set`
 	Secrets    map[string]*Secret `json:"secrets"`
 
 	path string
@@ -153,6 +154,7 @@ func applyMigrations(s *Store, target int, migs map[int]migration) error {
 //
 // The temp file is removed on any early-return error path via the deferred Remove.
 func (s *Store) Save() error {
+	s.Generation++ // monotonic: every write advances it so a later rollback to an older copy is visible
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
