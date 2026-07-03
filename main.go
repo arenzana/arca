@@ -508,30 +508,28 @@ func validName(name string) error {
 	return nil
 }
 
-// approve enforces a per-secret human approval gate before a value is released.
+// approve enforces a per-secret human approval gate before a value is released. It requires an
+// interactive confirmation on the controlling terminal (/dev/tty on Unix, CONIN$/CONOUT$ on
+// Windows) every single time — there is deliberately NO environment pre-approval (SEC-06).
 //
-// ARCA_APPROVAL=deny always short-circuits to a refusal (fail-safe; it can only restrict).
-// ARCA_APPROVAL=allow pre-approves ONLY for a non-agent caller — an inherited env var is not
-// proof of human consent, so when the caller looks like an AI agent the allow is ignored and a
-// real terminal confirmation is required (which an agent won't have). Otherwise it prompts on
-// the controlling terminal (/dev/tty, so it works even when stdin is piped). With no honored
-// override and no terminal, access is DENIED — an agent can't self-approve.
+// The rationale: `--require-approval` means "a person approves each use." arca's earlier
+// ARCA_APPROVAL=allow escape tried to let a non-agent pre-approve, gated by env-var-based agent
+// detection — but an AI agent controls its own environment, so it could unset the detection vars,
+// look like a human, and self-approve. Rather than trust the environment, arca now requires the one
+// thing an agent genuinely lacks: a controlling terminal. A human confirms; an agent (no TTY) is
+// refused. For "operator authorizes once, then a script or agent runs unattended", use `grant` or
+// `handle` — the operator sets it up interactively and the agent scripts against it.
+//
+// ARCA_APPROVAL=deny still short-circuits to a refusal (fail-safe; the environment can only
+// *restrict* access, never grant it).
 func approve(name, who string) error {
 	switch strings.ToLower(os.Getenv("ARCA_APPROVAL")) {
-	case "deny", "no", "0":
+	case "deny", "no", "0", "false", "off":
 		return fmt.Errorf("approval denied for %s", name)
-	case "allow", "yes", "1", "approve":
-		// Only honor a pre-approval when the caller is NOT a detected AI agent. An agent that
-		// controls its own environment must not be able to self-approve, so reject outright
-		// rather than fall through to a prompt it could never satisfy.
-		if detectIdentity().Agent == "" {
-			return nil
-		}
-		return fmt.Errorf("%s requires human approval; an AI agent cannot self-approve via ARCA_APPROVAL", name)
 	}
 	in, out, err := openTTY()
 	if err != nil {
-		return fmt.Errorf("%s requires approval, but no terminal is available to confirm", name)
+		return fmt.Errorf("%s requires human approval on a terminal, and none is available — to use it unattended, authorize it with `grant`/`handle` instead", name)
 	}
 	defer in.Close()
 	if out != in {

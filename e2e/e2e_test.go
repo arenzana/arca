@@ -184,19 +184,21 @@ func TestPolicies(t *testing.T) {
 		t.Fatalf("exec no-print = %q", out)
 	}
 
-	// --require-approval: denied with no terminal.
+	// --require-approval needs an interactive terminal, which this test harness doesn't provide, so
+	// every non-interactive release is refused (SEC-06). The successful "human types y" path is
+	// covered by the unit tests, which can inject a fake terminal.
 	b.must(t, "v", "set", "GATED", "--require-approval")
 	if _, _, code := b.run(t, "", "get", "GATED"); code == 0 {
 		t.Fatal("expected get to be denied (no terminal to approve)")
 	}
-	// ARCA_APPROVAL=allow works only for a non-agent caller (agent env cleared)...
+	// There is NO environment pre-approval: ARCA_APPROVAL=allow is not honored (even for a non-agent).
 	nonAgent := []string{"ARCA_APPROVAL=allow", "CLAUDECODE=", "CLAUDE_CODE_SESSION_ID=", "CURSOR_TRACE_ID=", "AI_AGENT="}
-	if out, _, code := b.runEnv(t, nonAgent, "", "get", "GATED"); code != 0 || out != "v" {
-		t.Fatalf("approved get (non-agent) = %q code=%d", out, code)
+	if _, _, code := b.runEnv(t, nonAgent, "", "get", "GATED"); code == 0 {
+		t.Fatal("ARCA_APPROVAL=allow must not approve without a terminal (no env bypass)")
 	}
-	// ...but an AI agent cannot self-approve via the inherited env var.
-	if _, _, code := b.runEnv(t, []string{"ARCA_APPROVAL=allow", "AI_AGENT=claude-code"}, "", "get", "GATED"); code == 0 {
-		t.Fatal("expected an agent to be refused self-approval")
+	// ARCA_APPROVAL=deny still refuses (the env can only restrict).
+	if _, _, code := b.runEnv(t, []string{"ARCA_APPROVAL=deny"}, "", "get", "GATED"); code == 0 {
+		t.Fatal("ARCA_APPROVAL=deny should refuse")
 	}
 }
 

@@ -129,27 +129,39 @@ func TestEnvExecSkipPoisonedName(t *testing.T) {
 	}
 }
 
-// --- H2: an AI agent cannot self-approve ----------------------------------------------------
+// --- H2: --require-approval needs a real human, not env / agent-detection (SEC-06) -----------
 
-func TestApproveAgentSelfApprove(t *testing.T) {
-	// deny always refuses, agent or not
+func TestApproveRequiresTerminal(t *testing.T) {
+	sandbox(t) // isolates XDG etc.; also clears agent-detection env vars
+
+	// deny always refuses (the env can only restrict).
 	t.Setenv("ARCA_APPROVAL", "deny")
 	if approve("X", "who") == nil {
 		t.Fatal("ARCA_APPROVAL=deny should refuse")
 	}
 
-	// allow + non-agent => approved
+	// ARCA_APPROVAL=allow is NO LONGER a pre-approval: without a terminal, approval is refused —
+	// there is no env bypass (SEC-06). This holds whether or not the caller looks like an agent.
+	// (withNoTTY makes "no terminal" deterministic; a real CONIN$ on Windows would block on input.)
+	withNoTTY(t)
 	t.Setenv("ARCA_APPROVAL", "allow")
-	for _, k := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT", "ARCA_ACTOR"} {
-		t.Setenv(k, "")
+	if approve("X", "who") == nil {
+		t.Fatal("ARCA_APPROVAL=allow must not pre-approve without a terminal")
 	}
-	if err := approve("X", "who"); err != nil {
-		t.Fatalf("allow + non-agent should approve, got %v", err)
-	}
-
-	// allow + detected agent => refused (no self-approval), without touching /dev/tty
 	t.Setenv("AI_AGENT", "claude-code")
 	if approve("X", "who") == nil {
-		t.Fatal("allow + agent must NOT self-approve")
+		t.Fatal("an agent must not self-approve")
+	}
+
+	// With a real (mocked) terminal, a human answering "y" approves and "n" declines — regardless of
+	// ARCA_APPROVAL or agent detection.
+	t.Setenv("ARCA_APPROVAL", "")
+	withTTYResponse(t, "y")
+	if err := approve("X", "who"); err != nil {
+		t.Fatalf("a 'y' at the terminal should approve, got %v", err)
+	}
+	withTTYResponse(t, "n")
+	if approve("X", "who") == nil {
+		t.Fatal("an 'n' at the terminal should decline")
 	}
 }

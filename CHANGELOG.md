@@ -7,6 +7,14 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **`--require-approval` now requires an interactive terminal, with no environment bypass** (SEC-06).
+  Approval was gated by env-var-based agent detection: `ARCA_APPROVAL=allow` pre-approved a release for
+  a caller that didn't *look* like an AI agent. But an agent controls its own environment and could
+  unset those vars to pass as a human and self-approve. arca now relies on the one thing an agent lacks
+  — a controlling terminal (`/dev/tty` / `CONIN$`): a human confirms each release interactively, and
+  `ARCA_APPROVAL=allow` is no longer honored (`ARCA_APPROVAL=deny` still refuses). For
+  unattended-but-authorized use, issue a scoped `grant`/`handle` rather than marking the secret
+  `--require-approval`. Plain secrets are unaffected and fully scriptable.
 - **The store carries a monotonic `generation`, and a rollback is warned about** (SEC-14). The store
   is a git-synced JSON file, so restoring an older copy — a git revert, a sync conflict, or an
   attacker resurrecting a rotated or deleted secret — was previously undetectable. Every write now
@@ -15,7 +23,7 @@ All notable changes to arca are documented here. The format follows
   stop — the high-water mark is a local heuristic a machine owner can reset.
 
 ### Changed
-- **`disable`/`enable` are now a dedicated flag, not expiry reuse** (SEC-13). `disable` previously `disable` previously
+- **`disable`/`enable` are now a dedicated flag, not expiry reuse** (SEC-13). `disable` previously
   suspended a secret by stamping `expires_at` to "now", and `enable` cleared `expires_at` entirely —
   so disabling then enabling a secret that had a *legitimate* future expiry silently wiped it. Disable
   is now a distinct `disabled` field: `disable` sets it, `enable` clears only it, and a real expiry is

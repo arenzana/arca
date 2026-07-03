@@ -358,9 +358,9 @@ func TestInitReuseIdentity(t *testing.T) {
 	}
 }
 
-// TestApprovalGate covers the --require-approval policy: show notes it, denial blocks every
-// release path (get/exec/inject/env), and ARCA_APPROVAL=allow lets it through. The interactive
-// /dev/tty prompt is exercised manually, not here.
+// TestApprovalGate covers the --require-approval policy: show notes it, denial blocks every release
+// path (get/exec/inject/env), there is no env pre-approval (SEC-06), and a terminal confirmation
+// lets it through.
 func TestApprovalGate(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
@@ -384,19 +384,23 @@ func TestApprovalGate(t *testing.T) {
 		}
 	}
 
-	// ARCA_APPROVAL=allow pre-approves ONLY for a non-agent caller.
+	// SEC-06: there is no env pre-approval. Without a terminal, a release is refused even with
+	// ARCA_APPROVAL unset — `allow` is no longer honored as a bypass. (withNoTTY makes "no terminal"
+	// deterministic; a real CONIN$ on Windows would otherwise block on input.)
+	withNoTTY(t)
 	t.Setenv("ARCA_APPROVAL", "allow")
-	t.Setenv("CLAUDECODE", "")
-	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
-	t.Setenv("CURSOR_TRACE_ID", "")
-	t.Setenv("AI_AGENT", "")
-	if out := runArca(t, "", "get", "GATED"); out != "secret" {
-		t.Fatalf("approved get (non-agent) = %q", out)
-	}
-	// An AI agent must NOT be able to self-approve via the inherited env var.
-	t.Setenv("AI_AGENT", "claude-code")
 	if err := runArcaErr("", "get", "GATED"); err == nil {
-		t.Fatal("expected an agent to be unable to self-approve via ARCA_APPROVAL=allow")
+		t.Fatal("get of a require-approval secret must be refused without a terminal (no env bypass)")
+	}
+	// A human answering "y" at the (mocked) terminal approves; "n" declines.
+	t.Setenv("ARCA_APPROVAL", "")
+	withTTYResponse(t, "y")
+	if out := runArca(t, "", "get", "GATED"); out != "secret" {
+		t.Fatalf("approved get = %q", out)
+	}
+	withTTYResponse(t, "n")
+	if err := runArcaErr("", "get", "GATED"); err == nil {
+		t.Fatal("declining at the terminal should refuse the release")
 	}
 }
 
