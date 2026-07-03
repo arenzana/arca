@@ -63,3 +63,15 @@ issuer first** (GitHub, AWS, …), then `disable` or `rotate` it here.
 
 Note: `env` skips any secret it can't release — disabled/expired and `--require-grant` — instead of
 failing, so one suspended secret never blanks out `eval "$(arca env)"`.
+
+## Removing a recipient (`recipients rm`)
+
+`recipients rm KEY` drops an age recipient (e.g. an ex-teammate's key) and **re-encrypts every secret
+to the remaining keys in the same step**, so the *current* store immediately stops being decryptable
+by the removed key. Use `--no-reencrypt` to defer the re-wrap to a later `arca reencrypt`.
+
+**Re-encryption is not revocation of what was already read.** The removed key can still decrypt any
+copy it already had — local clones, backups, and **every prior version of the store in git history**.
+`recipients rm` prints this warning and lists the secrets to rotate. To *truly* deny the removed
+holder a secret, **rotate its value** (`arca rotate NAME`) so the old ciphertext decrypts to a dead
+value — and, as always, revoke the underlying credential at its issuer.

@@ -6,6 +6,15 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **`recipients rm` is honest about revocation, and re-encrypts automatically** (SEC-15). Removing an
+  age recipient used to just edit the recipient list and tell you to run `reencrypt` — implying the
+  removed key was cut off, when it can still decrypt backups, clones, and every prior version of the
+  git-synced store. It now (a) re-encrypts existing secrets to the remaining keys in the same step
+  (skippable with `--no-reencrypt`), so the current store immediately stops depending on the removed
+  key, and (b) prints an explicit warning that this is **not** revocation of what was already read,
+  listing the secrets to `rotate` for true revocation.
+
 ### Added
 - **Broader AI-agent detection** for audit attribution and output redaction. Detection is now an
   extensible table: built in are Claude Code, Cursor, **Gemini CLI** (`GEMINI_CLI`), and **OpenAI

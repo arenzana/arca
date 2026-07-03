@@ -1,8 +1,9 @@
 //go:build e2e
 
 // End-to-end coverage for behavior added in the 2026-07 security pass: the disable/enable kill
-// switch (SEC-13), metadata-only `annotate`, canary trip alerts (SEC-04), and store-rollback
-// detection (SEC-14). Each drives the real binary, so it proves the shipped behavior end to end.
+// switch (SEC-13), metadata-only `annotate`, canary trip alerts (SEC-04), store-rollback
+// detection (SEC-14), and recipient-revocation honesty (SEC-15). Each drives the real binary, so it
+// proves the shipped behavior end to end.
 package e2e
 
 import (
@@ -120,5 +121,37 @@ func TestStoreRollback(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "rolled back") {
 		t.Fatalf("expected a rollback warning on stderr: %q", errOut)
+	}
+}
+
+// TestRecipientRevocation covers SEC-15: removing a recipient auto-re-encrypts existing secrets to
+// the remaining key(s) AND prints the honest warning that this does not revoke what the removed key
+// could already read (git history / backups) — you must rotate the values for that.
+func TestRecipientRevocation(t *testing.T) {
+	b := sandbox(t)
+	b.must(t, "", "init")
+	b.must(t, "topsecret", "set", "API")
+
+	// A second, independent recipient: another box's freshly generated public key.
+	other := sandbox(t)
+	other.must(t, "", "init")
+	otherRecip := strings.TrimSpace(other.must(t, "", "recipients"))
+	if !strings.HasPrefix(otherRecip, "age1") {
+		t.Fatalf("unexpected recipient string: %q", otherRecip)
+	}
+	b.must(t, "", "recipients", "add", otherRecip)
+
+	_, errOut, code := b.run(t, "", "recipients", "rm", otherRecip)
+	if code != 0 {
+		t.Fatalf("recipients rm failed: %s", errOut)
+	}
+	for _, want := range []string{"re-encrypted", "does NOT revoke", "git history", "arca rotate API"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("recipients rm stderr missing %q:\n%s", want, errOut)
+		}
+	}
+	// Still decryptable by us after the auto-reencrypt.
+	if out := b.must(t, "", "get", "API"); out != "topsecret" {
+		t.Fatalf("get after recipient rm = %q", out)
 	}
 }

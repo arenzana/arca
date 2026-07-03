@@ -104,6 +104,16 @@ this is a warning, not a guarantee — the high-water mark is local and a
 machine-owner-level attacker can reset it; binding the generation into the
 tamper-evident audit chain would harden it further.
 
+### T10 — Removing a recipient is mistaken for revocation
+`recipients rm` drops a key from the set, but the removed holder can still decrypt
+any ciphertext they already had — backups, clones, and every prior version of the
+git-synced store. *Addressed (honesty + narrow the window):* `recipients rm` now
+re-encrypts the current store to the remaining keys automatically (so the working
+store stops depending on the removed key) and prints an explicit warning that this
+is not revocation of prior access, listing the secrets to rotate. *Residual (by
+nature):* true revocation of a value is impossible without rotating it — the fix
+guides that (`arca rotate NAME` + revoke at the issuer), it cannot undo a read.
+
 ### T6 — Concurrent writers corrupt the store
 Two arca processes mutating the store at once. *Addressed:* an `O_EXCL` lockfile
 guards mutations. The lock carries a per-acquisition token, so release removes it
