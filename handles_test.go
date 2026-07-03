@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/arenzana/arca/internal/audit"
 )
 
 // TestHandles covers the handle lifecycle through the CLI plus resolveHandle's scope/expiry checks.
@@ -44,6 +46,56 @@ func TestHandles(t *testing.T) {
 	if err := runArcaErr("", "handle", "revoke", id); err == nil {
 		t.Fatal("revoking an unknown handle should error")
 	}
+}
+
+// TestHandleCreateAgentRefused covers SEC-05: a detected AI agent must not be able to mint a handle
+// — a handle is an operator-issued capability, and run_with_handle bypasses grant/approval, so a
+// self-minted handle would let an agent issue itself the authorization those gates withhold.
+func TestHandleCreateAgentRefused(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "DB")
+
+	// As an operator, minting works.
+	runArca(t, "", "handle", "create", "DB", "--ttl", "1h")
+
+	// As a detected agent, it's refused.
+	t.Setenv("AI_AGENT", "claude-code")
+	if err := runArcaErr("", "handle", "create", "DB", "--ttl", "1h"); err == nil {
+		t.Fatal("a detected agent must not be able to mint a handle")
+	}
+}
+
+// TestHandleCreateOverride covers SEC-05: minting a handle for a --require-approval or
+// --require-grant secret needs an explicit --override (the handle bypasses that per-use gate), and
+// the override is audited distinctly.
+func TestHandleCreateOverride(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "APP", "--require-approval")
+	runArca(t, "v", "set", "GRA", "--require-grant")
+
+	// Without --override, refused for both gated kinds.
+	if err := runArcaErr("", "handle", "create", "APP", "--ttl", "1h"); err == nil {
+		t.Fatal("handle for a --require-approval secret should need --override")
+	}
+	if err := runArcaErr("", "handle", "create", "GRA", "--ttl", "1h"); err == nil {
+		t.Fatal("handle for a --require-grant secret should need --override")
+	}
+
+	// With --override, it succeeds and is recorded distinctly as an override.
+	id := strings.TrimSpace(runArca(t, "", "handle", "create", "APP", "--ttl", "1h", "--override"))
+	if !strings.HasPrefix(id, "hdl_") {
+		t.Fatalf("override create returned %q", id)
+	}
+	a, _ := audit.Open(auditPath())
+	defer a.Close()
+	if _, n, _ := a.LastOp("APP", "handle-override"); n < 1 {
+		t.Fatal("an override mint was not audited as handle-override")
+	}
+	// A normal (ungated) secret still needs no override.
+	runArca(t, "v", "set", "PLAIN")
+	runArca(t, "", "handle", "create", "PLAIN", "--ttl", "1h")
 }
 
 // TestHandleValidation covers create-time validation and the expiry check.
