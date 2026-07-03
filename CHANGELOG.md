@@ -6,14 +6,10 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
-### Security
-- **`recipients rm` is honest about revocation, and re-encrypts automatically** (SEC-15). Removing an
-  age recipient used to just edit the recipient list and tell you to run `reencrypt` — implying the
-  removed key was cut off, when it can still decrypt backups, clones, and every prior version of the
-  git-synced store. It now (a) re-encrypts existing secrets to the remaining keys in the same step
-  (skippable with `--no-reencrypt`), so the current store immediately stops depending on the removed
-  key, and (b) prints an explicit warning that this is **not** revocation of what was already read,
-  listing the secrets to `rotate` for true revocation.
+## [0.6.3] - 2026-07-03
+
+Closes the remaining findings from the 2026-07 security audit (SEC-06, SEC-11–15, SEC-17, FU-7),
+broadens AI-agent detection, and expands the unit + e2e test suite.
 
 ### Added
 - **Broader AI-agent detection** for audit attribution and output redaction. Detection is now an
@@ -22,22 +18,6 @@ All notable changes to arca are documented here. The format follows
   via `AI_AGENT=name`, or you can register a marker with `ARCA_AGENT_MARKERS="name=ENVVAR,…"`.
   Detection keys only on runtime markers, never on API-key variables, and remains advisory (it does
   not gate approval — see SEC-06).
-
-### Security
-- **`--require-approval` now requires an interactive terminal, with no environment bypass** (SEC-06).
-  Approval was gated by env-var-based agent detection: `ARCA_APPROVAL=allow` pre-approved a release for
-  a caller that didn't *look* like an AI agent. But an agent controls its own environment and could
-  unset those vars to pass as a human and self-approve. arca now relies on the one thing an agent lacks
-  — a controlling terminal (`/dev/tty` / `CONIN$`): a human confirms each release interactively, and
-  `ARCA_APPROVAL=allow` is no longer honored (`ARCA_APPROVAL=deny` still refuses). For
-  unattended-but-authorized use, issue a scoped `grant`/`handle` rather than marking the secret
-  `--require-approval`. Plain secrets are unaffected and fully scriptable.
-- **The store carries a monotonic `generation`, and a rollback is warned about** (SEC-14). The store
-  is a git-synced JSON file, so restoring an older copy — a git revert, a sync conflict, or an
-  attacker resurrecting a rotated or deleted secret — was previously undetectable. Every write now
-  bumps a `generation` counter; on load, arca compares it to a local high-water mark and prints a
-  warning if it went backwards (pointing you at the store's git history). It's a warning, not a hard
-  stop — the high-water mark is a local heuristic a machine owner can reset.
 
 ### Changed
 - **`disable`/`enable` are now a dedicated flag, not expiry reuse** (SEC-13). `disable` previously
@@ -50,21 +30,42 @@ All notable changes to arca are documented here. The format follows
   `rotate` / `set --expires-at`.
 
 ### Security
-- **`--no-log` can't evade a rate limit** (SEC-12). Rate limits are counted from the audit log, but
-  `get --no-log` skipped the read record — so a human could read a rate-limited secret in a loop and
-  never hit the cap. `--no-log` is now ignored (with a note) for a rate-limited secret; it still
-  suppresses the record for ordinary secrets, and never suppresses an agent's trail.
+- **`--require-approval` now requires an interactive terminal, with no environment bypass** (SEC-06).
+  Approval was gated by env-var-based agent detection: `ARCA_APPROVAL=allow` pre-approved a release for
+  a caller that didn't *look* like an AI agent. But an agent controls its own environment and could
+  unset those vars to pass as a human and self-approve. arca now relies on the one thing an agent lacks
+  — a controlling terminal (`/dev/tty` / `CONIN$`): a human confirms each release interactively, and
+  `ARCA_APPROVAL=allow` is no longer honored (`ARCA_APPROVAL=deny` still refuses). For
+  unattended-but-authorized use, issue a scoped `grant`/`handle` rather than marking the secret
+  `--require-approval`. Plain secrets are unaffected and fully scriptable.
 - **`exec` redaction is forced on for a detected agent even at a PTY** (SEC-11). `--redact auto`
   steps aside for a human at a real terminal, but an agent commonly allocates a PTY to capture
   output — which disabled redaction. A detected agent now always gets its injected values redacted
   from the child's output, regardless of the terminal check.
+- **`--no-log` can't evade a rate limit** (SEC-12). Rate limits are counted from the audit log, but
+  `get --no-log` skipped the read record — so a human could read a rate-limited secret in a loop and
+  never hit the cap. `--no-log` is now ignored (with a note) for a rate-limited secret; it still
+  suppresses the record for ordinary secrets, and never suppresses an agent's trail.
+- **The store carries a monotonic `generation`, and a rollback is warned about** (SEC-14). The store
+  is a git-synced JSON file, so restoring an older copy — a git revert, a sync conflict, or an
+  attacker resurrecting a rotated or deleted secret — was previously undetectable. Every write now
+  bumps a `generation` counter; on load, arca compares it to a local high-water mark and prints a
+  warning if it went backwards (pointing you at the store's git history). It's a warning, not a hard
+  stop — the high-water mark is a local heuristic a machine owner can reset.
+- **`recipients rm` is honest about revocation, and re-encrypts automatically** (SEC-15). Removing an
+  age recipient used to just edit the recipient list and tell you to run `reencrypt` — implying the
+  removed key was cut off, when it can still decrypt backups, clones, and every prior version of the
+  git-synced store. It now (a) re-encrypts existing secrets to the remaining keys in the same step
+  (skippable with `--no-reencrypt`), so the current store immediately stops depending on the removed
+  key, and (b) prints an explicit warning that this is **not** revocation of what was already read,
+  listing the secrets to `rotate` for true revocation.
+- **`CODEOWNERS` requires maintainer review of security-sensitive paths** (SEC-17) — `skills/**`
+  (agent instructions shipped downstream), `.github/**`, `.goreleaser.yaml`, and the threat-model /
+  security docs. (Enforcement also needs "require Code Owner review" enabled in branch protection.)
 - **The MCP run tools refuse a secret too short to redact** (FU-7). Values under 4 characters can't
   be scanned for reliably; on the CLI the skip is warned to the operator, but over MCP that warning
   is invisible and the output goes to the model. `run_with_secrets`/`run_with_handle` now refuse
   rather than risk returning an un-redacted short value.
-- **`CODEOWNERS` requires maintainer review of security-sensitive paths** (SEC-17) — `skills/**`
-  (agent instructions shipped downstream), `.github/**`, `.goreleaser.yaml`, and the threat-model /
-  security docs. (Enforcement also needs "require Code Owner review" enabled in branch protection.)
 
 ## [0.6.2] - 2026-07-03
 
