@@ -23,6 +23,13 @@ builds:
 
 archives:
   - formats: [tar.gz]
+    # Pin every archive entry's modification time to the commit date so the tar headers are
+    # deterministic. Without this, mod_timestamp only fixes the compiled binary; the bundled
+    # LICENSE/README/CHANGELOG take their on-disk (checkout wall-clock) mtime, making the .tar.gz
+    # non-reproducible — two runs of the same commit produced different archive checksums, which
+    # let a duplicate release run diverge the GitHub release from the Homebrew cask.
+    builds_info:
+      mtime: '{{ .CommitDate }}'
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
     # Windows users expect zip, not tar.gz.
     format_overrides:
