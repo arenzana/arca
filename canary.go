@@ -105,17 +105,25 @@ func unmarkCanary(name string) error {
 	return saveCanaries(set)
 }
 
-// renameCanary moves a registry entry when a secret is renamed, so a decoy keeps its designation.
+// renameCanary makes the destination's canary state match the source's, so a renamed decoy keeps
+// its designation — and a rename --force onto an existing canary with a *non*-canary source clears
+// the stale destination entry (else the real secret now living at that name would trip a
+// false-positive alert). See FU-4.
 func renameCanary(oldName, newName string) error {
 	set, err := loadCanaries()
 	if err != nil {
 		return err
 	}
-	if !set[oldName] {
-		return nil
+	wasCanary := set[oldName]
+	if !wasCanary && !set[newName] {
+		return nil // nothing to change
 	}
 	delete(set, oldName)
-	set[newName] = true
+	if wasCanary {
+		set[newName] = true
+	} else {
+		delete(set, newName) // source isn't a decoy → the overwritten destination must not stay one
+	}
 	return saveCanaries(set)
 }
 

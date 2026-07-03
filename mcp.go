@@ -114,10 +114,11 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	a, _ := audit.Open(auditPath())
-	if a != nil {
-		defer a.Close()
-	}
+	// Deliberately NOT exposing per-secret last-read time to the agent: it advances when a handle is
+	// used (the underlying exec bumps the real secret's last-read), which lets an agent holding only
+	// an opaque hdl_… correlate a before/after list_secrets and recover which secret the handle wraps
+	// — defeating the handle's name-hiding (SEC-09). The operator still sees full read history via the
+	// CLI (`arca ls --reads`, `arca log`).
 	type meta struct {
 		Name            string   `json:"name"`
 		Tags            []string `json:"tags,omitempty"`
@@ -125,7 +126,6 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 		NoPrint         bool     `json:"no_print,omitempty"`
 		RequireApproval bool     `json:"require_approval,omitempty"`
 		Updated         string   `json:"updated"`
-		LastRead        string   `json:"last_read,omitempty"`
 		ExpiresAt       string   `json:"expires_at,omitempty"`
 		Expired         bool     `json:"expired,omitempty"`
 	}
@@ -141,11 +141,6 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 		if sec.ExpiresAt != nil {
 			m.ExpiresAt = sec.ExpiresAt.UTC().Format(time.RFC3339)
 			m.Expired = sec.Expired(now)
-		}
-		if a != nil {
-			if lr, _, _ := a.LastRead(name); !lr.IsZero() {
-				m.LastRead = lr.UTC().Format(time.RFC3339)
-			}
 		}
 		out = append(out, m)
 	}
@@ -311,6 +306,11 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 	ids, err := loadIDs()
 	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	// Re-validate the env name at injection time (as exec/env/run_with_secrets do), so a tampered
+	// handles.json can't inject a reserved name like LD_PRELOAD/PATH into the child (FU-2 / SEC-01).
+	if err := validName(h.EnvName); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	plain, err := crypto.Decrypt(sec.Value, ids)

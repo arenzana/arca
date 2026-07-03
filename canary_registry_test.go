@@ -204,6 +204,24 @@ func TestCanaryRenameFollows(t *testing.T) {
 	}
 }
 
+// TestCanaryRenameForceClearsStale covers FU-4: rename --force of a non-canary onto an existing
+// canary must clear the stale registry entry, so the real value now at that name doesn't trip a
+// false-positive alert.
+func TestCanaryRenameForceClearsStale(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "", "canary", "DST")                   // DST is a decoy
+	runArca(t, "realvalue", "set", "SRC")             // SRC is a real secret
+	runArca(t, "", "rename", "SRC", "DST", "--force") // SRC's value overwrites DST
+	reg, _ := loadCanaries()
+	if reg["DST"] {
+		t.Fatal("rename --force left a stale canary registry entry on the destination")
+	}
+	if reg["SRC"] {
+		t.Fatal("source lingered in the canary registry after rename")
+	}
+}
+
 // TestCanaryUnmarkAndRm confirms `set --canary=false` disarms a canary and `rm` cleans the registry.
 func TestCanaryUnmarkAndRm(t *testing.T) {
 	sandbox(t)

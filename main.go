@@ -1025,7 +1025,7 @@ func newShow() *cobra.Command {
 			if jsonOut {
 				return emitJSON(viewOf(name, sec, lr, cnt))
 			}
-			fmt.Printf("name:         %s\n", name)
+			fmt.Printf("name:         %s\n", sanitize(name))
 			fmt.Printf("created:      %s\n", sec.CreatedAt.Local().Format(time.RFC3339))
 			fmt.Printf("updated:      %s\n", sec.UpdatedAt.Local().Format(time.RFC3339))
 			if lr.IsZero() {
