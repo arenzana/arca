@@ -6,6 +6,14 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Release archives are now byte-reproducible.** `mod_timestamp` pinned only the compiled binary;
+  the bundled `LICENSE`/`README`/`CHANGELOG` took their checkout wall-clock mtime, so the `.tar.gz`
+  headers differed between two builds of the *same commit* — the underlying reason a duplicate
+  release run could diverge the GitHub release from the Homebrew cask. Pinning `archives.builds_info.mtime`
+  to the commit date makes two builds of a commit produce identical archive checksums (verified with
+  two local snapshot builds), so divergence is now impossible, not just serialized-against.
+
 ### Security
 - **Follow-up hardening from the post-fix verification audit.**
   - **`list_secrets` (MCP) no longer exposes per-secret last-read time** — it advanced when a handle
