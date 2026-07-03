@@ -125,6 +125,7 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 		Description     string   `json:"description,omitempty"`
 		NoPrint         bool     `json:"no_print,omitempty"`
 		RequireApproval bool     `json:"require_approval,omitempty"`
+		Disabled        bool     `json:"disabled,omitempty"`
 		Updated         string   `json:"updated"`
 		ExpiresAt       string   `json:"expires_at,omitempty"`
 		Expired         bool     `json:"expired,omitempty"`
@@ -136,7 +137,8 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 		m := meta{
 			Name: name, Tags: sec.Tags, Description: sec.Description,
 			NoPrint: sec.NoPrint, RequireApproval: sec.RequireApproval,
-			Updated: sec.UpdatedAt.UTC().Format(time.RFC3339),
+			Disabled: sec.Disabled,
+			Updated:  sec.UpdatedAt.UTC().Format(time.RFC3339),
 		}
 		if sec.ExpiresAt != nil {
 			m.ExpiresAt = sec.ExpiresAt.UTC().Format(time.RFC3339)

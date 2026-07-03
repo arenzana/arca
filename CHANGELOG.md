@@ -6,6 +6,16 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`disable`/`enable` are now a dedicated flag, not expiry reuse** (SEC-13). `disable` previously
+  suspended a secret by stamping `expires_at` to "now", and `enable` cleared `expires_at` entirely —
+  so disabling then enabling a secret that had a *legitimate* future expiry silently wiped it. Disable
+  is now a distinct `disabled` field: `disable` sets it, `enable` clears only it, and a real expiry is
+  preserved across the round-trip. A disabled secret shows as `DISABLED` in `show` / `[disabled]` in
+  `ls` (expired shows as `[expired]`), and the MCP `list_secrets` reports `disabled`. Secrets disabled
+  by a pre-0.6.3 arca still read as `EXPIRED` (they were expiry-stamped); clear that with
+  `rotate` / `set --expires-at`.
+
 ### Security
 - **`--no-log` can't evade a rate limit** (SEC-12). Rate limits are counted from the audit log, but
   `get --no-log` skipped the read record — so a human could read a rate-limited secret in a loop and

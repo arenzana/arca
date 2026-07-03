@@ -37,7 +37,8 @@ type Secret struct {
 	Tags            []string          `json:"tags,omitempty"`             // free-form labels for filtering
 	Description     string            `json:"description,omitempty"`      // human note
 	RotateAfter     *time.Time        `json:"rotate_after,omitempty"`     // rotation due date (drives `stale`)
-	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`       // hard expiry: reads/use refuse the value after this (also how `disable` suspends a secret)
+	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`       // hard expiry: reads/use refuse the value after this
+	Disabled        bool              `json:"disabled,omitempty"`         // kill switch: refused on every access path until re-enabled; independent of ExpiresAt (SEC-13)
 	NoPrint         bool              `json:"no_print,omitempty"`         // exec-only: never reveal to stdout
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
 	Canary          bool              `json:"canary,omitempty"`           // DEPRECATED (pre-0.6.2): decoy flag. Read for back-compat but no longer written — the designation now lives in the local canary registry, out of the synced store (SEC-04).

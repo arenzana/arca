@@ -534,6 +534,10 @@ func gate(sec *store.Secret, name, cmdline string) error {
 	if isCanary(name, sec) {
 		tripCanary(name)
 	}
+	// A disabled secret (the kill switch) is refused on every access path until re-enabled.
+	if sec.Disabled {
+		return fmt.Errorf("%s is disabled (`arca enable %s` to restore)", name, name)
+	}
 	// Hard expiry is checked next: an expired secret is refused on every access path,
 	// before any approval prompt or decryption.
 	if sec.Expired(time.Now()) {
@@ -991,8 +995,10 @@ func newLs() *cobra.Command {
 				updated := sec.UpdatedAt.Local().Format("2006-01-02")
 				// Flag disabled/expired secrets so they're visible at a glance (e.g. during a leak).
 				desc := sec.Description
-				if sec.Expired(time.Now()) {
+				if sec.Disabled {
 					desc = strings.TrimSpace("[disabled] " + desc)
+				} else if sec.Expired(time.Now()) {
+					desc = strings.TrimSpace("[expired] " + desc)
 				}
 				if showReads {
 					lr, cnt, _ := a.LastRead(name)
@@ -1072,15 +1078,15 @@ func newShow() *cobra.Command {
 			if sec.RotateAfter != nil {
 				fmt.Printf("rotate after: %s\n", sec.RotateAfter.Format("2006-01-02"))
 			}
+			if sec.Disabled {
+				fmt.Printf("status:       DISABLED (refused on every access path; `arca enable %s` to restore)\n", name)
+			}
 			if sec.ExpiresAt != nil {
 				state := "valid"
 				if sec.Expired(time.Now()) {
-					state = "EXPIRED"
+					state = "EXPIRED — refused on every access path"
 				}
 				fmt.Printf("expires:      %s (%s)\n", sec.ExpiresAt.Local().Format(time.RFC3339), state)
-				if sec.Expired(time.Now()) {
-					fmt.Printf("              (disabled — refused on every access path; `arca enable %s` to restore)\n", name)
-				}
 			}
 			for k, v := range sec.Meta {
 				fmt.Printf("meta.%s: %s\n", sanitize(k), sanitize(v))
@@ -1151,8 +1157,7 @@ func newDisable() *cobra.Command {
 			if sec == nil {
 				return fmt.Errorf("no such secret: %s", name)
 			}
-			now := time.Now().UTC()
-			sec.ExpiresAt = &now
+			sec.Disabled = true // a dedicated kill switch — independent of any real expiry (SEC-13)
 			if err := s.Save(); err != nil {
 				return err
 			}
@@ -1165,12 +1170,14 @@ func newDisable() *cobra.Command {
 	}
 }
 
-// newEnable clears a secret's expiry, making a `disable`d (or otherwise expired) secret usable
-// again. It drops any expiry date entirely — intent is recorded in the audit log (op "enable").
+// newEnable lifts a `disable` — clearing only the disabled flag, so a real future expiry the secret
+// was carrying is preserved (SEC-13). Intent is recorded in the audit log (op "enable"). A secret
+// that is unavailable purely because its *expiry* passed is cleared with `set`/`rotate --expires-at`,
+// not here — enabling doesn't silently wipe an intentional expiry.
 func newEnable() *cobra.Command {
 	return &cobra.Command{
 		Use:   "enable NAME",
-		Short: "Re-enable a disabled/expired secret (clears its expiry)",
+		Short: "Re-enable a disabled secret (keeps any real expiry)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
@@ -1187,14 +1194,18 @@ func newEnable() *cobra.Command {
 			if sec == nil {
 				return fmt.Errorf("no such secret: %s", name)
 			}
-			sec.ExpiresAt = nil
+			sec.Disabled = false
 			if err := s.Save(); err != nil {
 				return err
 			}
 			if err := logAudit("enable", name, ""); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "enabled %s\n", name)
+			if sec.Expired(time.Now()) {
+				fmt.Fprintf(os.Stderr, "enabled %s — note: it is still expired (expires_at is in the past); use `rotate`/`set --expires-at` to change that\n", name)
+			} else {
+				fmt.Fprintf(os.Stderr, "enabled %s\n", name)
+			}
 			return nil
 		},
 	}
@@ -1642,7 +1653,7 @@ func newEnv() *cobra.Command {
 				// require-grant (needs a command to authorize against). An interactive approval
 				// denial below is a deliberate "no" and still fails the command. Mirrors the
 				// --no-print / invalid-name skips above.
-				if s.Secrets[name].Expired(time.Now()) {
+				if s.Secrets[name].Disabled || s.Secrets[name].Expired(time.Now()) {
 					fmt.Fprintf(os.Stderr, "skip %s (disabled/expired)\n", name)
 					continue
 				}

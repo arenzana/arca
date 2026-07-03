@@ -13,8 +13,8 @@
 | `show NAME` | Show one secret's metadata (no value) | `--json` |
 | `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing`, `--json` |
 | `rm NAME` | Remove a secret | — |
-| `disable NAME` | Suspend a secret — refused on every access path — without deleting it or changing its value (sets expiry to now) | — |
-| `enable NAME` | Re-enable a disabled/expired secret (clears its expiry) | — |
+| `disable NAME` | Suspend a secret — refused on every access path — without deleting it or changing its value (a distinct kill switch, independent of expiry) | — |
+| `enable NAME` | Re-enable a disabled secret (keeps any real expiry) | — |
 | `edit NAME` | Edit a secret's value in `$EDITOR` (re-encrypted) | — |
 | `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
 | `annotate NAME` | Edit a secret's tags/description/metadata **without** changing its value (works on `--no-print` secrets) | `--tag --add-tag --rm-tag --desc --meta k=v --rm-meta` |
@@ -44,14 +44,18 @@ The per-secret policy flags (`--no-print`, `--require-approval`, `--canary`, `--
 
 `disable NAME` is the quickest way to take a secret out of service without losing it: the value and
 all metadata stay in the store, but every access path — `get`, `exec`, `inject`, `env`, and the MCP
-tools — refuses it until you `enable` it again. Under the hood it just stamps the hard expiry at
-"now", so a disabled secret shows up as `EXPIRED` in `show`/`ls` and the audit log records the
-`disable`/`enable` intent.
+tools — refuses it until you `enable` it again. It's a dedicated flag, independent of expiry, so a
+disabled secret shows as `DISABLED` in `show` / `[disabled]` in `ls`, the audit log records the
+`disable`/`enable` intent, and — unlike before 0.6.3 — enabling it **keeps any real expiry** the
+secret was carrying (disable/enable no longer touch `expires_at`).
 
 ```bash
-arca disable GITHUB_TOKEN     # suspend it everywhere, keep the value
-arca enable  GITHUB_TOKEN     # bring it back (clears the expiry)
+arca disable GITHUB_TOKEN     # suspend it everywhere, keep the value + any expiry
+arca enable  GITHUB_TOKEN     # bring it back (a real expiry, if any, is preserved)
 ```
+
+> Upgrade note: secrets disabled by an arca **before 0.6.3** were suspended by stamping `expires_at`
+> to now, so they read as `EXPIRED` (not `DISABLED`); clear that with `rotate` / `set --expires-at`.
 
 **This is a *local* kill switch, not revocation.** Disabling stops *arca* from handing the value out;
 it does nothing to a copy that already leaked. On a suspected compromise, **revoke the token at its

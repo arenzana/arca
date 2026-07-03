@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/arenzana/arca/internal/store"
 )
 
 // TestDisableEnableLifecycle drives disable/enable through every access path: a disabled secret is
@@ -42,7 +44,7 @@ func TestDisableEnableLifecycle(t *testing.T) {
 	}
 
 	// show + ls surface the disabled state for a human scanning during an incident.
-	if out := runArca(t, "", "show", "ALPHA"); !strings.Contains(out, "EXPIRED") || !strings.Contains(out, "disabled") {
+	if out := runArca(t, "", "show", "ALPHA"); !strings.Contains(out, "DISABLED") {
 		t.Fatalf("show ALPHA did not surface disabled state: %q", out)
 	}
 	if out := runArca(t, "", "ls"); !strings.Contains(out, "[disabled]") {
@@ -54,7 +56,7 @@ func TestDisableEnableLifecycle(t *testing.T) {
 		t.Fatalf("audit log missing disable op: %q", out)
 	}
 
-	// enable clears the expiry: usable again on every path.
+	// enable lifts the disable: usable again on every path.
 	runArca(t, "", "enable", "ALPHA")
 	if out := runArca(t, "", "get", "ALPHA"); out != "v-alpha" {
 		t.Fatalf("post-enable get ALPHA = %q", out)
@@ -94,18 +96,48 @@ func TestEnvDoesNotAbortOnGatedSecret(t *testing.T) {
 	}
 }
 
-// TestEnableClearsHardExpiry confirms enable is a general "un-expire", not just an undo for
-// disable: a secret with a past --expires-at becomes usable again after enable.
-func TestEnableClearsHardExpiry(t *testing.T) {
+// TestDisableEnablePreservesExpiry covers SEC-13: disable/enable is a distinct kill switch and must
+// not clobber a real expiry. A secret with a legitimate future --ttl that is disabled then enabled
+// keeps its expiry; and enabling a genuinely-expired secret does NOT silently un-expire it.
+func TestDisableEnablePreservesExpiry(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
-	runArca(t, "dead", "set", "OLD", "--expires-at", "2020-01-01")
-	if err := runArcaErr("", "get", "OLD"); err == nil {
-		t.Fatal("expected expired secret to be refused")
+	runArca(t, "v", "set", "TOK", "--ttl", "30d")
+	before, err := store.Load(storePath())
+	if err != nil {
+		t.Fatal(err)
 	}
+	exp := before.Secrets["TOK"].ExpiresAt
+	if exp == nil {
+		t.Fatal("expected --ttl to set an expiry")
+	}
+
+	runArca(t, "", "disable", "TOK")
+	if err := runArcaErr("", "get", "TOK"); err == nil {
+		t.Fatal("disabled secret should be refused")
+	}
+	runArca(t, "", "enable", "TOK")
+
+	after, err := store.Load(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec := after.Secrets["TOK"]
+	if sec.Disabled {
+		t.Fatal("enable did not clear the disabled flag")
+	}
+	if sec.ExpiresAt == nil || !sec.ExpiresAt.Equal(*exp) {
+		t.Fatalf("enable wiped the real expiry (SEC-13): before=%v after=%v", exp, sec.ExpiresAt)
+	}
+	if out := runArca(t, "", "get", "TOK"); out != "v" {
+		t.Fatalf("post-enable get = %q (expiry is 30d out, should be usable)", out)
+	}
+
+	// Enabling a genuinely-expired secret must NOT clear its (intentional) past expiry.
+	runArca(t, "dead", "set", "OLD", "--expires-at", "2020-01-01")
 	runArca(t, "", "enable", "OLD")
-	if out := runArca(t, "", "get", "OLD"); out != "dead" {
-		t.Fatalf("after enable, get OLD = %q", out)
+	if err := runArcaErr("", "get", "OLD"); err == nil {
+		t.Fatal("enable must not silently un-expire a secret with a real past expiry")
 	}
 }
 
@@ -130,7 +162,7 @@ func TestMCPDisable(t *testing.T) {
 	runArca(t, "topsecret", "set", "API")
 	runArca(t, "", "disable", "API")
 
-	if out := text(t, call(t, mcpListSecrets, nil)); !strings.Contains(out, `"expired": true`) {
+	if out := text(t, call(t, mcpListSecrets, nil)); !strings.Contains(out, `"disabled": true`) {
 		t.Fatalf("list_secrets did not mark the disabled secret: %q", out)
 	}
 	if !call(t, mcpReadSecret, map[string]any{"name": "API"}).IsError {
