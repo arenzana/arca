@@ -17,6 +17,7 @@
 | `enable NAME` | Re-enable a disabled/expired secret (clears its expiry) | — |
 | `edit NAME` | Edit a secret's value in `$EDITOR` (re-encrypted) | — |
 | `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
+| `annotate NAME` | Edit a secret's tags/description/metadata **without** changing its value (works on `--no-print` secrets) | `--tag --add-tag --rm-tag --desc --meta k=v --rm-meta` |
 | `recipients` | List age recipients; `add`/`rm` subcommands manage the set | — |
 | `reencrypt` | Re-encrypt every secret to the current recipient set | — |
 | `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) — see [Importing](IMPORTING.md) | `--json`, `--dry-run`, `--overwrite`, `--prefix P`, `--tag t` |

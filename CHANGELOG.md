@@ -6,6 +6,13 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`annotate` — edit a secret's tags, description, and metadata without touching its value.**
+  `arca annotate NAME [--tag …] [--add-tag …] [--rm-tag …] [--desc …] [--meta k=v] [--rm-meta k]`
+  changes only the cleartext metadata: it never reads or decrypts the value, so it works on a
+  `--no-print` secret (which `set` can't re-label, since `set` re-prompts for the value). `UpdatedAt`
+  is left untouched — it tracks the last *value* change — and the edit is recorded as `op=annotate`.
+
 ### Security
 - **The `audit_log` MCP tool no longer reveals the secret name behind a handle** (SEC-09). A
   handle-issued `exec` records the secret's name with the handle id (`hdl_…`) as caller, so an agent

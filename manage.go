@@ -184,3 +184,95 @@ func newRename() *cobra.Command {
 	c.Flags().BoolVar(&force, "force", false, "overwrite an existing destination")
 	return c
 }
+
+// newAnnotate edits a secret's tags, description, and metadata *without* touching its value or
+// decrypting it. `set` re-prompts for the value (and a --no-print secret can't be re-piped at all),
+// so annotate is the only path that changes metadata alone. UpdatedAt is left untouched — it tracks
+// the last *value* change — and the edit is recorded in the audit log (op=annotate).
+func newAnnotate() *cobra.Command {
+	var tags, addTags, rmTags, rmMeta []string
+	var desc string
+	var meta map[string]string
+	c := &cobra.Command{
+		Use:   "annotate NAME",
+		Short: "Edit a secret's tags, description, and metadata (not its value)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			unlock, err := lockStore()
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			sec := s.Secrets[name]
+			if sec == nil {
+				return fmt.Errorf("no such secret: %s", name)
+			}
+
+			changed := false
+			if cmd.Flags().Changed("tag") { // replace the whole set
+				sec.Tags = tags
+				changed = true
+			}
+			for _, t := range addTags {
+				if t != "" && !contains(sec.Tags, t) {
+					sec.Tags = append(sec.Tags, t)
+					changed = true
+				}
+			}
+			if len(rmTags) > 0 {
+				kept := sec.Tags[:0]
+				for _, t := range sec.Tags {
+					if !contains(rmTags, t) {
+						kept = append(kept, t)
+					}
+				}
+				if len(kept) != len(sec.Tags) {
+					changed = true
+				}
+				sec.Tags = kept
+			}
+			if cmd.Flags().Changed("desc") {
+				sec.Description = desc
+				changed = true
+			}
+			if len(meta) > 0 {
+				if sec.Meta == nil {
+					sec.Meta = map[string]string{}
+				}
+				for k, v := range meta {
+					sec.Meta[k] = v
+				}
+				changed = true
+			}
+			for _, k := range rmMeta {
+				if _, ok := sec.Meta[k]; ok {
+					delete(sec.Meta, k)
+					changed = true
+				}
+			}
+			if !changed {
+				return fmt.Errorf("nothing to change; pass --tag/--add-tag/--rm-tag, --desc, --meta, or --rm-meta")
+			}
+			if err := s.Save(); err != nil {
+				return err
+			}
+			if err := logAudit("annotate", name, ""); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "annotated %s\n", name)
+			return nil
+		},
+	}
+	c.Flags().StringSliceVar(&tags, "tag", nil, "replace all tags (repeatable or comma-separated)")
+	c.Flags().StringSliceVar(&addTags, "add-tag", nil, "add tags, keeping existing ones")
+	c.Flags().StringSliceVar(&rmTags, "rm-tag", nil, "remove tags")
+	c.Flags().StringVar(&desc, "desc", "", "set the description (pass an empty string to clear it)")
+	c.Flags().StringToStringVar(&meta, "meta", nil, "set metadata entries key=value (repeatable)")
+	c.Flags().StringSliceVar(&rmMeta, "rm-meta", nil, "remove metadata keys")
+	return c
+}
