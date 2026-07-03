@@ -6,6 +6,8 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-03
+
 ### Fixed
 - **Release archives are now byte-reproducible.** `mod_timestamp` pinned only the compiled binary;
   the bundled `LICENSE`/`README`/`CHANGELOG` took their checkout wall-clock mtime, so the `.tar.gz`
@@ -276,7 +278,8 @@ All notable changes to arca are documented here. The format follows
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/arenzana/arca/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/arenzana/arca/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/arenzana/arca/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/arenzana/arca/compare/v0.4.0...v0.5.0
