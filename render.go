@@ -24,6 +24,39 @@ var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func stdoutIsTTY() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
+// isCtrl reports whether r is a terminal control character: a C0 control (incl. ESC, CR, BS, TAB,
+// newline), DEL, or a C1 control. These are what an attacker uses to move the cursor, overwrite a
+// line, set the window title (OSC), clear the screen, or smuggle further escapes.
+func isCtrl(r rune) bool { return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) }
+
+// sanitize strips terminal control characters from untrusted text before it is rendered — secret
+// metadata (descriptions, tags, meta), and the audit log's agent/actor/caller/session columns,
+// which for a detected agent come from the environment it controls. Without this, running
+// `arca ls` / `log` / `show` on a poisoned store (or after an agent set a crafted $ARCA_ACTOR)
+// could inject escapes into the operator's terminal — spoofing or hiding audit rows, rewriting the
+// display, or setting the title. arca's own colors are applied by paint()/colorOp() to trusted
+// strings after this, so intended styling is unaffected.
+func sanitize(s string) string {
+	if !strings.ContainsFunc(s, isCtrl) {
+		return s // common case: nothing to strip, no allocation
+	}
+	return strings.Map(func(r rune) rune {
+		if isCtrl(r) {
+			return -1 // drop it
+		}
+		return r
+	}, s)
+}
+
+// sanitizeAll sanitizes each string in place and returns the slice, for convenience at call sites
+// that build a row of untrusted cells.
+func sanitizeAll(cells []string) []string {
+	for i, c := range cells {
+		cells[i] = sanitize(c)
+	}
+	return cells
+}
+
 // paint wraps text in an ANSI color.
 func paint(code, s string) string { return code + s + ansiReset }
 

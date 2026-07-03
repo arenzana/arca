@@ -255,7 +255,7 @@ func listCanaries() error {
 		if n > 0 {
 			status, when = "TRIPPED", last.Local().Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", name, status, when, n)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", sanitize(name), status, when, n)
 	}
 	if !any {
 		fmt.Fprintln(os.Stderr, "no canaries planted (create one with: arca canary NAME --template stripe)")

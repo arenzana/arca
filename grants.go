@@ -260,7 +260,7 @@ func newGrants() *cobra.Command {
 				if now.After(g.ExpiresAt) {
 					expires += " (expired)"
 				}
-				rows = append(rows, []string{n, agent, command, uses, expires})
+				rows = append(rows, sanitizeAll([]string{n, agent, command, uses, expires}))
 			}
 			renderTable([]string{"SECRET", "AGENT", "COMMAND", "USES", "EXPIRES"}, rows)
 			return nil
