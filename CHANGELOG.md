@@ -7,6 +7,12 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **The `audit_log` MCP tool no longer reveals the secret name behind a handle** (SEC-09). A
+  handle-issued `exec` records the secret's name with the handle id (`hdl_…`) as caller, so an agent
+  could call `audit_log` and read back the `hdl_… → name` mapping the handle exists to hide (even
+  though it can't enumerate the store). Those events' name is now masked to the handle id in the MCP
+  response. (Secret names remain visible to the agent via `list_secrets` by design; what a handle
+  hides is *which* secret it wraps.)
 - **Store lock is now ownership-checked, with a heartbeat so a live holder isn't stolen** (SEC-08).
   The lock released by deleting the lock file by path and reclaimed a stale lock with a blind
   unlink, which had two races: a process whose lock was reclaimed could delete its *successor's*
