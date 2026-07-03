@@ -22,12 +22,18 @@ arca exec --only PROD_DB_PASSWORD -- psql   # allowed (value in the child's env)
 
 ## `--require-approval` (human gate)
 
-A human must confirm each release on the terminal. An agent can *request* but cannot self-approve:
-with no TTY the request is denied, and a detected agent can't set `ARCA_APPROVAL=allow` to bypass.
+A human must confirm each release **on the controlling terminal** — every time. There is no
+environment bypass: `ARCA_APPROVAL=allow` is not honored (only `ARCA_APPROVAL=deny`, which can only
+*refuse*). An AI agent has no terminal, so it simply can't satisfy the gate — arca relies on the one
+thing an agent lacks (a TTY) rather than on env-var-based agent detection, which an agent could spoof.
 
 ```sh
 arca set ROOT_SIGNING_KEY --require-approval
 ```
+
+For **"a human authorizes once, then a script or agent runs unattended,"** don't use
+`--require-approval` — use a `grant` or a `handle`: the operator sets it up interactively (scoped to a
+command, a number of uses, and a window) and the agent then scripts against it.
 
 ## Output redaction
 

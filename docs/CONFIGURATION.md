@@ -13,7 +13,7 @@ All paths are overridable so the store can live in your dotfiles while the audit
 | `ARCA_IDENTITY` | age private key | `$SOPS_AGE_KEY_FILE`, else `~/.config/arca/identity.txt` |
 | `ARCA_STRICT_AUDIT` | fail-closed auditing | enabled; set `0`/`false`/`off`/`no` for best-effort |
 | `ARCA_ACTOR` | explicit actor label in the audit | — (OS user / agent auto-detected) |
-| `ARCA_APPROVAL` | short-circuit the approval prompt | — (`allow`/`deny`; else interactive `/dev/tty`) |
+| `ARCA_APPROVAL` | `deny` refuses a `--require-approval` release (fail-safe); anything else is ignored — approval always needs an interactive terminal (no `allow` bypass) | — |
 | `XDG_CONFIG_HOME` / `XDG_STATE_HOME` | base dirs | `~/.config` / `~/.local/state` |
 
 Local operational state (session signing keys, grants, handles, the canary registry) lives under

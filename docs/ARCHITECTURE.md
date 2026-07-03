@@ -72,7 +72,7 @@ could bypass arca entirely (see the trust model).
 When arca detects that the caller is an AI agent, three operator escape hatches
 are disabled and **cannot be re-enabled by the agent**:
 
-- It cannot self-approve a `--require-approval` secret (`ARCA_APPROVAL=allow`).
+- It cannot self-approve a `--require-approval` secret: approval needs an interactive terminal, which an agent doesn't have (there is no `ARCA_APPROVAL=allow` bypass).
 - It cannot disable fail-closed auditing (`ARCA_STRICT_AUDIT=0`).
 - It cannot suppress its own read record (`get --no-log`).
 

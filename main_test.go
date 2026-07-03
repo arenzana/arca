@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -154,6 +155,43 @@ func sandbox(t *testing.T) string {
 		t.Setenv(k, "")
 	}
 	return dir
+}
+
+// withTTYResponse makes openTTY return a fake terminal that answers `answer` (e.g. "y"/"n"), so a
+// test can drive the interactive --require-approval prompt without a real controlling terminal.
+func withTTYResponse(t *testing.T, answer string) {
+	t.Helper()
+	inPath := filepath.Join(t.TempDir(), "tty")
+	if err := os.WriteFile(inPath, []byte(answer+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := openTTY
+	t.Cleanup(func() { openTTY = old })
+	openTTY = func() (in, out *os.File, err error) {
+		f, err := os.Open(inPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			f.Close()
+			return nil, nil, err
+		}
+		return f, devnull, nil
+	}
+}
+
+// withNoTTY makes openTTY report that no controlling terminal is available, so a test can assert the
+// approval-refused path deterministically on every platform. Without it, a test that reaches approve()
+// would open the real terminal — harmless on Unix CI (/dev/tty fails with no tty), but on Windows the
+// in-process test has a console, so CONIN$ opens and the prompt blocks forever waiting for input.
+func withNoTTY(t *testing.T) {
+	t.Helper()
+	old := openTTY
+	t.Cleanup(func() { openTTY = old })
+	openTTY = func() (in, out *os.File, err error) {
+		return nil, nil, errors.New("no controlling terminal (test)")
+	}
 }
 
 // TestEndToEnd walks the primary lifecycle through the real command tree: init → set → get →

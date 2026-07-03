@@ -45,11 +45,16 @@ the machine.
 - **Value echoed into an agent's context** → ends up in model logs/transcripts. *Addressed:* `exec` / `run_with_secrets` let a command *use* a secret while arca returns only the command's output; `arca exec` additionally **redacts injected values from the command's captured output** (replacing them with `«arca:NAME»` and auditing the catch), so an accidental `echo $SECRET` is intercepted rather than trusted not to happen. This is defense in depth, not a guarantee: it matches the literal value, so a command that encodes/splits/hashes the secret before printing can still emit it. `--no-print` refuses `get`/`env`/`inject` disclosure entirely.
 
 ### T2 — An AI agent weakens the controls that govern it
-A detected agent trying to self-approve a gated read, disable fail-closed
-auditing, or suppress its own access record. *Addressed:* agent-aware policy —
-`ARCA_APPROVAL=allow`, `ARCA_STRICT_AUDIT=0`, and `get --no-log` are honored only
-for a non-agent caller. An agent cannot re-enable them. This is the project's
-central invariant and is covered by dedicated tests.
+An agent trying to self-approve a gated read, disable fail-closed auditing, or
+suppress its own access record. *Addressed:* the strongest control,
+`--require-approval`, no longer trusts the environment at all — it requires an
+interactive confirmation on the controlling terminal every time, and an agent has
+no terminal (there is no `ARCA_APPROVAL=allow` bypass; only `deny`, which can only
+*refuse*). For unattended-but-authorized use, the operator issues a scoped `grant`
+or `handle` interactively. *Residual:* the other two knobs, `ARCA_STRICT_AUDIT=0`
+and `get --no-log`, are still gated by env-var-based agent detection (honored only
+for a non-agent caller) — advisory, since an agent controls its own environment;
+tightening those the same TTY-anchored way is future work.
 
 ### T3 — Shell / environment injection via crafted secret names
 A hand-edited or synced store containing a name like `x=...; rm -rf` could break
