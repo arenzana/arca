@@ -169,7 +169,7 @@ func styledOp(op string) string {
 	switch op {
 	case "read", "exec", "env", "inject":
 		code = fgGreen
-	case "set", "rotate", "generate", "import", "grant", "handle-create":
+	case "set", "rotate", "generate", "import", "grant", "handle-create", "annotate":
 		code = fgAmber
 	case "canary", "ratelimit", "redact", "rm", "revoke", "handle-revoke":
 		code = fgCoral

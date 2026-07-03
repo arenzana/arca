@@ -50,13 +50,16 @@ func completeTags(_ *cobra.Command, _ []string, toComplete string) ([]string, co
 func registerCompletions(cmds []*cobra.Command) {
 	for _, c := range cmds {
 		switch c.Name() {
-		case "get", "show", "rm", "rotate":
+		case "get", "show", "rm", "rotate", "annotate":
 			c.ValidArgsFunction = completeSecretNames
 		case "exec":
 			_ = c.RegisterFlagCompletionFunc("only", completeSecretNames)
 		case "ls":
 			_ = c.RegisterFlagCompletionFunc("tag", completeTags)
 		case "set":
+			_ = c.RegisterFlagCompletionFunc("tag", completeTags)
+		}
+		if c.Name() == "annotate" { // annotate takes a NAME (above) *and* a --tag flag
 			_ = c.RegisterFlagCompletionFunc("tag", completeTags)
 		}
 	}
