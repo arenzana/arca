@@ -355,6 +355,85 @@ func psCommand(pid int) string {
 	return strings.TrimPrefix(filepath.Base(strings.TrimSpace(string(out))), "-") // strip login-shell "-"
 }
 
+// agentSig identifies one AI coding-agent runtime by the environment variables it injects into the
+// commands it launches. Detection is ADVISORY, not a security boundary: these vars are set by the
+// agent's own runtime, so a *cooperating* agent is attributed correctly, but a hostile one can unset
+// them — which is why the load-bearing control (--require-approval) is anchored on a real terminal,
+// not on this (see SEC-06). Detection drives audit attribution, output redaction (SEC-11), and the
+// advisory ARCA_STRICT_AUDIT / --no-log knobs.
+//
+// Key ONLY on runtime/session markers a harness sets — never on API-key vars (OPENAI_API_KEY,
+// GEMINI_API_KEY, ANTHROPIC_API_KEY, …), which countless non-agent scripts set and would
+// misclassify. To add an agent, append a row here. Any agent not listed can still self-identify via
+// the generic AI_AGENT variable below.
+type agentSig struct {
+	name    string        // canonical agent name recorded in the audit log
+	detect  []string      // agent is present if ANY of these env vars is non-empty
+	session string        // env var holding a session id, if the agent exposes one
+	version func() string // derive a version string, if available
+}
+
+var agentSignatures = []agentSig{
+	{
+		name:    "claude-code",
+		detect:  []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID"},
+		session: "CLAUDE_CODE_SESSION_ID",
+		// Claude Code's binary lives under .../<version>/claude, so the version falls out of the path.
+		version: func() string { return firstSemver(os.Getenv("CLAUDE_CODE_EXECPATH")) },
+	},
+	{name: "cursor", detect: []string{"CURSOR_TRACE_ID"}, session: "CURSOR_TRACE_ID"},
+	{name: "gemini-cli", detect: []string{"GEMINI_CLI"}},                                 // Gemini CLI sets GEMINI_CLI=1 in shell subprocesses
+	{name: "codex", detect: []string{"CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"}}, // OpenAI Codex sandbox markers
+}
+
+// customAgentSignatures parses ARCA_AGENT_MARKERS — a comma-separated list of `name=ENVVAR` pairs —
+// so an operator can teach arca to recognize an agent that isn't built in (opencode, Kimi, Aider,
+// Copilot CLI, …) without a code change, e.g.
+//
+//	ARCA_AGENT_MARKERS="opencode=OPENCODE,kimi=KIMI_CODE_HOME"
+//
+// The right-hand side is an env-var NAME whose presence marks the agent — NOT a value, and pointedly
+// NOT an API-key var, which non-agent scripts also set. Any agent can equally self-identify with the
+// generic AI_AGENT variable.
+func customAgentSignatures() []agentSig {
+	raw := os.Getenv("ARCA_AGENT_MARKERS")
+	if raw == "" {
+		return nil
+	}
+	var sigs []agentSig
+	for _, pair := range strings.Split(raw, ",") {
+		name, envvar, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		name, envvar = strings.TrimSpace(name), strings.TrimSpace(envvar)
+		if !ok || name == "" || envvar == "" {
+			continue
+		}
+		sigs = append(sigs, agentSig{name: name, detect: []string{envvar}})
+	}
+	return sigs
+}
+
+// agentEnvVars returns every environment variable the detection table (and the AI_AGENT fallback)
+// consults. Tests clear these so the suite is deterministic no matter which agent launched it.
+func agentEnvVars() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(k string) {
+		if k != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	for _, sig := range agentSignatures {
+		for _, k := range sig.detect {
+			add(k)
+		}
+		add(sig.session)
+	}
+	add("CLAUDE_CODE_EXECPATH")
+	add("AI_AGENT")
+	return out
+}
+
 // detectIdentity figures out who/what is accessing a secret: the explicit $ARCA_ACTOR plus an
 // auto-detected AI agent (name, version, session) from well-known environment variables. This
 // is what lets `arca log` attribute access to a specific agent session without the user
@@ -364,18 +443,25 @@ func detectIdentity() audit.Identity {
 	if id.Actor == "" {
 		id.Actor = osUser() // fall back to the OS user so the actor is never blank
 	}
-	switch {
-	case envSet("CLAUDECODE", "CLAUDE_CODE_SESSION_ID"):
-		id.Agent = "claude-code"
-		id.Session = os.Getenv("CLAUDE_CODE_SESSION_ID")
-		// Claude Code's binary lives under .../<version>/claude, so the version falls out of
-		// the exec path.
-		id.Version = firstSemver(os.Getenv("CLAUDE_CODE_EXECPATH"))
-	case envSet("CURSOR_TRACE_ID"):
-		id.Agent = "cursor"
-		id.Session = os.Getenv("CURSOR_TRACE_ID")
+	// Built-in signatures first (canonical names win), then any operator-registered custom markers.
+	sigs := agentSignatures
+	if custom := customAgentSignatures(); len(custom) > 0 {
+		sigs = append(append([]agentSig{}, agentSignatures...), custom...)
 	}
-	// Generic fallback for other agents: AI_AGENT="name_version_agent"
+	for _, sig := range sigs {
+		if !envSet(sig.detect...) {
+			continue
+		}
+		id.Agent = sig.name
+		if sig.session != "" {
+			id.Session = os.Getenv(sig.session)
+		}
+		if sig.version != nil {
+			id.Version = sig.version()
+		}
+		break
+	}
+	// Generic fallback for any other agent: AI_AGENT="name_version_agent"
 	// (e.g. "claude-code_2-1-181_agent"); the version uses '-' for '.'.
 	if id.Agent == "" {
 		if ai := os.Getenv("AI_AGENT"); ai != "" {

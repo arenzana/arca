@@ -148,12 +148,14 @@ func sandbox(t *testing.T) string {
 	t.Setenv("ARCA_AUDIT", filepath.Join(dir, "audit.db"))
 	t.Setenv("ARCA_IDENTITY", filepath.Join(dir, "id.txt"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state")) // keep session signing keys out of $HOME
-	// Clear AI-agent detection so the suite is deterministic no matter what launched it (e.g. running
-	// inside a Claude Code session, where CLAUDECODE is set, must not make every caller look like an
-	// agent). Tests that exercise agent behavior set these explicitly.
-	for _, k := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
+	// Clear AI-agent detection so the suite is deterministic no matter what launched it (running
+	// inside Claude Code / Cursor / Gemini CLI / Codex, whose markers are set, must not make every
+	// caller look like an agent). Sourced from the detection table so new agents stay covered. Tests
+	// that exercise agent behavior set the marker they need explicitly.
+	for _, k := range agentEnvVars() {
 		t.Setenv(k, "")
 	}
+	t.Setenv("ARCA_AGENT_MARKERS", "") // and any operator-registered custom markers
 	return dir
 }
 
