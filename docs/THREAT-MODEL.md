@@ -90,6 +90,15 @@ enforces a size cap, checks the format version, rejects nil entries, and runs
 explicit migrations; reads of untrusted-path inputs are bounded (16 MiB) and
 annotated where `gosec` flags them.
 
+### T9 — Store rollback / replay
+The store is git-synced, so an attacker (or a sync conflict) could restore an
+older copy — resurrecting a rotated or deleted secret — with no signal.
+*Addressed (warn):* every write bumps a monotonic `generation`; on load arca
+compares it to a local high-water mark and warns if it regressed. *Residual:*
+this is a warning, not a guarantee — the high-water mark is local and a
+machine-owner-level attacker can reset it; binding the generation into the
+tamper-evident audit chain would harden it further.
+
 ### T6 — Concurrent writers corrupt the store
 Two arca processes mutating the store at once. *Addressed:* an `O_EXCL` lockfile
 guards mutations. The lock carries a per-acquisition token, so release removes it

@@ -6,8 +6,16 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **The store carries a monotonic `generation`, and a rollback is warned about** (SEC-14). The store
+  is a git-synced JSON file, so restoring an older copy — a git revert, a sync conflict, or an
+  attacker resurrecting a rotated or deleted secret — was previously undetectable. Every write now
+  bumps a `generation` counter; on load, arca compares it to a local high-water mark and prints a
+  warning if it went backwards (pointing you at the store's git history). It's a warning, not a hard
+  stop — the high-water mark is a local heuristic a machine owner can reset.
+
 ### Changed
-- **`disable`/`enable` are now a dedicated flag, not expiry reuse** (SEC-13). `disable` previously
+- **`disable`/`enable` are now a dedicated flag, not expiry reuse** (SEC-13). `disable` previously `disable` previously
   suspended a secret by stamping `expires_at` to "now", and `enable` cleared `expires_at` entirely —
   so disabling then enabling a secret that had a *legitimate* future expiry silently wiped it. Disable
   is now a distinct `disabled` field: `disable` sets it, `enable` clears only it, and a real expiry is
