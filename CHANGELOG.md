@@ -7,6 +7,11 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **Legacy cleartext canary flags migrate out of the synced store (FU-5).** SEC-04 moved the
+  decoy designation into the local registry, but a pre-0.6.2 store still carried `canary:true`
+  in the git-synced file — telling an off-host attacker exactly which secrets are traps. On load,
+  arca now copies any legacy flag into the local registry and strips it from the store
+  (best-effort; retried on the next load if the registry or save fails).
 - **A store rollback is now detectable from the audit log itself, hardening SEC-14.** Every audit
   event records the store generation it observed, bound into the event's hash and signature — a
   tamperer can't edit or strip it without breaking the chain. `log --verify` fails loudly when the

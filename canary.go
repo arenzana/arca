@@ -67,6 +67,38 @@ func saveCanaries(set map[string]bool) error {
 	return os.Rename(tmp, canariesPath())
 }
 
+// migrateLegacyCanaries retroactively applies SEC-04 to a pre-0.6.2 store (FU-5): any cleartext
+// `canary:true` flag is copied into the local registry and stripped from the synced store, so an
+// off-host attacker who obtains the store can no longer tell decoys from real secrets. Best-effort
+// on every load: a registry or save failure leaves the flags in place (still honored by isCanary)
+// and warns; the migration retries on the next load. Called with the freshly loaded store, before
+// the invoking command uses it.
+func migrateLegacyCanaries(s *store.Store) {
+	var legacy []string
+	for name, sec := range s.Secrets {
+		if sec.Canary {
+			legacy = append(legacy, name)
+		}
+	}
+	if len(legacy) == 0 {
+		return
+	}
+	for _, name := range legacy {
+		if err := markCanary(name); err != nil {
+			fmt.Fprintf(os.Stderr, "arca: warning: could not migrate legacy canary flag for %s to the local registry: %v\n", name, err)
+			return // never strip a flag that wasn't preserved first
+		}
+	}
+	for _, name := range legacy {
+		s.Secrets[name].Canary = false
+	}
+	if err := s.Save(); err != nil {
+		fmt.Fprintf(os.Stderr, "arca: warning: could not strip migrated canary flag(s) from the store: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "arca: migrated %d legacy canary flag(s) out of the synced store into the local registry (SEC-04)\n", len(legacy))
+}
+
 // isCanary reports whether name is a decoy: present in the local registry, or carrying the legacy
 // pre-0.6.2 store flag. A registry read error is announced but treated as "not a canary" so it
 // never blocks an access — canary alerting is best-effort by design (see tripCanary).
