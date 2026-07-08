@@ -6,6 +6,12 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-07-08
+
+Closes every remaining code finding from the 2026-07 security audit (the SEC-06 and SEC-14
+residuals, FU-5, FU-6, FU-9), adds externally-storable audit anchors, and moves release
+signatures to the Cosign v3 Sigstore bundle format.
+
 ### Added
 - **External audit anchors close the joint-rollback gap (SEC-14, deeper).** Rolling the store and
   the audit DB back *together* produces a self-consistent older state that no in-DB check can see.
@@ -383,7 +389,9 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/arenzana/arca/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/arenzana/arca/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/arenzana/arca/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/arenzana/arca/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/arenzana/arca/compare/v0.5.0...v0.6.0
