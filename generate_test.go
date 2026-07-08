@@ -82,3 +82,25 @@ func TestAppVersion(t *testing.T) {
 		t.Fatal("appVersion should never be empty")
 	}
 }
+
+// TestGenerateNoPrintShowExclusive covers FU-9: --no-print promises the value never reaches
+// stdout, and --show is exactly that disclosure — the pair is refused up front, and the secret
+// is not created.
+func TestGenerateNoPrintShowExclusive(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if err := runArcaErr("", "generate", "X", "--no-print", "--show"); err == nil {
+		t.Fatal("generate --no-print --show should be refused")
+	}
+	if out := runArca(t, "", "ls"); strings.Contains(out, "X") {
+		t.Fatalf("the refused generate still created the secret: %q", out)
+	}
+	// Each flag still works on its own.
+	if out := runArca(t, "", "generate", "Y", "--show", "-l", "12"); len(strings.TrimSpace(out)) != 12 {
+		t.Fatalf("generate --show output = %q, want a 12-char value", out)
+	}
+	runArca(t, "", "generate", "Z", "--no-print")
+	if err := runArcaErr("", "get", "Z"); err == nil {
+		t.Fatal("get on a --no-print generated secret should refuse")
+	}
+}
