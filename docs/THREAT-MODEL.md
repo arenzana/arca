@@ -108,11 +108,15 @@ Additionally, every audit event records the generation it observed, **bound
 into the event's hash and signature** — so `log --verify` detects a rollback
 from the tamper-evident log itself: it fails when the store's generation is
 behind the log's audited maximum, or when the log records a generation going
-backwards (operations continuing against a restored older copy). *Residual:*
-a rollback of exactly one write (to the copy current at the last audited
-operation) is below the generation check's resolution, and rolling back store
-and audit DB *together* erases the evidence — external anchoring of the audit
-head is the mitigation there.
+backwards (operations continuing against a restored older copy). For the one
+rewrite no in-DB check can see — the store and the audit DB rolled back
+*together* to a consistent older state — `log --verify` emits an **anchor
+token** (chained-event count + head hash) to store off the machine (password
+manager, git note, another host); a later `--verify --anchor <token>` fails
+unless the log still extends that head. *Residual:* a rollback of exactly one
+write (to the copy current at the last audited operation) is below the
+generation check's resolution, and the anchor only protects history up to the
+moment it was minted — its value depends on minting and checking regularly.
 
 ### T10 — Removing a recipient is mistaken for revocation
 `recipients rm` drops a key from the set, but the removed holder can still decrypt
