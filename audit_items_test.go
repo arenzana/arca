@@ -11,8 +11,9 @@ func TestStrictAuditAgentAware(t *testing.T) {
 	for _, k := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
 		t.Setenv(k, "")
 	}
+	withTTYResponse(t, "")
 	if strictAudit() {
-		t.Fatal("a non-agent caller with ARCA_STRICT_AUDIT=0 should be best-effort")
+		t.Fatal("a non-agent caller at a terminal with ARCA_STRICT_AUDIT=0 should be best-effort")
 	}
 	t.Setenv("AI_AGENT", "claude-code")
 	if !strictAudit() {

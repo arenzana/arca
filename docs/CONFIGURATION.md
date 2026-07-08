@@ -11,7 +11,7 @@ All paths are overridable so the store can live in your dotfiles while the audit
 | `ARCA_STORE` | JSON store path (sync this) | `~/.config/arca/store.json` |
 | `ARCA_AUDIT` | SQLite audit DB (do **not** sync) | `~/.local/state/arca/audit.db` |
 | `ARCA_IDENTITY` | age private key | `$SOPS_AGE_KEY_FILE`, else `~/.config/arca/identity.txt` |
-| `ARCA_STRICT_AUDIT` | fail-closed auditing | enabled; set `0`/`false`/`off`/`no` for best-effort |
+| `ARCA_STRICT_AUDIT` | fail-closed auditing | enabled; a human at a controlling terminal may set `0`/`false`/`off`/`no` for best-effort (ignored for a detected agent or a headless caller) |
 | `ARCA_ACTOR` | explicit actor label in the audit | — (OS user / agent auto-detected) |
 | `AI_AGENT` | let any agent self-identify: `name` or `name_version_agent` | — |
 | `ARCA_AGENT_MARKERS` | register custom agent markers: comma-separated `name=ENVVAR` | — |

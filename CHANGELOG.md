@@ -6,6 +6,15 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **The audit escape hatches are TTY-anchored, closing the SEC-06 residual.** `ARCA_STRICT_AUDIT=0`
+  (best-effort auditing) and `get --no-log` were gated on env-var-based agent detection — advisory,
+  since an agent controls its own environment and can scrub the markers. Both are now honored only
+  for a non-agent caller **with a controlling terminal** (`/dev/tty` / `CONIN$`), the same anchor
+  `--require-approval` uses: a headless caller stays fail-closed and always leaves a read record.
+  Headless automation that relied on `ARCA_STRICT_AUDIT=0` should fix its audit DB instead, or run
+  the command from a real terminal session.
+
 ### Changed
 - **Release signatures ship as a single Sigstore bundle** — `checksums.txt.sigstore.json`
   (signature + certificate + Rekor proof) replaces `checksums.txt.sig` + `checksums.txt.pem`.

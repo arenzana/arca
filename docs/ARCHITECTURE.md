@@ -65,7 +65,7 @@ could bypass arca entirely (see the trust model).
 3. The use is audited. `--no-print` secrets are usable here but still never returned by arca.
 
 **Inspect history** — `log` / MCP `audit_log`
-- Reads the audit DB and prints access metadata. An agent cannot suppress its own read record (`get --no-log` is honored only for a non-agent caller).
+- Reads the audit DB and prints access metadata. An agent cannot suppress its own read record (`get --no-log` is honored only for a non-agent caller at a controlling terminal).
 
 ## Agent-aware policy (the core invariant)
 

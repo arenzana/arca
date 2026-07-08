@@ -262,11 +262,12 @@ func loadIDs() ([]age.Identity, error) { return crypto.LoadIdentities(identityPa
 // *before* revealing the secret, so a secret that cannot be audited is never disclosed.
 //
 // Set ARCA_STRICT_AUDIT to a falsey value (0/false/off/no) to opt into best-effort auditing,
-// where a failed audit write is swallowed and never breaks the operation.
+// where a failed audit write is swallowed and never breaks the operation. The override is
+// honored only for a human at a controlling terminal (SEC-06).
 func logAudit(op, name, caller string) error {
 	if err := recordAudit(op, name, caller); err != nil {
 		if strictAudit() {
-			return fmt.Errorf("audit failed (fail-closed; set ARCA_STRICT_AUDIT=0 to override): %w", err)
+			return fmt.Errorf("audit failed (fail-closed; a human at a terminal may set ARCA_STRICT_AUDIT=0 to override): %w", err)
 		}
 		// best-effort: swallow
 	}
@@ -301,13 +302,31 @@ func recordAudit(op, name, caller string) error {
 // ARCA_STRICT_AUDIT to a falsey value (0/false/off/no/lax) to opt into best-effort auditing.
 func strictAudit() bool {
 	// An AI agent must not be able to weaken fail-closed auditing on itself; the lax override
-	// is honored only for a non-agent caller.
-	if detectIdentity().Agent != "" {
+	// is honored only for a non-agent caller. Detection is env-based and an agent controls its
+	// own environment, so the override is additionally anchored to the one thing an agent
+	// can't conjure: a controlling terminal (SEC-06). No terminal, no laxness.
+	if detectIdentity().Agent != "" || !hasControllingTTY() {
 		return true
 	}
 	switch strings.ToLower(os.Getenv("ARCA_STRICT_AUDIT")) {
 	case "0", "false", "off", "no", "lax", "best-effort":
 		return false
+	}
+	return true
+}
+
+// hasControllingTTY reports whether the process has a controlling terminal. It anchors the
+// human-only escape hatches (lax ARCA_STRICT_AUDIT, `get --no-log`) the same way approval is
+// anchored (SEC-06): agent detection is advisory — an agent can scrub its own env markers —
+// but it cannot open /dev/tty (or CONIN$) when no human terminal exists.
+func hasControllingTTY() bool {
+	in, out, err := openTTY()
+	if err != nil {
+		return false
+	}
+	in.Close()
+	if out != in {
+		out.Close()
 	}
 	return true
 }
@@ -1050,11 +1069,14 @@ func newGet() *cobra.Command {
 			// not disclose the value. --no-log may suppress the record for a human, but never for an
 			// AI agent (which can't suppress its own trail) and never for a rate-limited secret — the
 			// audit log IS the rate counter, so honoring --no-log there would let a human bypass the
-			// limit by reading in a loop (SEC-12).
-			agent := detectIdentity().Agent != ""
-			if !noLog || agent || sec.RateLimit > 0 {
-				if noLog && !agent && sec.RateLimit > 0 {
+			// limit by reading in a loop (SEC-12). "Human" is anchored to a controlling terminal,
+			// not env-based agent detection, which an agent can scrub (SEC-06).
+			human := detectIdentity().Agent == "" && hasControllingTTY()
+			if !noLog || !human || sec.RateLimit > 0 {
+				if noLog && human && sec.RateLimit > 0 {
 					fmt.Fprintf(os.Stderr, "note: --no-log ignored for %s (it is rate-limited)\n", name)
+				} else if noLog && !human {
+					fmt.Fprintf(os.Stderr, "note: --no-log ignored for %s (no interactive terminal)\n", name)
 				}
 				if err := logAudit("read", name, ""); err != nil {
 					return err

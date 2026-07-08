@@ -355,14 +355,22 @@ func TestStrictAudit(t *testing.T) {
 		t.Setenv(e, "")
 	}
 	t.Setenv("ARCA_STRICT_AUDIT", "") // default is strict
+	withTTYResponse(t, "")
 	if !strictAudit() {
 		t.Fatal("auditing should be strict by default")
 	}
-	t.Setenv("ARCA_STRICT_AUDIT", "0") // a non-agent may opt into best-effort
+	t.Setenv("ARCA_STRICT_AUDIT", "0") // a human at a terminal may opt into best-effort
 	if strictAudit() {
-		t.Fatal("a non-agent should be able to relax strict auditing")
+		t.Fatal("a human at a terminal should be able to relax strict auditing")
 	}
-	// A detected agent cannot weaken it, even with the lax override set.
+	// Without a controlling terminal the lax override is not honored — an agent can scrub its
+	// env markers, but it can't conjure a terminal (SEC-06).
+	withNoTTY(t)
+	if !strictAudit() {
+		t.Fatal("the lax override must not be honored without a controlling terminal")
+	}
+	// A detected agent cannot weaken it, even with the lax override set and a terminal present.
+	withTTYResponse(t, "")
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "s")
 	if !strictAudit() {
