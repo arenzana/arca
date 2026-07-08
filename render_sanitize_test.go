@@ -79,7 +79,7 @@ func TestRenderStripsEscapes(t *testing.T) {
 // TestSanitizeJSONBytes covers FU-6: raw DEL/C1 runes are stripped from marshaled JSON, while
 // Go's own \u00XX escapes for C0 (already safe in the byte stream) are left intact.
 func TestSanitizeJSONBytes(t *testing.T) {
-	in := []byte("{\"description\": \"evil\x7f31mred\"}")
+	in := []byte("{\"description\": \"evil\x7f\u009b31mred\"}")
 	out := string(sanitizeJSONBytes(in))
 	if strings.ContainsRune(out, 0x7f) || strings.ContainsRune(out, 0x9b) {
 		t.Fatalf("DEL/C1 survived sanitizeJSONBytes: %q", out)
@@ -87,7 +87,7 @@ func TestSanitizeJSONBytes(t *testing.T) {
 	if out != "{\"description\": \"evil31mred\"}" {
 		t.Fatalf("unexpected result %q", out)
 	}
-	clean := []byte(`{"a":"plain  escaped"}`)
+	clean := []byte(`{"a":"plain \x1b escaped"}`)
 	if got := sanitizeJSONBytes(clean); string(got) != string(clean) {
 		t.Fatalf("clean JSON was altered: %q", got)
 	}
@@ -98,7 +98,7 @@ func TestSanitizeJSONBytes(t *testing.T) {
 func TestLsJSONSanitized(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
-	runArca(t, "v", "set", "S", "--desc", "bad31mdesc\x7f!")
+	runArca(t, "v", "set", "S", "--desc", "bad\u009b31mdesc\x7f!")
 	out := runArca(t, "", "ls", "--json")
 	if strings.ContainsRune(out, 0x9b) || strings.ContainsRune(out, 0x7f) {
 		t.Fatalf("ls --json leaked raw DEL/C1: %q", out)
