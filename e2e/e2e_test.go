@@ -43,6 +43,21 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// hasTerminal reports whether this test process (and so the arca child it spawns) has a
+// controlling terminal — the anchor for arca's human-only escape hatches (SEC-06).
+func hasTerminal() bool {
+	dev := "/dev/tty"
+	if runtime.GOOS == "windows" {
+		dev = "CONIN$"
+	}
+	f, err := os.OpenFile(dev, os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
+}
+
 // box is a sandboxed arca invocation environment (its own store/audit/identity).
 type box struct {
 	env []string
@@ -222,10 +237,18 @@ func TestFailClosedAudit(t *testing.T) {
 	if _, _, code := b.run(t, "", "get", "PLAIN"); code == 0 {
 		t.Fatal("expected fail-closed get to abort with a broken audit log")
 	}
-	// opt out → best-effort for a non-agent caller: get proceeds
+	// The best-effort opt-out is TTY-anchored (SEC-06): honored only for a non-agent caller with a
+	// controlling terminal. The arca child inherits this test's terminal (or lack of one) — headless
+	// CI has none on Unix, a developer's shell does, and on Windows the runner's console (CONIN$)
+	// counts — so assert whichever behavior matches the environment we actually run in.
 	bestEffort := []string{"ARCA_STRICT_AUDIT=0", "CLAUDECODE=", "CLAUDE_CODE_SESSION_ID=", "CURSOR_TRACE_ID=", "AI_AGENT="}
-	if out, _, code := b.runEnv(t, bestEffort, "", "get", "PLAIN"); code != 0 || out != "plain" {
-		t.Fatalf("best-effort get = %q code=%d", out, code)
+	out, _, code := b.runEnv(t, bestEffort, "", "get", "PLAIN")
+	if hasTerminal() {
+		if code != 0 || out != "plain" {
+			t.Fatalf("best-effort get at a terminal = %q code=%d", out, code)
+		}
+	} else if code == 0 {
+		t.Fatal("headless ARCA_STRICT_AUDIT=0 must not relax fail-closed auditing (no terminal)")
 	}
 	// an agent stays fail-closed even with ARCA_STRICT_AUDIT=0
 	if _, _, code := b.runEnv(t, []string{"ARCA_STRICT_AUDIT=0", "AI_AGENT=claude-code"}, "", "get", "PLAIN"); code == 0 {
