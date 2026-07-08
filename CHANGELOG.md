@@ -7,6 +7,11 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **JSON output is control-character-sanitized, closing the FU-6 gap.** `--json` (ls/show/log/
+  stale) and the MCP tool results escape C0 via Go's encoder but let DEL and C1 characters
+  through raw — a crafted description or `ARCA_ACTOR` could ride a decoded field (or `jq -r`)
+  into a terminal as live control sequences, the same injection SEC-07 strips from the table
+  views. Marshaled JSON now passes through a byte sanitizer that drops raw DEL/C1.
 - **Legacy cleartext canary flags migrate out of the synced store (FU-5).** SEC-04 moved the
   decoy designation into the local registry, but a pre-0.6.2 store still carried `canary:true`
   in the git-synced file — telling an off-host attacker exactly which secrets are traps. On load,
