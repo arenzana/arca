@@ -352,7 +352,7 @@ type VerifyResult struct {
 	// none carry one). GenRegressedID is the first event whose generation is LOWER than one
 	// recorded before it — evidence the store was rolled back while auditing continued — or 0.
 	// A regression does not fail the chain (the log itself is honest); callers decide severity.
-	MaxStoreGen   int
+	MaxStoreGen    int
 	GenRegressedID int64
 }
 

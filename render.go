@@ -57,6 +57,28 @@ func sanitizeAll(cells []string) []string {
 	return cells
 }
 
+// sanitizeJSONBytes strips raw DEL (0x7f) and C1 (U+0080–U+009F) runes from marshaled JSON before
+// it is emitted (FU-6). Go's encoder escapes C0 as \u00XX — safe in the byte stream — but DEL and
+// C1 pass through raw, so a consumer that prints a decoded field (or pipes through `jq -r`) would
+// feed live control sequences to the terminal, the exact injection SEC-07 strips from the table
+// views. Dropping the runes from the encoded bytes is safe: they can only occur inside string
+// values, never in JSON structure.
+func sanitizeJSONBytes(b []byte) []byte {
+	s := string(b)
+	if !strings.ContainsFunc(s, isJSONCtrl) {
+		return b // common case: nothing to strip, no extra allocation
+	}
+	return []byte(strings.Map(func(r rune) rune {
+		if isJSONCtrl(r) {
+			return -1
+		}
+		return r
+	}, s))
+}
+
+// isJSONCtrl matches the control runes that survive Go's JSON encoding unescaped.
+func isJSONCtrl(r rune) bool { return r == 0x7f || (r >= 0x80 && r <= 0x9f) }
+
 // paint wraps text in an ANSI color.
 func paint(code, s string) string { return code + s + ansiReset }
 

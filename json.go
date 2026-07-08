@@ -62,12 +62,14 @@ type staleView struct {
 	Status      []string   `json:"status"`
 }
 
-// emitJSON writes v to stdout as indented JSON with a trailing newline.
+// emitJSON writes v to stdout as indented JSON with a trailing newline. The bytes pass through
+// sanitizeJSONBytes so metadata control characters that Go's encoder leaves raw (DEL/C1) can't
+// reach a consumer's terminal (FU-6) — the JSON analogue of the SEC-07 table sanitizer.
 func emitJSON(v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	_, err = os.Stdout.Write(append(b, '\n'))
+	_, err = os.Stdout.Write(append(sanitizeJSONBytes(b), '\n'))
 	return err
 }

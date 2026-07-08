@@ -100,13 +100,15 @@ func argStrings(req mcp.CallToolRequest, key string) []string {
 	return out
 }
 
-// jsonResult marshals v to pretty JSON as a tool text result.
+// jsonResult marshals v to pretty JSON as a tool text result. The bytes pass through
+// sanitizeJSONBytes so metadata control characters that Go's encoder leaves raw (DEL/C1)
+// can't ride a tool result into an agent's transcript or a terminal that renders it (FU-6).
 func jsonResult(v any) (*mcp.CallToolResult, error) {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(string(b)), nil
+	return mcp.NewToolResultText(string(sanitizeJSONBytes(b))), nil
 }
 
 func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
