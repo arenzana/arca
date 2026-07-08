@@ -178,11 +178,13 @@ func TestAuditFailureModes(t *testing.T) {
 	if err := runArcaErr("", "get", "K"); err == nil {
 		t.Fatal("expected get to fail-closed under default auditing")
 	}
-	// Opt out → best-effort (non-agent): the broken audit log is swallowed and the op proceeds.
+	// Opt out → best-effort (non-agent, at a terminal): the broken audit log is swallowed and
+	// the op proceeds. The lax override is TTY-anchored (SEC-06), so fake a terminal.
 	for _, k := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("ARCA_STRICT_AUDIT", "0")
+	withTTYResponse(t, "")
 	runArca(t, "v", "set", "K2")
 	if out := runArca(t, "", "get", "K2"); out != "v" {
 		t.Fatalf("best-effort get = %q", out)

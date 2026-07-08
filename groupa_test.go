@@ -21,6 +21,7 @@ func TestMCPRunRefusesShortSecret(t *testing.T) {
 // because the audit log is what the limit counts. A non-rate-limited secret still honors --no-log.
 func TestNoLogDoesNotEvadeRateLimit(t *testing.T) {
 	sandbox(t)
+	withTTYResponse(t, "") // --no-log is honored only at a terminal (SEC-06)
 	runArca(t, "", "init")
 	runArca(t, "longvalue", "set", "R", "--rate", "1/1h")
 	runArca(t, "", "get", "R", "--no-log")                         // use 1 — recorded despite --no-log

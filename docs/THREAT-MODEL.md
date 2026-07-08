@@ -51,10 +51,14 @@ suppress its own access record. *Addressed:* the strongest control,
 interactive confirmation on the controlling terminal every time, and an agent has
 no terminal (there is no `ARCA_APPROVAL=allow` bypass; only `deny`, which can only
 *refuse*). For unattended-but-authorized use, the operator issues a scoped `grant`
-or `handle` interactively. *Residual:* the other two knobs, `ARCA_STRICT_AUDIT=0`
-and `get --no-log`, are still gated by env-var-based agent detection (honored only
-for a non-agent caller) — advisory, since an agent controls its own environment;
-tightening those the same TTY-anchored way is future work.
+or `handle` interactively. The other two knobs, `ARCA_STRICT_AUDIT=0` and
+`get --no-log`, are anchored the same way: they are honored only for a non-agent
+caller **with a controlling terminal**. Env-var-based agent detection alone would
+be advisory (an agent controls its own environment and can scrub the markers),
+but it cannot open `/dev/tty` / `CONIN$` when no human terminal exists — so a
+headless caller stays fail-closed and always leaves a read record. *Residual:*
+on Windows, a console-attached agent process does have `CONIN$`; the terminal
+anchor there is weaker than on Unix (same trade-off as approval).
 
 ### T3 — Shell / environment injection via crafted secret names
 A hand-edited or synced store containing a name like `x=...; rm -rf` could break

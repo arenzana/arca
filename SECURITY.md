@@ -17,8 +17,9 @@ Do **not** open public issues for vulnerabilities. We aim to acknowledge within 
 - Store and audit files are created `0600`; store writes are atomic (temp + rename).
 - The audit log records access **metadata only** (op, name, time, actor, agent, session, caller) — never values.
 - Auditing is **fail-closed by default**: if an access cannot be recorded the operation is
-  aborted (reads abort before disclosing the value). A non-agent caller may opt into
-  best-effort auditing with `ARCA_STRICT_AUDIT=0`; a **detected AI agent cannot weaken this**.
+  aborted (reads abort before disclosing the value). A human at a controlling terminal may opt
+  into best-effort auditing with `ARCA_STRICT_AUDIT=0`; a **detected AI agent — or any caller
+  without a terminal — cannot weaken this**.
 
 ## Trust model & boundaries
 
@@ -29,10 +30,12 @@ and the full security assessment — assets, threats, and how each is addressed 
 arca runs with the invoking user's privileges; it raises the bar for a *cooperating* AI agent,
 not a hostile local user (who could bypass arca entirely). Specifically:
 
-- **Per-secret policy is agent-aware.** A detected agent cannot self-approve a
-  `--require-approval` secret via `ARCA_APPROVAL=allow`, cannot disable fail-closed auditing
-  (`ARCA_STRICT_AUDIT=0`), and cannot suppress its own read record (`get --no-log`). These
-  overrides are honored only for a non-agent caller.
+- **Per-secret policy is agent-aware and terminal-anchored.** A detected agent cannot
+  self-approve a `--require-approval` secret via `ARCA_APPROVAL=allow`, cannot disable
+  fail-closed auditing (`ARCA_STRICT_AUDIT=0`), and cannot suppress its own read record
+  (`get --no-log`). These overrides are honored only for a non-agent caller **with a
+  controlling terminal** — scrubbing agent-detection env vars is not enough, because a
+  headless process can't open `/dev/tty` / `CONIN$`.
 - **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
   pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
   log), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it

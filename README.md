@@ -312,7 +312,8 @@ arca is three pieces with deliberately different jobs:
 
 By default, if an access cannot be recorded, the operation is **aborted** — and for reads it
 aborts *before* the value is revealed, so a secret an agent accesses is never disclosed without a
-trail. Set `ARCA_STRICT_AUDIT=0` to fall back to best-effort (swallow audit errors).
+trail. A human at a controlling terminal may set `ARCA_STRICT_AUDIT=0` to fall back to
+best-effort (swallow audit errors); a detected agent or a headless caller cannot.
 
 ### Agent attribution
 

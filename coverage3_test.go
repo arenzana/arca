@@ -35,16 +35,27 @@ func TestGetEnvFlags(t *testing.T) {
 	if out := runArca(t, "", "env", "--no-export"); !strings.Contains(out, "A=") || strings.Contains(out, "export ") {
 		t.Fatalf("env --no-export = %q", out)
 	}
-	// --no-log on a fresh secret must leave no read event for a non-agent caller.
+	// --no-log on a fresh secret must leave no read event for a non-agent caller at a terminal
+	// (the human anchor is the TTY, not env detection — SEC-06).
 	for _, k := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT"} {
 		t.Setenv(k, "")
 	}
+	withTTYResponse(t, "")
 	runArca(t, "v2", "set", "B")
 	runArca(t, "", "get", "B", "--no-log")
 	if out := runArca(t, "", "log", "B"); strings.Contains(out, "read") {
 		t.Fatalf("--no-log still recorded a read: %q", out)
 	}
-	// But an agent cannot suppress its own read record.
+	// Without a controlling terminal --no-log is ignored even for an agent-clean env: an agent
+	// can scrub its markers, but it can't conjure a terminal.
+	withNoTTY(t)
+	runArca(t, "v2b", "set", "B2")
+	runArca(t, "", "get", "B2", "--no-log")
+	if out := runArca(t, "", "log", "B2"); !strings.Contains(out, "read") {
+		t.Fatalf("--no-log without a terminal should still record a read: %q", out)
+	}
+	// And an agent cannot suppress its own read record, terminal or not.
+	withTTYResponse(t, "")
 	t.Setenv("AI_AGENT", "claude-code")
 	runArca(t, "v3", "set", "C")
 	runArca(t, "", "get", "C", "--no-log")
