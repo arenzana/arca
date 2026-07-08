@@ -7,6 +7,9 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **`generate` refuses `--no-print` together with `--show` (FU-9).** `--no-print` promises the
+  value never reaches stdout; `--show` is precisely that disclosure, and previously won. The
+  pair is now rejected up front — generate with `--no-print` and consume via `exec`.
 - **JSON output is control-character-sanitized, closing the FU-6 gap.** `--json` (ls/show/log/
   stale) and the MCP tool results escape C0 via Go's encoder but let DEL and C1 characters
   through raw — a crafted description or `ARCA_ACTOR` could ride a decoded field (or `jq -r`)

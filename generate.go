@@ -169,5 +169,8 @@ func newGenerate() *cobra.Command {
 	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
 	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
 	c.Flags().StringVar(&rate, "rate", "", "rate limit as N/DURATION (e.g. 10/1h)")
+	// --no-print promises the value never reaches stdout; --show is precisely that disclosure.
+	// Refuse the pair instead of honoring one over the other (FU-9) — consume via exec instead.
+	c.MarkFlagsMutuallyExclusive("no-print", "show")
 	return c
 }
