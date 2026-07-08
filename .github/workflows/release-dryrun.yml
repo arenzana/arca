@@ -33,6 +33,12 @@ jobs:
         with:
           version: '~> v2'
           args: release --snapshot --clean
+        env:
+          # Deliberately empty, mirroring release.yml: the cask/scoop skip_upload
+          # templates need the keys to exist, and empty means "build, don't push".
+          # Never real secrets here — the dry-run must not be able to publish.
+          HOMEBREW_TAP_TOKEN: ''
+          SCOOP_GITHUB_TOKEN: ''
       # goreleaser's signs config already ran cosign during the snapshot build —
       # that IS the path under test. Verify the bundle it produced.
       - name: verify the goreleaser-produced signature bundle
