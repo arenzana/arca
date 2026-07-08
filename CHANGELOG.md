@@ -6,6 +6,14 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Release signatures ship as a single Sigstore bundle** — `checksums.txt.sigstore.json`
+  (signature + certificate + Rekor proof) replaces `checksums.txt.sig` + `checksums.txt.pem`.
+  Cosign v3 (installed by cosign-installer v4) ignores the deprecated per-file output flags and
+  fails outright without a `--bundle` path, which would have broken the next release; caught by
+  the new `release-dryrun` workflow before any tag was cut. Updated verify commands are in
+  SECURITY.md.
+
 ## [0.6.3] - 2026-07-03
 
 Closes the remaining findings from the 2026-07 security audit (SEC-06, SEC-11–15, SEC-17, FU-7),

@@ -76,7 +76,9 @@ not a hostile local user (who could bypass arca entirely). Specifically:
 - **Reproducible builds:** `CGO_ENABLED=0`, `-trimpath`, stripped (`-buildid=`), pinned
   module timestamps (GoReleaser `mod_timestamp`).
 - **Signed releases:** release archives ship with SHA-256 `checksums.txt`, signed with
-  **cosign** (keyless / Sigstore) — `checksums.txt.sig` + `checksums.txt.pem`.
+  **cosign** (keyless / Sigstore) — `checksums.txt.sigstore.json` (bundle: signature,
+  certificate, and Rekor transparency-log proof; releases up to v0.6.3 shipped
+  `checksums.txt.sig` + `checksums.txt.pem` instead).
 - **SBOM:** a CycloneDX SBOM is generated for the module (CI) and per archive (release).
 - **Build provenance:** each release artifact carries a SLSA **build-provenance attestation**
   (`actions/attest-build-provenance`).
@@ -86,10 +88,9 @@ not a hostile local user (who could bypass arca entirely). Specifically:
 ### Verifying a release
 
 ```sh
-# checksum signature (keyless cosign)
+# checksum signature (keyless cosign; needs cosign >= 2.x for bundle support)
 cosign verify-blob checksums.txt \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.sigstore.json \
   --certificate-identity-regexp 'https://github.com/arenzana/arca/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 

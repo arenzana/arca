@@ -45,19 +45,19 @@ sboms:
   - artifacts: archive
 
 # Keyless (Sigstore/Fulcio) signature over the checksums file; verifying it
-# verifies every artifact via the checksums.
+# verifies every artifact via the checksums. Cosign v3 emits a single
+# sigstore.json bundle (signature + certificate + Rekor proof); the old
+# --output-signature/--output-certificate flags are ignored under v3's
+# default bundle format and the sign fails without --bundle.
 signs:
   - cmd: cosign
     artifacts: checksum
     output: true
-    # Tell goreleaser the cert filename so the Fulcio certificate is uploaded
-    # alongside the signature — needed for `cosign verify-blob` of checksums.txt.
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
       - --yes
-      - --output-signature=${signature}
-      - --output-certificate=${certificate}
+      - --bundle=${signature}
       - ${artifact}
 
 homebrew_casks:
