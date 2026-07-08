@@ -11,3 +11,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # Multi-step actions (e.g. codeql-action init/analyze) must bump atomically:
+      # mixed major versions across steps fail at runtime.
+      gh-actions:
+        patterns: ['*']
