@@ -1850,6 +1850,7 @@ func newEnv() *cobra.Command {
 func newLog() *cobra.Command {
 	var limit int
 	var jsonOut, verify, requireSigned bool
+	var anchor string
 	c := &cobra.Command{
 		Use:   "log [NAME]",
 		Short: "Show access history (--verify checks the log's integrity)",
@@ -1865,10 +1866,13 @@ func newLog() *cobra.Command {
 			}
 			defer a.Close()
 			if verify {
-				return verifyLog(a, requireSigned)
+				return verifyLog(a, requireSigned, anchor)
 			}
 			if requireSigned {
 				return fmt.Errorf("--require-signed is only valid with --verify")
+			}
+			if anchor != "" {
+				return fmt.Errorf("--anchor is only valid with --verify")
 			}
 			evs, err := a.Recent(name, limit)
 			if err != nil {
@@ -1906,14 +1910,18 @@ func newLog() *cobra.Command {
 	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
 	c.Flags().BoolVar(&verify, "verify", false, "verify the audit log's hash chain and signatures instead of printing it")
 	c.Flags().BoolVar(&requireSigned, "require-signed", false, "with --verify, also fail if any chained event is unsigned")
+	c.Flags().StringVar(&anchor, "anchor", "", "with --verify, also require the log to extend this previously-emitted anchor token")
 	return c
 }
 
 // verifyLog runs an integrity check of the audit log and prints the result. It returns a non-zero
 // error when the chain or a signature is broken, so it can gate a cron/CI check. With requireSigned
 // it also fails when any chained event lacks a signature (a stripped or never-applied signature),
-// which a default verify only reports as a count.
-func verifyLog(a *audit.Log, requireSigned bool) error {
+// which a default verify only reports as a count. With a previously-emitted anchor token, it also
+// fails unless the chain still extends that head — the defense against the store and the audit DB
+// being rolled back *together* to a consistent older state, which every in-DB check necessarily
+// misses (SEC-14).
+func verifyLog(a *audit.Log, requireSigned bool, anchor string) error {
 	r, err := a.Verify()
 	if err != nil {
 		return err
@@ -1938,6 +1946,18 @@ func verifyLog(a *audit.Log, requireSigned bool) error {
 			return fmt.Errorf("store ROLLBACK detected: the store is at generation %d but the audit log has verified events up to generation %d — the store file is older than the last audited operation (check the store's git history; rotate any resurrected secrets)", s.Generation, r.MaxStoreGen)
 		}
 	}
+	// The anchor check runs only on an already-verified chain: the stored hashes are trustworthy
+	// once the chain has been recomputed from genesis, so extending the anchored head proves the
+	// history the anchor was minted over is still present and unmodified.
+	if anchor != "" {
+		n, h, err := audit.ParseAnchor(anchor)
+		if err != nil {
+			return err
+		}
+		if err := a.CheckAnchor(n, h); err != nil {
+			return fmt.Errorf("audit log integrity FAILED: %w — the store and audit DB may have been rolled back together; treat every secret readable at the anchor time as potentially resurrected", err)
+		}
+	}
 	fmt.Fprintf(os.Stderr, "audit log OK: %d event(s) chained, %d signed", r.Checked, r.Signed)
 	if r.Unsigned > 0 {
 		fmt.Fprintf(os.Stderr, ", %d UNSIGNED", r.Unsigned)
@@ -1945,7 +1965,16 @@ func verifyLog(a *audit.Log, requireSigned bool) error {
 	if r.Legacy > 0 {
 		fmt.Fprintf(os.Stderr, ", %d legacy (pre-chain, unverifiable)", r.Legacy)
 	}
+	if anchor != "" {
+		fmt.Fprintf(os.Stderr, ", anchor extended")
+	}
 	fmt.Fprintln(os.Stderr)
+	// Emit the fresh anchor on stdout so it can be captured and stored OFF this machine (a
+	// password manager, a git note, another host). Passing it back via --anchor on a later
+	// verify detects a joint store+audit rollback — the one rewrite the in-DB chain can't see.
+	if r.Checked > 0 && r.LastHash != nil {
+		fmt.Println(audit.FormatAnchor(r.Checked, r.LastHash))
+	}
 	return nil
 }
 

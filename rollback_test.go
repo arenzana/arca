@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -110,5 +111,64 @@ func TestVerifyDetectsInLogGenerationRegression(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ROLLBACK") {
 		t.Fatalf("expected a rollback verdict, got: %v", err)
+	}
+}
+
+// TestAnchorDetectsJointRollback covers the SEC-14 external anchor: rolling the store AND the
+// audit DB back together produces a perfectly self-consistent state that every in-DB check
+// passes — only an anchor stored off the machine catches it. Also covers the happy path (a
+// grown log still extends an old anchor) and a malformed token.
+func TestAnchorDetectsJointRollback(t *testing.T) {
+	dir := sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+
+	// Snapshot BOTH files (the joint-rollback attacker's copy) …
+	oldStore, err := os.ReadFile(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAudit, err := os.ReadFile(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// … then advance the world and mint an anchor at the new head.
+	runArca(t, "v2", "rotate", "A")
+	out := runArca(t, "", "log", "--verify")
+	anchor := strings.TrimSpace(out)
+	if !strings.HasPrefix(anchor, "arca-anchor:v1:") {
+		t.Fatalf("verify did not emit an anchor token, got %q", out)
+	}
+
+	// A grown log still extends the anchor.
+	runArca(t, "v3", "rotate", "A")
+	runArca(t, "", "log", "--verify", "--anchor", anchor)
+
+	// Joint rollback: restore store + audit DB together (and reset the local high-water mark,
+	// as a machine-owner attacker would). A plain verify is clean — the state is consistent.
+	if err := os.WriteFile(storePath(), oldStore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "audit.db"), oldAudit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(storeGenPath()); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	runArca(t, "", "log", "--verify") // in-DB checks can't see it
+
+	// The externally-held anchor can.
+	err = runArcaErr("", "log", "--verify", "--anchor", anchor)
+	if err == nil {
+		t.Fatal("verify --anchor passed on a jointly rolled-back store+audit DB")
+	}
+	if !strings.Contains(err.Error(), "rolled back") && !strings.Contains(err.Error(), "MISMATCH") {
+		t.Fatalf("expected a rollback/mismatch verdict, got: %v", err)
+	}
+
+	// Garbage tokens are rejected loudly, not silently ignored.
+	if err := runArcaErr("", "log", "--verify", "--anchor", "arca-anchor:v1:zzz"); err == nil {
+		t.Fatal("a malformed anchor token should be rejected")
 	}
 }

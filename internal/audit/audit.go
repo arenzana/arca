@@ -27,6 +27,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -354,12 +355,65 @@ type VerifyResult struct {
 	// A regression does not fail the chain (the log itself is honest); callers decide severity.
 	MaxStoreGen    int
 	GenRegressedID int64
+
+	// LastHash is the hash of the newest verified chained event (nil when none) — with Checked,
+	// the material for an external anchor (see FormatAnchor).
+	LastHash []byte
+}
+
+// FormatAnchor renders a compact, externally-storable snapshot of the chain head: the number of
+// chained events and the newest event's hash. Everything the in-DB chain protects lives on the
+// same disk, so the one rewrite it cannot see is the store and the audit DB rolled back
+// *together* to a consistent older state. An anchor stored off the machine — a password manager,
+// a git note, another host — closes that: a later `log --verify --anchor` fails if the log no
+// longer extends the anchored head.
+func FormatAnchor(n int, hash []byte) string {
+	return fmt.Sprintf("arca-anchor:v1:%d:%x", n, hash)
+}
+
+// ParseAnchor parses a FormatAnchor token.
+func ParseAnchor(s string) (int, []byte, error) {
+	var n int
+	var hexHash string
+	if _, err := fmt.Sscanf(s, "arca-anchor:v1:%d:%s", &n, &hexHash); err != nil || n <= 0 {
+		return 0, nil, fmt.Errorf("not a valid anchor token (want arca-anchor:v1:<n>:<hex>): %q", s)
+	}
+	h, err := hex.DecodeString(hexHash)
+	if err != nil || len(h) != sha256.Size {
+		return 0, nil, fmt.Errorf("anchor hash is not a %d-byte hex digest: %q", sha256.Size, s)
+	}
+	return n, h, nil
+}
+
+// CheckAnchor confirms the chain still extends an anchored head: at least n chained events
+// exist and the nth one's hash equals want. Call it only after a clean Verify — the stored
+// hashes are trustworthy only once the chain has been recomputed from genesis.
+func (l *Log) CheckAnchor(n int, want []byte) error {
+	evs, err := l.loadChainRows()
+	if err != nil {
+		return err
+	}
+	count := 0
+	for _, e := range evs {
+		if e.hash == nil {
+			continue // legacy rows are not chained and never counted toward an anchor
+		}
+		count++
+		if count == n {
+			if !bytes.Equal(e.hash, want) {
+				return fmt.Errorf("anchor MISMATCH at event %d: the log diverged from the anchored history (rewritten from before the anchor)", n)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("the log holds only %d chained event(s) but the anchor was minted at %d — the audit log was rolled back or truncated", count, n)
 }
 
 // Verify walks the chain in order, recomputing each event's hash from its predecessor and checking
 // any signature against the recorded signer public key. It reports the first inconsistency. It
 // cannot, on its own, detect deletion of the most recent events (tail truncation) beyond what the
-// recorded head count reveals — external anchoring is the mitigation (see the design note).
+// recorded head count reveals — an externally stored anchor is the mitigation (FormatAnchor /
+// CheckAnchor, surfaced as `log --verify` / `--anchor`).
 func (l *Log) Verify() (VerifyResult, error) {
 	// The audit DB uses a single connection, so a query while iterating another query's rows would
 	// deadlock. Read each result set fully (signers, then events, then head) before the next.
@@ -457,6 +511,7 @@ func (l *Log) Verify() (VerifyResult, error) {
 	default:
 		return VerifyResult{}, err
 	}
+	res.LastHash = expect
 	return res, nil
 }
 

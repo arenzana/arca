@@ -6,6 +6,14 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **External audit anchors close the joint-rollback gap (SEC-14, deeper).** Rolling the store and
+  the audit DB back *together* produces a self-consistent older state that no in-DB check can see.
+  A successful `log --verify` now prints an **anchor token** (`arca-anchor:v1:<n>:<hash>`) on
+  stdout — store it off the machine (password manager, git note, another host) — and
+  `log --verify --anchor <token>` additionally fails unless the log still extends that anchored
+  head. Anchors are only as strong as the habit: mint and check them regularly.
+
 ### Security
 - **`generate` refuses `--no-print` together with `--show` (FU-9).** `--no-print` promises the
   value never reaches stdout; `--show` is precisely that disclosure, and previously won. The
