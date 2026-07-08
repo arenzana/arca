@@ -241,3 +241,51 @@ func TestCanaryUnmarkAndRm(t *testing.T) {
 		t.Fatal("rm did not clean the canary registry")
 	}
 }
+
+// TestLegacyCanaryMigration covers FU-5: a pre-0.6.2 store carrying cleartext canary:true flags
+// has them moved into the local registry and stripped from the synced store on the next load —
+// and the secret is still treated as a decoy afterwards.
+func TestLegacyCanaryMigration(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "decoy", "set", "TRAP")
+	runArca(t, "real", "set", "REAL")
+
+	// Regress the store to its pre-0.6.2 shape: the flag in the synced file, not the registry.
+	s, err := store.Load(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Secrets["TRAP"].Canary = true
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(canariesPath()); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	// Any command that loads the store triggers the migration.
+	runArca(t, "", "ls")
+
+	raw, err := os.ReadFile(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "canary") {
+		t.Fatalf("legacy canary flag still in the synced store after migration:\n%s", raw)
+	}
+	set, err := loadCanaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set["TRAP"] || set["REAL"] {
+		t.Fatalf("registry after migration = %v, want TRAP only", set)
+	}
+	s2, err := store.Load(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isCanary("TRAP", s2.Secrets["TRAP"]) {
+		t.Fatal("TRAP lost its decoy designation across the migration")
+	}
+}

@@ -221,6 +221,7 @@ func openStore() (*store.Store, error) {
 		return nil, err
 	}
 	warnIfStoreRolledBack(s.Generation)
+	migrateLegacyCanaries(s)
 	curStore = s
 	return s, nil
 }
