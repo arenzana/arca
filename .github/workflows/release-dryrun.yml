@@ -33,23 +33,17 @@ jobs:
         with:
           version: '~> v2'
           args: release --snapshot --clean
-      - name: sign checksums (same invocation as the release signs config)
+      # goreleaser's signs config already ran cosign during the snapshot build —
+      # that IS the path under test. Verify the bundle it produced.
+      - name: verify the goreleaser-produced signature bundle
         run: |
           set -euo pipefail
           cosign version
           checksums=$(ls dist/*checksums.txt)
-          cosign sign-blob --yes \
-            --output-signature="${checksums}.sig" \
-            --output-certificate="${checksums}.pem" \
-            "${checksums}"
-      - name: verify the signature
-        run: |
-          set -euo pipefail
-          checksums=$(ls dist/*checksums.txt)
+          test -s "${checksums}.sigstore.json" || { echo "::error::goreleaser produced no signature bundle"; exit 1; }
           cosign verify-blob \
-            --signature "${checksums}.sig" \
-            --certificate "${checksums}.pem" \
+            --bundle "${checksums}.sigstore.json" \
             --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${checksums}"
-          echo "cosign keyless sign + verify OK with $(cosign version --json 2>/dev/null || cosign version 2>&1 | head -1)"
+          echo "cosign keyless sign + verify OK"
