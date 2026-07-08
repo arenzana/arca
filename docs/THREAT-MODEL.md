@@ -102,11 +102,17 @@ annotated where `gosec` flags them.
 ### T9 — Store rollback / replay
 The store is git-synced, so an attacker (or a sync conflict) could restore an
 older copy — resurrecting a rotated or deleted secret — with no signal.
-*Addressed (warn):* every write bumps a monotonic `generation`; on load arca
-compares it to a local high-water mark and warns if it regressed. *Residual:*
-this is a warning, not a guarantee — the high-water mark is local and a
-machine-owner-level attacker can reset it; binding the generation into the
-tamper-evident audit chain would harden it further.
+*Addressed:* every write bumps a monotonic `generation`. On load arca compares
+it to a local high-water mark and warns if it regressed (fast, per-operation).
+Additionally, every audit event records the generation it observed, **bound
+into the event's hash and signature** — so `log --verify` detects a rollback
+from the tamper-evident log itself: it fails when the store's generation is
+behind the log's audited maximum, or when the log records a generation going
+backwards (operations continuing against a restored older copy). *Residual:*
+a rollback of exactly one write (to the copy current at the last audited
+operation) is below the generation check's resolution, and rolling back store
+and audit DB *together* erases the evidence — external anchoring of the audit
+head is the mitigation there.
 
 ### T10 — Removing a recipient is mistaken for revocation
 `recipients rm` drops a key from the set, but the removed holder can still decrypt

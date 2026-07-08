@@ -221,8 +221,15 @@ func openStore() (*store.Store, error) {
 		return nil, err
 	}
 	warnIfStoreRolledBack(s.Generation)
+	curStore = s
 	return s, nil
 }
+
+// curStore is the store handle this invocation loaded, kept so recordAudit can bind the store
+// generation the operation observed into its (hashed, signed) audit event (SEC-14). Save bumps
+// Generation in memory, so an event logged after a write records the post-write generation.
+// arca is a short-lived single-command process; there is exactly one store per invocation.
+var curStore *store.Store
 
 // storeGenPath is the local high-water mark of the store generation (state dir, never synced).
 func storeGenPath() string { return filepath.Join(stateDir(), "store.gen") }
@@ -295,7 +302,11 @@ func recordAudit(op, name, caller string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "arca: warning: recording an UNSIGNED audit event (signer unavailable: %v)\n", err)
 	}
-	return a.Record(op, name, caller, detectIdentity())
+	gen := 0
+	if curStore != nil {
+		gen = curStore.Generation
+	}
+	return a.RecordGen(op, name, caller, detectIdentity(), gen)
 }
 
 // strictAudit reports whether fail-closed auditing is in effect. It is the DEFAULT; set
@@ -1914,6 +1925,17 @@ func verifyLog(a *audit.Log, requireSigned bool) error {
 	}
 	if requireSigned && r.Unsigned > 0 {
 		return fmt.Errorf("audit log integrity FAILED: %d of %d chained event(s) are unsigned (--require-signed)", r.Unsigned, r.Checked)
+	}
+	// Store-generation cross-checks (SEC-14). The chain is intact, so the generations recorded in
+	// it are trustworthy; a regression within the log, or a store older than the log's view, is
+	// rollback evidence (a resurrected rotated/deleted secret) and fails the verify.
+	if r.GenRegressedID != 0 {
+		return fmt.Errorf("store ROLLBACK detected: event %d observed an older store generation than an earlier event — an older store copy was restored while auditing continued (check the store's git history; rotate any resurrected secrets)", r.GenRegressedID)
+	}
+	if r.MaxStoreGen > 0 {
+		if s, err := openStore(); err == nil && s.Generation < r.MaxStoreGen {
+			return fmt.Errorf("store ROLLBACK detected: the store is at generation %d but the audit log has verified events up to generation %d — the store file is older than the last audited operation (check the store's git history; rotate any resurrected secrets)", s.Generation, r.MaxStoreGen)
+		}
 	}
 	fmt.Fprintf(os.Stderr, "audit log OK: %d event(s) chained, %d signed", r.Checked, r.Signed)
 	if r.Unsigned > 0 {

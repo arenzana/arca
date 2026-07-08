@@ -55,3 +55,61 @@ func TestRecentAllNames(t *testing.T) {
 		t.Fatalf("Recent(\"\") returned %d events, want 2", len(evs))
 	}
 }
+
+// TestRecordGenVerify covers SEC-14's generation binding: recorded generations surface in
+// VerifyResult, a regression is pinpointed, and the value is hash-bound (editing a row's
+// store_gen — or NULLing it to switch encodings — breaks verification).
+func TestRecordGenVerify(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a.db")
+	l, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	if err := l.Record("init", "-", "", Identity{}); err != nil { // NULL-gen row (pre-SEC-14 shape)
+		t.Fatal(err)
+	}
+	for _, g := range []int{3, 5} {
+		if err := l.RecordGen("set", "A", "", Identity{}, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := l.Verify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.OK || r.MaxStoreGen != 5 || r.GenRegressedID != 0 {
+		t.Fatalf("verify = %+v, want OK with MaxStoreGen 5 and no regression", r)
+	}
+
+	// A later event observing an older generation is flagged as a regression, chain still OK.
+	if err := l.RecordGen("set", "A", "", Identity{}, 4); err != nil {
+		t.Fatal(err)
+	}
+	r, err = l.Verify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.OK || r.GenRegressedID == 0 {
+		t.Fatalf("verify = %+v, want OK with a flagged generation regression", r)
+	}
+
+	// Tampering with a recorded generation breaks that row's hash.
+	if _, err := l.db.Exec("UPDATE events SET store_gen=9 WHERE store_gen=5"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := l.Verify(); r.OK {
+		t.Fatal("verify passed after a store_gen edit")
+	}
+	if _, err := l.db.Exec("UPDATE events SET store_gen=5 WHERE store_gen=9"); err != nil {
+		t.Fatal(err)
+	}
+	// NULLing a generation (switching the row back to the v1 encoding) also breaks the hash.
+	if _, err := l.db.Exec("UPDATE events SET store_gen=NULL WHERE store_gen=5"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := l.Verify(); r.OK {
+		t.Fatal("verify passed after NULLing a store_gen (encoding downgrade)")
+	}
+}
