@@ -7,6 +7,15 @@ updates:
     groups:
       go-deps:
         patterns: ['*']
+  # tools/docsgen is its own module (the md→html renderer the pages workflow runs); without
+  # this entry its dependencies never get bumped.
+  - package-ecosystem: gomod
+    directory: /tools/docsgen
+    schedule:
+      interval: weekly
+    groups:
+      docsgen-deps:
+        patterns: ['*']
   - package-ecosystem: github-actions
     directory: /
     schedule:
