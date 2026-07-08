@@ -7,6 +7,12 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **A store rollback is now detectable from the audit log itself, hardening SEC-14.** Every audit
+  event records the store generation it observed, bound into the event's hash and signature — a
+  tamperer can't edit or strip it without breaking the chain. `log --verify` fails loudly when the
+  store's generation is behind the log's audited maximum, or when the log shows a generation going
+  backwards (operations continuing against a restored older copy). The load-time high-water-mark
+  warning remains as the fast, per-operation heuristic.
 - **The audit escape hatches are TTY-anchored, closing the SEC-06 residual.** `ARCA_STRICT_AUDIT=0`
   (best-effort auditing) and `get --no-log` were gated on env-var-based agent detection — advisory,
   since an agent controls its own environment and can scrub the markers. Both are now honored only

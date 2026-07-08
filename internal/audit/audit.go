@@ -117,6 +117,17 @@ func eventBytes(ts, op, name, caller, actor, agent, version, session string, ppi
 	return b.Bytes()
 }
 
+// eventBytesGen extends eventBytes with the store generation the event observed (SEC-14). A row
+// with a NULL store_gen hashes with the original encoding, a row carrying a generation hashes
+// with it appended — the choice is bound by the hash, so flipping a row's store_gen between
+// NULL and a value (or editing the value) after the fact breaks verification.
+func eventBytesGen(ts, op, name, caller, actor, agent, version, session string, ppid, storeGen int) []byte {
+	b := eventBytes(ts, op, name, caller, actor, agent, version, session, ppid)
+	var g [8]byte
+	binary.BigEndian.PutUint64(g[:], uint64(storeGen)) //#nosec G115 -- a generation is a non-negative save counter; the value only feeds the chain hash
+	return append(b, g[:]...)
+}
+
 func chainHash(prev, eb []byte) []byte {
 	h := sha256.New()
 	h.Write(prev)
@@ -197,6 +208,7 @@ func migrate(db *sql.DB) error {
 		"ALTER TABLE events ADD COLUMN hash BLOB",
 		"ALTER TABLE events ADD COLUMN sig BLOB",
 		"ALTER TABLE events ADD COLUMN signer_id TEXT",
+		"ALTER TABLE events ADD COLUMN store_gen INTEGER", // store generation observed by the event (SEC-14)
 	} {
 		if _, err := db.Exec(col); err != nil && !isDupColumn(err) {
 			return err
@@ -244,6 +256,14 @@ func (l *Log) UseSigner(s *Signer) { l.signer = s }
 // hash when a Signer is attached). The head read + append run in one BEGIN IMMEDIATE transaction
 // so concurrent arca processes can't fork the chain. Timestamps are UTC RFC3339.
 func (l *Log) Record(op, name, caller string, id Identity) error {
+	return l.RecordGen(op, name, caller, id, 0)
+}
+
+// RecordGen is Record carrying the store generation the operation observed (SEC-14): binding the
+// generation into the hashed (and signed) event makes a store rollback detectable from the
+// tamper-evident log itself, not just from the local high-water-mark heuristic. A storeGen of 0
+// means "unknown" (no store was loaded) and records NULL with the original event encoding.
+func (l *Log) RecordGen(op, name, caller string, id Identity, storeGen int) error {
 	ts := time.Now().UTC().Format(time.RFC3339)
 	ppid := os.Getppid()
 	ctx := context.Background()
@@ -278,6 +298,11 @@ func (l *Log) Record(op, name, caller string, id Identity) error {
 	}
 
 	eb := eventBytes(ts, op, name, caller, id.Actor, id.Agent, id.Version, id.Session, ppid)
+	var genCol any // NULL when the generation is unknown; the encoding choice is bound by the hash
+	if storeGen > 0 {
+		eb = eventBytesGen(ts, op, name, caller, id.Actor, id.Agent, id.Version, id.Session, ppid, storeGen)
+		genCol = storeGen
+	}
 	h := chainHash(prev, eb)
 
 	var sig []byte
@@ -293,9 +318,9 @@ func (l *Log) Record(op, name, caller string, id Identity) error {
 	}
 
 	if _, err := conn.ExecContext(ctx,
-		`INSERT INTO events (ts, op, name, ppid, caller, actor, agent, version, session, prev_hash, hash, sig, signer_id)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		ts, op, name, ppid, caller, id.Actor, id.Agent, id.Version, id.Session, prev, h, sig, signerID,
+		`INSERT INTO events (ts, op, name, ppid, caller, actor, agent, version, session, prev_hash, hash, sig, signer_id, store_gen)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		ts, op, name, ppid, caller, id.Actor, id.Agent, id.Version, id.Session, prev, h, sig, signerID, genCol,
 	); err != nil {
 		return err
 	}
@@ -320,6 +345,15 @@ type VerifyResult struct {
 	Unsigned int    // chained events with NO signature (a stripped sig looks like this)
 	BrokenID int64  // event id where verification first failed (0 if OK)
 	Reason   string // why it failed
+
+	// Store-generation cross-check (SEC-14). Events record the store generation they observed;
+	// because the value is bound into each event's hash, the sequence is as tamper-evident as
+	// the chain itself. MaxStoreGen is the highest generation any verified event carries (0 if
+	// none carry one). GenRegressedID is the first event whose generation is LOWER than one
+	// recorded before it — evidence the store was rolled back while auditing continued — or 0.
+	// A regression does not fail the chain (the log itself is honest); callers decide severity.
+	MaxStoreGen   int
+	GenRegressedID int64
 }
 
 // Verify walks the chain in order, recomputing each event's hash from its predecessor and checking
@@ -375,6 +409,17 @@ func (l *Log) Verify() (VerifyResult, error) {
 			res.Signed++
 		} else {
 			res.Unsigned++ // a chained-but-unsigned row (also what a stripped signature looks like)
+		}
+		// Store-generation cross-check (SEC-14): the generation is hash-bound, so a verified row's
+		// value is trustworthy. A later event observing a LOWER generation than an earlier one
+		// means the store went backwards under an honest log — rollback evidence, not log tamper.
+		if e.storeGen > 0 {
+			if e.storeGen < res.MaxStoreGen && res.GenRegressedID == 0 {
+				res.GenRegressedID = e.id
+			}
+			if e.storeGen > res.MaxStoreGen {
+				res.MaxStoreGen = e.storeGen
+			}
 		}
 		res.Checked++
 		expect = e.hash
@@ -442,12 +487,13 @@ type chainRow struct {
 	prev, hash, sig []byte
 	signerID        string
 	bytes           []byte
+	storeGen        int // 0 = the row carries no generation (NULL)
 }
 
 // loadChainRows reads all events (oldest first) into memory so verification makes no nested query.
 func (l *Log) loadChainRows() ([]chainRow, error) {
 	rows, err := l.db.Query(
-		`SELECT id, ts, op, name, ppid, caller, actor, agent, version, session, prev_hash, hash, sig, signer_id
+		`SELECT id, ts, op, name, ppid, caller, actor, agent, version, session, prev_hash, hash, sig, signer_id, store_gen
 		   FROM events ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
@@ -456,16 +502,23 @@ func (l *Log) loadChainRows() ([]chainRow, error) {
 	var out []chainRow
 	for rows.Next() {
 		var id int64
-		var ppid sql.NullInt64 // legacy/hand-edited rows may lack a ppid
+		var ppid, gen sql.NullInt64 // legacy/hand-edited rows may lack a ppid; store_gen is NULL pre-SEC-14
 		var ts, op, name string
 		var caller, actor, agent, ver, session, signerID sql.NullString
 		var prev, hash, sig []byte
-		if err := rows.Scan(&id, &ts, &op, &name, &ppid, &caller, &actor, &agent, &ver, &session, &prev, &hash, &sig, &signerID); err != nil {
+		if err := rows.Scan(&id, &ts, &op, &name, &ppid, &caller, &actor, &agent, &ver, &session, &prev, &hash, &sig, &signerID, &gen); err != nil {
 			return nil, err
+		}
+		// The row's encoding follows its store_gen: NULL hashes with the original event bytes,
+		// a value hashes with the generation appended. A tamperer can't move a row between the
+		// two encodings (or edit the generation) without breaking its hash.
+		eb := eventBytes(ts, op, name, caller.String, actor.String, agent.String, ver.String, session.String, int(ppid.Int64))
+		if gen.Valid {
+			eb = eventBytesGen(ts, op, name, caller.String, actor.String, agent.String, ver.String, session.String, int(ppid.Int64), int(gen.Int64))
 		}
 		out = append(out, chainRow{
 			id: id, prev: prev, hash: hash, sig: sig, signerID: signerID.String,
-			bytes: eventBytes(ts, op, name, caller.String, actor.String, agent.String, ver.String, session.String, int(ppid.Int64)),
+			bytes: eb, storeGen: int(gen.Int64),
 		})
 	}
 	return out, rows.Err()
