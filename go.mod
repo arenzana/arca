@@ -2,6 +2,8 @@ module github.com/arenzana/arca
 
 go 1.26
 
+toolchain go1.26.5
+
 require (
 	filippo.io/age v1.3.1
 	github.com/mark3labs/mcp-go v0.55.1
