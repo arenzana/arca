@@ -20,11 +20,12 @@ import (
 // client path: GET/HEAD/PUT with ETags, If-Match / If-None-Match conditional writes,
 // and list-objects-v2. It ignores auth (the client still signs; we don't verify).
 type fakeS3Server struct {
-	mu     sync.Mutex
-	data   map[string][]byte
-	etag   map[string]string
-	meta   map[string]map[string]string
-	nextID int
+	mu       sync.Mutex
+	data     map[string][]byte
+	etag     map[string]string
+	meta     map[string]map[string]string
+	nextID   int
+	lastAKID string // access key id parsed from the last request's SigV4 Authorization
 }
 
 func newFakeS3() *fakeS3Server {
@@ -34,6 +35,13 @@ func newFakeS3() *fakeS3Server {
 func (f *fakeS3Server) handler(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// SigV4: "AWS4-HMAC-SHA256 Credential=<AKID>/<date>/<region>/s3/aws4_request, …"
+	if auth := r.Header.Get("Authorization"); strings.Contains(auth, "Credential=") {
+		cred := auth[strings.Index(auth, "Credential=")+len("Credential="):]
+		if i := strings.Index(cred, "/"); i > 0 {
+			f.lastAKID = cred[:i]
+		}
+	}
 	// Path-style: /bucket/key...
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)
 	key := ""
@@ -251,5 +259,49 @@ func TestS3FetchEmpty(t *testing.T) {
 	s3, _ := newTestS3(t)
 	if _, _, err := s3.Fetch(context.Background()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Fetch on an empty remote = %v, want ErrNotFound", err)
+	}
+}
+
+// TestS3SignsWithConfigCredentials proves the client signs with Config-provided
+// credentials in preference to anything in the environment — the property the
+// `sync init --store-credentials` feature rests on.
+func TestS3SignsWithConfigCredentials(t *testing.T) {
+	srv := newFakeS3()
+	ts := httptest.NewServer(http.HandlerFunc(srv.handler))
+	t.Cleanup(ts.Close)
+	u, _ := url.Parse(ts.URL)
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "AKID-FROM-ENV")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "env-secret")
+	cfg, err := ParseURL("s3://bucket/pfx?endpoint=" + u.Host + "&insecure=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AccessKey, cfg.SecretKey = "AKID-FROM-CONFIG", "config-secret"
+	s3, err := NewS3(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s3.Push(context.Background(), []byte("x"), 1, Rev{}); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	akid := srv.lastAKID
+	srv.mu.Unlock()
+	if akid != "AKID-FROM-CONFIG" {
+		t.Fatalf("client signed with %q, want the Config credentials", akid)
+	}
+
+	// And with Config empty, the env pair is what signs.
+	cfg.AccessKey, cfg.SecretKey = "", ""
+	s3env, err := NewS3(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s3env.Head(context.Background())
+	srv.mu.Lock()
+	akid = srv.lastAKID
+	srv.mu.Unlock()
+	if akid != "AKID-FROM-ENV" {
+		t.Fatalf("client signed with %q, want the env credentials", akid)
 	}
 }

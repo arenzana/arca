@@ -29,10 +29,15 @@ type S3 struct {
 // NewS3 builds the client. Credentials: ARCA_SYNC_ACCESS_KEY / ARCA_SYNC_SECRET_KEY,
 // falling back to AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
 func NewS3(cfg Config) (*S3, error) {
-	access := firstEnv("ARCA_SYNC_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
-	secret := firstEnv("ARCA_SYNC_SECRET_KEY", "AWS_SECRET_ACCESS_KEY")
+	access, secret := cfg.AccessKey, cfg.SecretKey
+	if access == "" {
+		access = firstEnv("ARCA_SYNC_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
+	}
+	if secret == "" {
+		secret = firstEnv("ARCA_SYNC_SECRET_KEY", "AWS_SECRET_ACCESS_KEY")
+	}
 	if access == "" || secret == "" {
-		return nil, errors.New("sync credentials missing: set ARCA_SYNC_ACCESS_KEY and ARCA_SYNC_SECRET_KEY (or the AWS_* equivalents)")
+		return nil, errors.New("sync credentials missing: set ARCA_SYNC_ACCESS_KEY and ARCA_SYNC_SECRET_KEY (or the AWS_* equivalents), or store them with `arca sync init URL --store-credentials`")
 	}
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
