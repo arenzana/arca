@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -88,13 +89,15 @@ func TestSaveErrorPaths(t *testing.T) {
 	if err := s.Save(); err == nil {
 		t.Fatal("Save under a file-as-directory should fail")
 	}
-	ro := filepath.Join(dir, "ro")
-	if err := os.Mkdir(ro, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(ro, 0o700)
-	s2 := New(filepath.Join(ro, "store.json"), []string{"age1"})
-	if err := s2.Save(); err == nil {
-		t.Fatal("Save into a read-only directory should fail")
+	if runtime.GOOS != "windows" { // Windows ignores Unix directory permission bits
+		ro := filepath.Join(dir, "ro")
+		if err := os.Mkdir(ro, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(ro, 0o700)
+		s2 := New(filepath.Join(ro, "store.json"), []string{"age1"})
+		if err := s2.Save(); err == nil {
+			t.Fatal("Save into a read-only directory should fail")
+		}
 	}
 }
