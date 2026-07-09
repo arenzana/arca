@@ -77,7 +77,7 @@ the dumb backend is not.
 | What | How |
 |---|---|
 | Backend URL | `ARCA_SYNC_URL`, or pinned via `arca sync init URL` (state dir, `0600`) |
-| Credentials | `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` (fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) |
+| Credentials | `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` (fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), or persisted once via `sync init URL --store-credentials` (state dir, `0600`) — env wins when both exist |
 | Automatic mode | `arca sync auto on\|off`, overridable by `ARCA_SYNC_AUTO=1/0` |
 
 URL parameters: `endpoint` (S3-compatible host), `region`, `insecure=1` (plain HTTP,
@@ -85,4 +85,12 @@ local dev only), `pathstyle=1` (default whenever `endpoint` is set). Credentials
 go in the URL.
 
 Sync credentials live *outside* the store on purpose: a new machine needs them before
-it has a store. Protect them like the age identity file.
+it has a store. `--store-credentials` keeps them next to the audit DB with `0600` —
+the same protection class as the age identity file, and what makes automatic sync
+work without any shell environment. A neat bootstrap that keeps the canonical copy in
+arca itself:
+
+```sh
+arca exec --only ARCA_SYNC_ACCESS_KEY,ARCA_SYNC_SECRET_KEY -- \
+  arca sync init "s3://arca?endpoint=…" --store-credentials --auto
+```

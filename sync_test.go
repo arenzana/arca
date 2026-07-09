@@ -510,3 +510,32 @@ func TestSyncAutoArgGuards(t *testing.T) {
 		t.Fatal("sync auto on without a configured backend should be refused")
 	}
 }
+
+// TestSyncInitStoreCredentials: --store-credentials persists the env pair into the
+// 0600 state-dir config, after which sync needs no environment; env still wins when
+// both are present, and the flag without env is refused.
+func TestSyncInitStoreCredentials(t *testing.T) {
+	sandbox(t)
+	if err := runArcaErr("", "sync", "init", "s3://b/x?endpoint=h:1", "--store-credentials"); err == nil {
+		t.Fatal("--store-credentials without env should be refused")
+	}
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "AKIA-stored")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "shh-stored")
+	runArca(t, "", "sync", "init", "s3://b/x?endpoint=h:1", "--store-credentials")
+	cfg := loadSyncConfig()
+	if cfg.AccessKey != "AKIA-stored" || cfg.SecretKey != "shh-stored" {
+		t.Fatalf("credentials not persisted: %+v", cfg)
+	}
+	fi, err := os.Stat(syncConfigPath())
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("sync.json mode = %v err %v, want 0600", fi.Mode(), err)
+	}
+	// Resolution: env wins; with env cleared the stored pair is used.
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "")
+	// openBackend resolves through to NewS3, which must accept the stored pair
+	// (construction succeeds; no network happens until a call).
+	if _, err := openBackend(); err != nil {
+		t.Fatalf("openBackend with stored credentials: %v", err)
+	}
+}

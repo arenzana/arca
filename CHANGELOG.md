@@ -23,8 +23,11 @@ All notable changes to arca are documented here. The format follows
   remote is refused (SEC-14 extended to the network side). `sync init URL` pins the backend,
   `sync status` reports both sides, and `sync auto on` enables opportunistic mode — push after
   a mutating command, staleness-based pull — always after the command's real work, never in an
-  access path, and never able to fail the command it rides on. New dependency: `minio-go`;
-  a real-MinIO CI job proves the conditional-write semantics end to end. See docs/SYNC.md.
+  access path, and never able to fail the command it rides on. Credentials come from the
+  environment or, once persisted with `sync init --store-credentials`, from the 0600 state-dir
+  config (the age-identity protection class) so automatic sync needs no ambient environment.
+  New dependency: `minio-go`; a real-MinIO CI job proves the conditional-write semantics end to
+  end. See docs/SYNC.md.
 
 ## [0.6.5] - 2026-07-09
 

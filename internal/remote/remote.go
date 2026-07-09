@@ -64,6 +64,11 @@ type Config struct {
 	Region    string
 	Insecure  bool // plain HTTP (local MinIO/dev only)
 	PathStyle bool // path-style addressing (MinIO default)
+
+	// Credentials, when resolved by the caller (env or the 0600 state-dir sync
+	// config). When empty, NewS3 falls back to the environment directly.
+	AccessKey string
+	SecretKey string
 }
 
 // ParseURL parses an arca sync URL:

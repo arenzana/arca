@@ -38,6 +38,12 @@ type syncState struct {
 
 type syncConfig struct {
 	URL string `json:"url"`
+	// Backend credentials, stored 0600 in the local state dir alongside the audit DB —
+	// the design's sanctioned home for bootstrap material (like the age identity, they
+	// are needed before any secret store exists). Env vars win when both are set, and
+	// nothing is stored unless the operator passes --store-credentials.
+	AccessKey string `json:"access_key,omitempty"`
+	SecretKey string `json:"secret_key,omitempty"`
 	// Auto enables opportunistic sync: after any command that mutated the store the
 	// change is pushed, and after any command at all a pull runs when the last sync
 	// is older than autoSyncStaleness. Best-effort by design — a failed auto-sync
@@ -157,6 +163,17 @@ var openBackend = func() (remote.Backend, error) {
 	cfg, err := remote.ParseURL(raw)
 	if err != nil {
 		return nil, err
+	}
+	// Credential resolution: environment first (explicit wins), then the 0600
+	// state-dir config; NewS3 itself falls back to the AWS_* names.
+	sc := loadSyncConfig()
+	cfg.AccessKey = os.Getenv("ARCA_SYNC_ACCESS_KEY")
+	if cfg.AccessKey == "" {
+		cfg.AccessKey = sc.AccessKey
+	}
+	cfg.SecretKey = os.Getenv("ARCA_SYNC_SECRET_KEY")
+	if cfg.SecretKey == "" {
+		cfg.SecretKey = sc.SecretKey
 	}
 	return remote.NewS3(cfg)
 }
@@ -286,7 +303,7 @@ func newSync() *cobra.Command {
 }
 
 func newSyncInit() *cobra.Command {
-	var auto bool
+	var auto, storeCreds bool
 	c := &cobra.Command{
 		Use:   "init URL",
 		Short: "Pin the sync backend URL in the local state dir",
@@ -295,8 +312,19 @@ func newSyncInit() *cobra.Command {
 			if _, err := remote.ParseURL(args[0]); err != nil {
 				return err
 			}
-			if err := saveSyncConfig(syncConfig{URL: args[0], Auto: auto}); err != nil {
+			cfg := syncConfig{URL: args[0], Auto: auto}
+			if storeCreds {
+				cfg.AccessKey = os.Getenv("ARCA_SYNC_ACCESS_KEY")
+				cfg.SecretKey = os.Getenv("ARCA_SYNC_SECRET_KEY")
+				if cfg.AccessKey == "" || cfg.SecretKey == "" {
+					return errors.New("--store-credentials: set ARCA_SYNC_ACCESS_KEY and ARCA_SYNC_SECRET_KEY in the environment first (e.g. via `arca exec --only … -- arca sync init …`)")
+				}
+			}
+			if err := saveSyncConfig(cfg); err != nil {
 				return err
+			}
+			if storeCreds {
+				fmt.Fprintln(os.Stderr, "credentials stored in the state dir (0600) — auto-sync needs no environment")
 			}
 			mode := "manual (`arca sync`)"
 			if auto {
@@ -307,6 +335,7 @@ func newSyncInit() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&auto, "auto", false, "also enable automatic sync (push after writes, staleness-based pull)")
+	c.Flags().BoolVar(&storeCreds, "store-credentials", false, "persist ARCA_SYNC_ACCESS_KEY/ARCA_SYNC_SECRET_KEY from the environment into the 0600 state-dir config")
 	return c
 }
 
