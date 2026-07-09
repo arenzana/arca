@@ -37,6 +37,7 @@ could bypass arca entirely (see the trust model).
 | **Crypto** | `internal/crypto` | age (X25519) encrypt/decrypt of secret values; recipient management. |
 | **Audit** | `internal/audit` | Append-only SQLite log (WAL) of access metadata — never values. |
 | **Lock** | `lock.go` | Cross-process `O_EXCL` lockfile guarding store mutations. |
+| **Sync** | `sync.go`, `internal/remote` | Replicates age-envelope store snapshots through an untrusted S3-compatible backend with CAS; never in an access path (see [SYNC.md](SYNC.md)). |
 
 ## Data at rest
 

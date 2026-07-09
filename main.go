@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -142,6 +143,9 @@ func main() {
 // newRoot builds the command tree. It's a constructor (not a package-level var) so tests can
 // get a fresh, isolated command instance per invocation.
 func newRoot() *cobra.Command {
+	// Per-invocation state: the real CLI builds one root per process; in-process tests
+	// build one per command and must not leak the previous command's store view.
+	curStore, loadedGeneration = nil, -1
 	root := &cobra.Command{
 		Use:           "arca",
 		Short:         "age-encrypted secrets with metadata and an audit log",
@@ -154,10 +158,23 @@ func newRoot() *cobra.Command {
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newDisable(), newEnable(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newAnnotate(), newCanary(),
-		newGrant(), newGrants(), newRevoke(), newHandle(), newVersion(),
+		newGrant(), newGrants(), newRevoke(), newHandle(), newSync(), newVersion(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
+	// Opportunistic auto-sync runs strictly AFTER a command's real work — never in an
+	// access path — and only when enabled (`arca sync auto on` / ARCA_SYNC_AUTO=1).
+	// The sync command itself is excluded (it already synced, or failed loudly).
+	root.PersistentPostRun = func(cmd *cobra.Command, _ []string) {
+		invokedSync := false
+		for c := cmd; c != nil; c = c.Parent() {
+			if c.Name() == "sync" {
+				invokedSync = true
+				break
+			}
+		}
+		maybeAutoSync(invokedSync)
+	}
 	return root
 }
 
@@ -222,6 +239,9 @@ func openStore() (*store.Store, error) {
 	}
 	warnIfStoreRolledBack(s.Generation)
 	migrateLegacyCanaries(s)
+	if loadedGeneration < 0 {
+		loadedGeneration = s.Generation // first load of this invocation = the pre-command generation
+	}
 	curStore = s
 	return s, nil
 }
@@ -231,6 +251,10 @@ func openStore() (*store.Store, error) {
 // Generation in memory, so an event logged after a write records the post-write generation.
 // arca is a short-lived single-command process; there is exactly one store per invocation.
 var curStore *store.Store
+
+// loadedGeneration is the store generation as first loaded this invocation (-1 = never loaded);
+// curStore.Generation moving past it is how auto-sync knows the command mutated the store.
+var loadedGeneration = -1
 
 // storeGenPath is the local high-water mark of the store generation (state dir, never synced).
 func storeGenPath() string { return filepath.Join(stateDir(), "store.gen") }
@@ -1849,7 +1873,7 @@ func newEnv() *cobra.Command {
 // newLog prints the access history, including the attributed AI agent and session.
 func newLog() *cobra.Command {
 	var limit int
-	var jsonOut, verify, requireSigned bool
+	var jsonOut, verify, requireSigned, remoteCheck bool
 	var anchor string
 	c := &cobra.Command{
 		Use:   "log [NAME]",
@@ -1866,13 +1890,16 @@ func newLog() *cobra.Command {
 			}
 			defer a.Close()
 			if verify {
-				return verifyLog(a, requireSigned, anchor)
+				return verifyLog(a, requireSigned, anchor, remoteCheck)
 			}
 			if requireSigned {
 				return fmt.Errorf("--require-signed is only valid with --verify")
 			}
 			if anchor != "" {
 				return fmt.Errorf("--anchor is only valid with --verify")
+			}
+			if remoteCheck {
+				return fmt.Errorf("--remote is only valid with --verify")
 			}
 			evs, err := a.Recent(name, limit)
 			if err != nil {
@@ -1911,6 +1938,7 @@ func newLog() *cobra.Command {
 	c.Flags().BoolVar(&verify, "verify", false, "verify the audit log's hash chain and signatures instead of printing it")
 	c.Flags().BoolVar(&requireSigned, "require-signed", false, "with --verify, also fail if any chained event is unsigned")
 	c.Flags().StringVar(&anchor, "anchor", "", "with --verify, also require the log to extend this previously-emitted anchor token")
+	c.Flags().BoolVar(&remoteCheck, "remote", false, "with --verify, also require the log to extend its escrowed off-machine history (needs sync configured)")
 	return c
 }
 
@@ -1921,7 +1949,7 @@ func newLog() *cobra.Command {
 // fails unless the chain still extends that head — the defense against the store and the audit DB
 // being rolled back *together* to a consistent older state, which every in-DB check necessarily
 // misses (SEC-14).
-func verifyLog(a *audit.Log, requireSigned bool, anchor string) error {
+func verifyLog(a *audit.Log, requireSigned bool, anchor string, remoteCheck bool) error {
 	r, err := a.Verify()
 	if err != nil {
 		return err
@@ -1956,6 +1984,18 @@ func verifyLog(a *audit.Log, requireSigned bool, anchor string) error {
 		}
 		if err := a.CheckAnchor(n, h); err != nil {
 			return fmt.Errorf("audit log integrity FAILED: %w — the store and audit DB may have been rolled back together; treat every secret readable at the anchor time as potentially resurrected", err)
+		}
+	}
+	// The escrowed history is the same check with an off-machine witness: segments this
+	// machine pushed on past syncs are append-only on the backend, so a local log that
+	// no longer extends them was rewritten or truncated here (SEC-14, Option B).
+	if remoteCheck {
+		b, err := openBackend()
+		if err != nil {
+			return err
+		}
+		if err := verifyAgainstEscrow(context.Background(), a, b); err != nil {
+			return fmt.Errorf("audit log integrity FAILED: %w", err)
 		}
 	}
 	fmt.Fprintf(os.Stderr, "audit log OK: %d event(s) chained, %d signed", r.Checked, r.Signed)

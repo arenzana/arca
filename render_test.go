@@ -26,3 +26,12 @@ func TestStyledOp(t *testing.T) {
 		}
 	}
 }
+
+// TestColorOpTable pins the op → color mapping used by the log/list views.
+func TestColorOpTable(t *testing.T) {
+	for _, op := range []string{"read", "set", "rotate", "rm", "canary-trip", "grant", "sync-push", "unknown-op"} {
+		if colorOp(op) == "" {
+			t.Fatalf("colorOp(%q) returned empty", op)
+		}
+	}
+}

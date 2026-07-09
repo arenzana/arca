@@ -104,3 +104,20 @@ func TestGenerateNoPrintShowExclusive(t *testing.T) {
 		t.Fatal("get on a --no-print generated secret should refuse")
 	}
 }
+
+// TestGenerateFlagBranches: rate parsing, charsets, and canary generation.
+func TestGenerateFlagBranches(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if err := runArcaErr("", "generate", "R", "--rate", "bogus"); err == nil {
+		t.Fatal("bad --rate accepted")
+	}
+	out := runArca(t, "", "generate", "H", "--charset", "hex", "-l", "16", "--show")
+	if v := strings.TrimSpace(out); len(v) != 16 || strings.ContainsAny(v, "ghijklmnopqrstuvwxyz") {
+		t.Fatalf("hex generate = %q", v)
+	}
+	runArca(t, "", "generate", "C", "--canary")
+	if !isCanary("C", nil) {
+		t.Fatal("generate --canary did not arm the canary")
+	}
+}

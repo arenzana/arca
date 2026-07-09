@@ -156,6 +156,8 @@ func sandbox(t *testing.T) string {
 		t.Setenv(k, "")
 	}
 	t.Setenv("ARCA_AGENT_MARKERS", "") // and any operator-registered custom markers
+	t.Setenv("ARCA_SYNC_URL", "")      // no accidental network sync from the developer's env
+	t.Setenv("ARCA_SYNC_AUTO", "")
 	return dir
 }
 

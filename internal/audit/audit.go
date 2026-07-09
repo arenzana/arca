@@ -677,3 +677,77 @@ func (l *Log) Recent(name string, limit int) ([]Event, error) {
 	}
 	return out, rows.Err()
 }
+
+// ---------------------------------------------------------------------------
+// Escrow support (SEC-14, Option B): sync replicates the local log off-machine as
+// append-only encrypted segments. These helpers expose the raw chained rows and the
+// chain coordinates a segment needs; verification of escrowed history reuses the
+// anchor machinery (FormatAnchor / CheckAnchor).
+// ---------------------------------------------------------------------------
+
+// EscrowRow is one full audit row as it goes into an escrow segment — every column,
+// including the chain and signature material, so an escrowed segment is independently
+// verifiable by any holder of a recipient key.
+type EscrowRow struct {
+	ID       int64  `json:"id"`
+	TS       string `json:"ts"`
+	Op       string `json:"op"`
+	Name     string `json:"name"`
+	PPID     int64  `json:"ppid,omitempty"`
+	Caller   string `json:"caller,omitempty"`
+	Actor    string `json:"actor,omitempty"`
+	Agent    string `json:"agent,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Session  string `json:"session,omitempty"`
+	PrevHash []byte `json:"prev_hash,omitempty"`
+	Hash     []byte `json:"hash,omitempty"`
+	Sig      []byte `json:"sig,omitempty"`
+	SignerID string `json:"signer_id,omitempty"`
+	StoreGen int    `json:"store_gen,omitempty"`
+}
+
+// EventsSince returns every row with id > sinceID, oldest first — the increment an
+// escrow segment carries.
+func (l *Log) EventsSince(sinceID int64) ([]EscrowRow, error) {
+	rows, err := l.db.Query(
+		`SELECT id, ts, op, name, ppid, caller, actor, agent, version, session, prev_hash, hash, sig, signer_id, store_gen
+		   FROM events WHERE id > ? ORDER BY id ASC`, sinceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EscrowRow
+	for rows.Next() {
+		var r EscrowRow
+		var ppid, gen sql.NullInt64
+		var caller, actor, agent, ver, session, signer sql.NullString
+		if err := rows.Scan(&r.ID, &r.TS, &r.Op, &r.Name, &ppid, &caller, &actor, &agent, &ver, &session, &r.PrevHash, &r.Hash, &r.Sig, &signer, &gen); err != nil {
+			return nil, err
+		}
+		r.PPID, r.Caller, r.Actor, r.Agent, r.Version, r.Session, r.SignerID = ppid.Int64, caller.String, actor.String, agent.String, ver.String, session.String, signer.String
+		r.StoreGen = int(gen.Int64)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ChainInfoThrough returns the chain coordinates at row maxID: how many chained
+// (non-legacy) events exist with id <= maxID, and the hash of the newest one. This is
+// exactly the material FormatAnchor takes, so a segment's tail doubles as an anchor.
+func (l *Log) ChainInfoThrough(maxID int64) (n int, lastHash []byte, err error) {
+	rows, err := l.db.Query(
+		`SELECT hash FROM events WHERE id <= ? AND hash IS NOT NULL ORDER BY id ASC`, maxID)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h []byte
+		if err := rows.Scan(&h); err != nil {
+			return 0, nil, err
+		}
+		n++
+		lastHash = h
+	}
+	return n, lastHash, rows.Err()
+}

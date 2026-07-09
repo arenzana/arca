@@ -113,3 +113,77 @@ func TestRecordGenVerify(t *testing.T) {
 		t.Fatal("verify passed after NULLing a store_gen (encoding downgrade)")
 	}
 }
+
+// TestAnchorTokenAndCheck covers the anchor primitives in-package: format/parse round
+// trip, malformed tokens, and CheckAnchor's three verdicts (extends, diverged, truncated).
+func TestAnchorTokenAndCheck(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a.db")
+	l, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for i := 0; i < 3; i++ {
+		if err := l.RecordGen("set", "A", "", Identity{}, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := l.Verify()
+	if err != nil || !r.OK || r.LastHash == nil {
+		t.Fatalf("verify = %+v err %v", r, err)
+	}
+	tok := FormatAnchor(r.Checked, r.LastHash)
+	n, h, err := ParseAnchor(tok)
+	if err != nil || n != r.Checked || len(h) != len(r.LastHash) {
+		t.Fatalf("round trip: n=%d err=%v", n, err)
+	}
+	for _, bad := range []string{"", "arca-anchor:v1:x:ff", "arca-anchor:v1:3:zz", "arca-anchor:v2:3:" + "00", "arca-anchor:v1:0:" + "00"} {
+		if _, _, err := ParseAnchor(bad); err == nil {
+			t.Fatalf("ParseAnchor(%q) should fail", bad)
+		}
+	}
+	// Extends after growth.
+	if err := l.RecordGen("set", "A", "", Identity{}, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.CheckAnchor(n, h); err != nil {
+		t.Fatalf("grown log should extend the anchor: %v", err)
+	}
+	// Truncated: an anchor minted beyond the log's length.
+	if err := l.CheckAnchor(99, h); err == nil {
+		t.Fatal("CheckAnchor(99) should report truncation")
+	}
+	// Diverged: right position, wrong hash.
+	wrong := make([]byte, len(h))
+	if err := l.CheckAnchor(n, wrong); err == nil {
+		t.Fatal("CheckAnchor with a wrong hash should report divergence")
+	}
+}
+
+// TestEscrowRowHelpers covers EventsSince and ChainInfoThrough — the escrow segment's
+// raw material.
+func TestEscrowRowHelpers(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a.db")
+	l, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for i := 0; i < 4; i++ {
+		if err := l.RecordGen("read", "S", "curl", Identity{Actor: "me"}, i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := l.EventsSince(0)
+	if err != nil || len(rows) != 4 || rows[0].ID >= rows[3].ID {
+		t.Fatalf("EventsSince(0) = %d rows err %v", len(rows), err)
+	}
+	tail, err := l.EventsSince(rows[2].ID)
+	if err != nil || len(tail) != 1 || tail[0].ID != rows[3].ID {
+		t.Fatalf("EventsSince(mid) = %+v err %v", tail, err)
+	}
+	n, h, err := l.ChainInfoThrough(rows[1].ID)
+	if err != nil || n != 2 || string(h) != string(rows[1].Hash) {
+		t.Fatalf("ChainInfoThrough = n%d err %v", n, err)
+	}
+}
