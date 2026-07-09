@@ -6,6 +6,12 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-09
+
+`arca sync`: first-class multi-machine replication through an untrusted S3-compatible
+backend — envelope-encrypted end to end, lost-update-proof via conditional writes,
+with automatic mode and off-machine audit escrow (SEC-14, Option B).
+
 ### Added
 - **The audit trail follows the store off-machine (SEC-14, Option B).** Every sync escrows the
   local audit log's increment as an append-only, age-encrypted segment
@@ -423,7 +429,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/arenzana/arca/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/arenzana/arca/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/arenzana/arca/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/arenzana/arca/compare/v0.6.2...v0.6.3
