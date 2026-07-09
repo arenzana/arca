@@ -42,8 +42,8 @@ type syncConfig struct {
 	// the design's sanctioned home for bootstrap material (like the age identity, they
 	// are needed before any secret store exists). Env vars win when both are set, and
 	// nothing is stored unless the operator passes --store-credentials.
-	AccessKey string `json:"access_key,omitempty"` //#nosec G117 -- deliberate: 0600 state-dir credential storage, the design's sanctioned bootstrap home (docs/SYNC.md)
-	SecretKey string `json:"secret_key,omitempty"` //#nosec G117 -- deliberate: see AccessKey
+	AccessKey string `json:"access_key,omitempty"`
+	SecretKey string `json:"secret_key,omitempty"`
 	// Auto enables opportunistic sync: after any command that mutated the store the
 	// change is pushed, and after any command at all a pull runs when the last sync
 	// is older than autoSyncStaleness. Best-effort by design — a failed auto-sync
@@ -93,7 +93,7 @@ func loadSyncConfig() syncConfig {
 }
 
 func saveSyncConfig(c syncConfig) error {
-	b, err := json.MarshalIndent(c, "", "  ")
+	b, err := json.MarshalIndent(c, "", "  ") //#nosec G117 -- deliberate: sync credentials persist 0600 in the state dir, the design's sanctioned bootstrap home (docs/SYNC.md); env still wins
 	if err != nil {
 		return err
 	}
@@ -164,18 +164,24 @@ var openBackend = func() (remote.Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Credential resolution: environment first (explicit wins), then the 0600
-	// state-dir config; NewS3 itself falls back to the AWS_* names.
-	sc := loadSyncConfig()
-	cfg.AccessKey = os.Getenv("ARCA_SYNC_ACCESS_KEY")
-	if cfg.AccessKey == "" {
-		cfg.AccessKey = sc.AccessKey
-	}
-	cfg.SecretKey = os.Getenv("ARCA_SYNC_SECRET_KEY")
-	if cfg.SecretKey == "" {
-		cfg.SecretKey = sc.SecretKey
-	}
+	cfg.AccessKey, cfg.SecretKey = resolveSyncCredentials(loadSyncConfig())
 	return remote.NewS3(cfg)
+}
+
+// resolveSyncCredentials picks the backend credential pair: environment first
+// (explicit always wins), then the 0600 state-dir config persisted by
+// `sync init --store-credentials`. Empty results are fine — NewS3 falls back to
+// the AWS_* names and errors with guidance if nothing resolves.
+func resolveSyncCredentials(sc syncConfig) (access, secret string) {
+	access = os.Getenv("ARCA_SYNC_ACCESS_KEY")
+	if access == "" {
+		access = sc.AccessKey
+	}
+	secret = os.Getenv("ARCA_SYNC_SECRET_KEY")
+	if secret == "" {
+		secret = sc.SecretKey
+	}
+	return access, secret
 }
 
 // sealEnvelope wraps the raw store-file bytes in one more age layer to the store's

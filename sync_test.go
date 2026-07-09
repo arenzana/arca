@@ -542,3 +542,28 @@ func TestSyncInitStoreCredentials(t *testing.T) {
 		t.Fatalf("openBackend with stored credentials: %v", err)
 	}
 }
+
+// TestResolveSyncCredentials pins the precedence contract: env wins per-field, the
+// stored config fills gaps, and mixed sources compose.
+func TestResolveSyncCredentials(t *testing.T) {
+	sandbox(t)
+	sc := syncConfig{AccessKey: "cfg-ak", SecretKey: "cfg-sk"}
+
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "")
+	if a, s := resolveSyncCredentials(sc); a != "cfg-ak" || s != "cfg-sk" {
+		t.Fatalf("config fallback = %q/%q", a, s)
+	}
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "env-ak")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "env-sk")
+	if a, s := resolveSyncCredentials(sc); a != "env-ak" || s != "env-sk" {
+		t.Fatalf("env should win = %q/%q", a, s)
+	}
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "")
+	if a, s := resolveSyncCredentials(sc); a != "env-ak" || s != "cfg-sk" {
+		t.Fatalf("mixed sources = %q/%q", a, s)
+	}
+	if a, s := resolveSyncCredentials(syncConfig{}); a != "env-ak" || s != "" {
+		t.Fatalf("nothing stored, partial env = %q/%q", a, s)
+	}
+}
