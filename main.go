@@ -142,6 +142,9 @@ func main() {
 // newRoot builds the command tree. It's a constructor (not a package-level var) so tests can
 // get a fresh, isolated command instance per invocation.
 func newRoot() *cobra.Command {
+	// Per-invocation state: the real CLI builds one root per process; in-process tests
+	// build one per command and must not leak the previous command's store view.
+	curStore, loadedGeneration = nil, -1
 	root := &cobra.Command{
 		Use:           "arca",
 		Short:         "age-encrypted secrets with metadata and an audit log",
@@ -154,10 +157,23 @@ func newRoot() *cobra.Command {
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newDisable(), newEnable(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newAnnotate(), newCanary(),
-		newGrant(), newGrants(), newRevoke(), newHandle(), newVersion(),
+		newGrant(), newGrants(), newRevoke(), newHandle(), newSync(), newVersion(),
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
+	// Opportunistic auto-sync runs strictly AFTER a command's real work — never in an
+	// access path — and only when enabled (`arca sync auto on` / ARCA_SYNC_AUTO=1).
+	// The sync command itself is excluded (it already synced, or failed loudly).
+	root.PersistentPostRun = func(cmd *cobra.Command, _ []string) {
+		invokedSync := false
+		for c := cmd; c != nil; c = c.Parent() {
+			if c.Name() == "sync" {
+				invokedSync = true
+				break
+			}
+		}
+		maybeAutoSync(invokedSync)
+	}
 	return root
 }
 
@@ -222,6 +238,9 @@ func openStore() (*store.Store, error) {
 	}
 	warnIfStoreRolledBack(s.Generation)
 	migrateLegacyCanaries(s)
+	if loadedGeneration < 0 {
+		loadedGeneration = s.Generation // first load of this invocation = the pre-command generation
+	}
 	curStore = s
 	return s, nil
 }
@@ -231,6 +250,10 @@ func openStore() (*store.Store, error) {
 // Generation in memory, so an event logged after a write records the post-write generation.
 // arca is a short-lived single-command process; there is exactly one store per invocation.
 var curStore *store.Store
+
+// loadedGeneration is the store generation as first loaded this invocation (-1 = never loaded);
+// curStore.Generation moving past it is how auto-sync knows the command mutated the store.
+var loadedGeneration = -1
 
 // storeGenPath is the local high-water mark of the store generation (state dir, never synced).
 func storeGenPath() string { return filepath.Join(stateDir(), "store.gen") }

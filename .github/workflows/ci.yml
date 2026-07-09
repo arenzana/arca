@@ -109,6 +109,35 @@ jobs:
       # cases self-skip on Windows.)
       - run: go test -tags e2e ./e2e/...
 
+  # The sync backend's CAS safety rests on S3 conditional writes (If-Match / If-None-Match).
+  # The in-memory fake proves the client logic; this job proves the headers hold on a real
+  # service, using MinIO in a container (docker run, not a service: MinIO needs a command).
+  sync-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: start MinIO
+        run: |
+          docker run -d --rm --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=arca-e2e -e MINIO_ROOT_PASSWORD=arca-e2e-secret \
+            quay.io/minio/minio server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && exit 0
+            sleep 1
+          done
+          echo "::error::MinIO did not become healthy" && exit 1
+      - run: go test -tags sync_e2e -run TestSyncE2E -v ./
+        env:
+          ARCA_SYNC_E2E_ENDPOINT: 127.0.0.1:9000
+          ARCA_SYNC_ACCESS_KEY: arca-e2e
+          ARCA_SYNC_SECRET_KEY: arca-e2e-secret
+
   crossbuild:
     # Proves every release target compiles before we ever tag a release.
     runs-on: ubuntu-latest

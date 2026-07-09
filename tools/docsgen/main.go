@@ -31,7 +31,7 @@ const repoBlob = "https://github.com/arenzana/arca/blob/main/"
 // order is the preferred reading order for the catalog; unlisted docs are appended
 // alphabetically so a new .md still shows up without touching this file.
 var order = []string{
-	"COMMANDS", "CONFIGURATION", "POLICIES", "IMPORTING", "MCP", "ARCHITECTURE", "THREAT-MODEL",
+	"COMMANDS", "CONFIGURATION", "SYNC", "POLICIES", "IMPORTING", "MCP", "ARCHITECTURE", "THREAT-MODEL",
 }
 
 type page struct {

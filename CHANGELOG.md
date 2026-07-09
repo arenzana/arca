@@ -6,6 +6,19 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`arca sync` — first-class multi-machine replication through an S3-compatible backend**
+  (Cloudflare R2, MinIO, Garage, AWS S3), replacing "keep the store in a git repo" as the only
+  sync story. The uploaded envelope is the whole store wrapped in one more age layer to the
+  store's recipients, so the backend sees nothing — not even secret names or the JSON shape.
+  Pushes are compare-and-swap conditional writes with immutable per-generation revision objects:
+  lost updates are impossible, conflicts are reported (never auto-merged), and a rolled-back
+  remote is refused (SEC-14 extended to the network side). `sync init URL` pins the backend,
+  `sync status` reports both sides, and `sync auto on` enables opportunistic mode — push after
+  a mutating command, staleness-based pull — always after the command's real work, never in an
+  access path, and never able to fail the command it rides on. New dependency: `minio-go`;
+  a real-MinIO CI job proves the conditional-write semantics end to end. See docs/SYNC.md.
+
 ## [0.6.5] - 2026-07-09
 
 Security rebuild — no functional changes.
