@@ -42,8 +42,8 @@ type syncConfig struct {
 	// the design's sanctioned home for bootstrap material (like the age identity, they
 	// are needed before any secret store exists). Env vars win when both are set, and
 	// nothing is stored unless the operator passes --store-credentials.
-	AccessKey string `json:"access_key,omitempty"`
-	SecretKey string `json:"secret_key,omitempty"`
+	AccessKey string `json:"access_key,omitempty"` //#nosec G117 -- deliberate: 0600 state-dir credential storage, the design's sanctioned bootstrap home (docs/SYNC.md)
+	SecretKey string `json:"secret_key,omitempty"` //#nosec G117 -- deliberate: see AccessKey
 	// Auto enables opportunistic sync: after any command that mutated the store the
 	// change is pushed, and after any command at all a pull runs when the last sync
 	// is older than autoSyncStaleness. Best-effort by design — a failed auto-sync

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -526,9 +527,11 @@ func TestSyncInitStoreCredentials(t *testing.T) {
 	if cfg.AccessKey != "AKIA-stored" || cfg.SecretKey != "shh-stored" {
 		t.Fatalf("credentials not persisted: %+v", cfg)
 	}
-	fi, err := os.Stat(syncConfigPath())
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("sync.json mode = %v err %v, want 0600", fi.Mode(), err)
+	if runtime.GOOS != "windows" { // Unix permission bits don't map on Windows
+		fi, err := os.Stat(syncConfigPath())
+		if err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("sync.json mode = %v err %v, want 0600", fi.Mode(), err)
+		}
 	}
 	// Resolution: env wins; with env cleared the stored pair is used.
 	t.Setenv("ARCA_SYNC_ACCESS_KEY", "")
