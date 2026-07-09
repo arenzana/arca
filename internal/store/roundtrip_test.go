@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -69,5 +70,31 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if sec.ExpiresAt == nil || !sec.ExpiresAt.Equal(exp) {
 		t.Fatalf("expires_at lost: %v", sec.ExpiresAt)
+	}
+}
+
+// TestSaveErrorPaths covers Save's failure branches: an unwritable parent directory and
+// a parent that is a regular file (MkdirAll fails).
+func TestSaveErrorPaths(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "f")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(filepath.Join(blocker, "sub", "store.json"), []string{"age1"})
+	if err := s.Save(); err == nil {
+		t.Fatal("Save under a file-as-directory should fail")
+	}
+	ro := filepath.Join(dir, "ro")
+	if err := os.Mkdir(ro, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(ro, 0o700)
+	s2 := New(filepath.Join(ro, "store.json"), []string{"age1"})
+	if err := s2.Save(); err == nil {
+		t.Fatal("Save into a read-only directory should fail")
 	}
 }

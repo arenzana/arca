@@ -24,11 +24,7 @@ import (
 type S3 struct {
 	cfg    Config
 	client *minio.Client
-	// metaGen mirrors the envelope generation into object user-metadata so Head
-	// can answer without downloading the (small, but still) envelope.
 }
-
-const metaGen = "X-Amz-Meta-Arca-Generation"
 
 // NewS3 builds the client. Credentials: ARCA_SYNC_ACCESS_KEY / ARCA_SYNC_SECRET_KEY,
 // falling back to AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.

@@ -53,6 +53,25 @@ reconciles when the last sync is older than 15 minutes. Network work is bounded 
 10-second timeout and can never fail the command it rides on. The MCP server process
 does not auto-sync (it is long-running; run `arca sync` or rely on the CLI's habits).
 
+## The audit trail follows (Option B escrow)
+
+Every sync also ships the increment of this machine's **audit log** as an append-only,
+age-encrypted segment (`audit/<machine-id>/<seq>.age`, create-only). The local SQLite
+log remains the operational, fail-closed witness — escrow adds an off-machine copy a
+local tamperer cannot retract:
+
+```sh
+arca log --verify --remote   # the local chain must extend its escrowed history
+```
+
+A rewritten or truncated local log diverges from its own escrowed prefix and fails the
+check; segments themselves are continuity-chained (each carries its predecessor's
+anchor), so segments removed or replaced on the backend are detected client-side.
+Escrow is best-effort: a failure warns and retries on the next sync, and it never
+blocks a secret access. What it deliberately does **not** provide is fleet-wide
+*enforcement* (rate limits across machines) — that requires a trusted arbiter, which
+the dumb backend is not.
+
 ## Configuration
 
 | What | How |

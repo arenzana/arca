@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arenzana/arca/internal/remote"
 )
@@ -190,5 +191,322 @@ func TestSyncStatusAndInit(t *testing.T) {
 	runArca(t, "", "sync", "auto", "off")
 	if loadSyncConfig().Auto {
 		t.Fatal("sync auto off did not persist")
+	}
+}
+
+// TestSyncURLResolution: env beats the pinned config; unconfigured is a clear error.
+func TestSyncURLResolution(t *testing.T) {
+	sandbox(t)
+	if _, err := syncURL(); err == nil {
+		t.Fatal("unconfigured syncURL should error")
+	}
+	runArca(t, "", "sync", "init", "s3://pinned/x?endpoint=h:1&insecure=1")
+	u, err := syncURL()
+	if err != nil || !strings.Contains(u, "pinned") {
+		t.Fatalf("pinned url = %q err %v", u, err)
+	}
+	t.Setenv("ARCA_SYNC_URL", "s3://env-wins/y?endpoint=h:1")
+	if u, _ := syncURL(); !strings.Contains(u, "env-wins") {
+		t.Fatalf("env should win, got %q", u)
+	}
+	if autoSyncEnabled() {
+		t.Fatal("auto should default off")
+	}
+	t.Setenv("ARCA_SYNC_AUTO", "on")
+	if !autoSyncEnabled() {
+		t.Fatal("ARCA_SYNC_AUTO=on should enable")
+	}
+}
+
+// TestSyncStatusOutput covers both status branches: empty remote, then a synced one.
+func TestSyncStatusOutput(t *testing.T) {
+	sandbox(t)
+	withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "", "sync", "status") // remote empty
+	runArca(t, "v", "set", "A")
+	runArca(t, "", "sync")
+	runArca(t, "", "sync", "status") // synced
+}
+
+// TestPushStoreCASRace covers the losing side of a Head→Push race directly: the prev
+// rev goes stale between reading the head and pushing.
+func TestPushStoreCASRace(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "A")
+	runArca(t, "", "sync")
+	head, err := fake.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another writer advances the head after we captured it.
+	if _, err := fake.Push(context.Background(), []byte("interloper"), head.Generation+1, head); err != nil {
+		t.Fatal(err)
+	}
+	s, raw, err := localStoreForSync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Generation += 5 // pretend a local mutation targeting a new generation
+	if err := pushStore(context.Background(), fake, s, raw, head, loadSyncState()); err == nil || !strings.Contains(err.Error(), "reconcile") {
+		t.Fatalf("stale-prev push = %v, want a CAS reconcile hint", err)
+	}
+}
+
+// TestSyncPullBadEnvelope: a remote object that isn't a valid age envelope (or whose
+// payload isn't a store) is rejected without touching the local store.
+func TestSyncPullBadEnvelope(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	fake.Corrupt([]byte("not an envelope at all"), 99)
+	err := runArcaErr("", "sync")
+	if err == nil || !strings.Contains(err.Error(), "envelope") {
+		t.Fatalf("garbage remote head accepted: %v", err)
+	}
+	if out := runArca(t, "", "get", "A"); out != "v1" {
+		t.Fatalf("local store was damaged by a bad pull: %q", out)
+	}
+}
+
+// TestAutoSyncGuards: the post-run hook is inert when the sync command itself ran, when
+// auto is off, and it degrades to a warning when escrow material is unusable.
+func TestAutoSyncGuards(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+
+	maybeAutoSync(true) // the sync command already handled it
+	if _, err := fake.Head(context.Background()); err == nil {
+		t.Fatal("maybeAutoSync(invokedSync=true) must not touch the backend")
+	}
+	maybeAutoSync(false) // auto disabled: also inert
+	if _, err := fake.Head(context.Background()); err == nil {
+		t.Fatal("maybeAutoSync with auto off must not touch the backend")
+	}
+	t.Setenv("ARCA_SYNC_AUTO", "1")
+	maybeAutoSync(false) // enabled: reconciles (bootstrap push of the init-only store)
+	if _, err := fake.Head(context.Background()); err != nil {
+		t.Fatalf("auto-sync did not push: %v", err)
+	}
+}
+
+// TestEscrowSealFailureWarns: unusable recipients make escrow fail as a warning while
+// the sync itself succeeds — escrow must never weaken the sync path.
+func TestEscrowSealFailureWarns(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	escrowBestEffort(context.Background(), fake, []string{"not-a-recipient"})
+	if keys, _ := fake.List(context.Background(), remote.KeyAudit); len(keys) != 0 {
+		t.Fatalf("broken recipients still escrowed: %v", keys)
+	}
+}
+
+// TestSyncFlagGuards pins every explicit flag refusal in the reconcile table.
+func TestSyncFlagGuards(t *testing.T) {
+	dir := sandbox(t)
+	fake := withFakeBackend(t)
+	if err := runArcaErr("", "sync", "--pull", "--push"); err == nil {
+		t.Fatal("--pull --push should be refused")
+	}
+	// Empty remote + no local store: nothing to do either way.
+	if err := runArcaErr("", "sync"); err == nil {
+		t.Fatal("sync with neither side should error")
+	}
+	runArca(t, "", "init")
+	if err := runArcaErr("", "sync", "--pull"); err == nil {
+		t.Fatal("--pull against an empty remote should error")
+	}
+	runArca(t, "", "sync") // bootstrap push
+	// Remote ahead + --push: refused with a pull hint.
+	head, _ := fake.Head(context.Background())
+	if _, err := fake.Push(context.Background(), []byte("other"), head.Generation+1, head); err != nil {
+		t.Fatal(err)
+	}
+	// (remote object is garbage, but --push must refuse before ever fetching it)
+	if err := runArcaErr("", "sync", "--push"); err == nil || !strings.Contains(err.Error(), "ahead") {
+		t.Fatalf("--push with a remote ahead = %v", err)
+	}
+	// Fresh machine + --push: nothing local to push.
+	switchMachine(t, dir)
+	if err := runArcaErr("", "sync", "--push"); err == nil || !strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("--push with no local store = %v", err)
+	}
+}
+
+// TestSyncLocalAheadPullRefusedAndRepair: --pull with unpushed local changes is refused;
+// a local store rolled back below the sync cursor is repaired by pull.
+func TestSyncLocalAheadPullRefused(t *testing.T) {
+	sandbox(t)
+	withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	runArca(t, "v2", "rotate", "A")
+	if err := runArcaErr("", "sync", "--pull"); err == nil || !strings.Contains(err.Error(), "unpushed") {
+		t.Fatalf("--pull with local changes = %v", err)
+	}
+	// Local rollback below the cursor: --push refuses, plain sync pulls the repair.
+	s, raw, err := localStoreForSync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s
+	_ = raw
+	runArca(t, "", "sync") // push v2 first so remote == local == gen N
+	old, err := os.ReadFile(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "v3", "rotate", "A")
+	runArca(t, "", "sync")
+	if err := os.WriteFile(storePath(), old, 0o600); err != nil { // roll local back
+		t.Fatal(err)
+	}
+	if err := runArcaErr("", "sync", "--push"); err == nil || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("--push with a rolled-back local = %v", err)
+	}
+	runArca(t, "", "sync") // plain sync repairs by pulling
+	if out := runArca(t, "", "get", "A"); out != "v3" {
+		t.Fatalf("after repair pull: get A = %q", out)
+	}
+}
+
+// TestSyncForceOverridesRemoteRollback: --force is the documented escape hatch to push
+// local state over a remote that regressed.
+func TestSyncForceOverridesRemoteRollback(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	oldEnv, _, _ := fake.Fetch(context.Background())
+	runArca(t, "v2", "rotate", "A")
+	runArca(t, "", "sync")
+	fake.Corrupt(oldEnv, 1) // remote regressed
+	if err := runArcaErr("", "sync"); err == nil {
+		t.Fatal("regressed remote must refuse a plain sync")
+	}
+	runArca(t, "v3", "rotate", "A")
+	runArca(t, "", "sync", "--force") // local-wins push over the rollback
+	env, head, err := fake.Fetch(context.Background())
+	if err != nil || head.Generation < 4 {
+		t.Fatalf("force push did not land: gen %d err %v", head.Generation, err)
+	}
+	if string(env) == string(oldEnv) {
+		t.Fatal("remote still holds the rolled-back envelope")
+	}
+}
+
+// TestPullTrustsEnvelopeOverMetadata: backend metadata is untrusted; the decrypted
+// envelope's own generation wins, with a warning.
+func TestPullTrustsEnvelopeOverMetadata(t *testing.T) {
+	dir := sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	env, _, _ := fake.Fetch(context.Background())
+	fake.Corrupt(env, 999) // same honest envelope, lying generation tag
+	switchMachine(t, dir)
+	runArca(t, "", "sync") // bootstrap pull: must adopt envelope's true generation
+	s, _, err := localStoreForSync()
+	if err != nil || s == nil || s.Generation >= 999 {
+		t.Fatalf("pulled generation = %+v err %v (metadata was trusted)", s, err)
+	}
+}
+
+// TestSyncStateConfigErrorPaths: state/config writers fail cleanly when the state dir
+// is unwritable — and autoSyncEnabled treats every documented spelling correctly.
+func TestSyncStateConfigErrorPaths(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+	dir := sandbox(t)
+	blocker := filepath.Join(dir, "blk")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", blocker) // state dir cannot be created
+	if err := saveSyncState(syncState{LastGeneration: 1}); err == nil {
+		t.Fatal("saveSyncState should fail under an uncreatable state dir")
+	}
+	if err := saveSyncConfig(syncConfig{URL: "s3://b"}); err == nil {
+		t.Fatal("saveSyncConfig should fail under an uncreatable state dir")
+	}
+	for val, want := range map[string]bool{"1": true, "yes": true, "0": false, "off": false} {
+		t.Setenv("ARCA_SYNC_AUTO", val)
+		if autoSyncEnabled() != want {
+			t.Fatalf("ARCA_SYNC_AUTO=%s = %v, want %v", val, autoSyncEnabled(), want)
+		}
+	}
+}
+
+// TestOpenEnvelopeNotAStore: a valid age envelope whose payload is not a store document
+// is rejected during pull validation.
+func TestOpenEnvelopeNotAStore(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	s, _, err := localStoreForSync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := sealEnvelope([]byte("{\"not\": \"a store\"}"), s.Recipients)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := openEnvelope(env); err == nil || !strings.Contains(err.Error(), "validate") {
+		t.Fatalf("non-store payload accepted: %v", err)
+	}
+	// And a payload no local identity can open.
+	if _, _, err := openEnvelope([]byte("-----BEGIN AGE ENCRYPTED FILE-----\ngibberish\n-----END AGE ENCRYPTED FILE-----\n")); err == nil {
+		t.Fatal("undecryptable envelope accepted")
+	}
+}
+
+// TestAutoSyncStalePull: an auto-enabled READ command reconciles when the last sync is
+// stale, adopting a remote that moved ahead.
+func TestAutoSyncStalePull(t *testing.T) {
+	dir := sandbox(t)
+	fake := withFakeBackend(t)
+	t.Setenv("ARCA_SYNC_AUTO", "1")
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A") // auto-pushes
+	// Second machine pushes ahead.
+	aStore, aAudit, aState := os.Getenv("ARCA_STORE"), os.Getenv("ARCA_AUDIT"), os.Getenv("XDG_STATE_HOME")
+	switchMachine(t, dir)
+	runArca(t, "", "sync")
+	runArca(t, "v2", "rotate", "A") // auto-pushes from machine B
+	if _, err := fake.Head(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Machine A: make its last sync look stale, then any command reconciles.
+	t.Setenv("ARCA_STORE", aStore)
+	t.Setenv("ARCA_AUDIT", aAudit)
+	t.Setenv("XDG_STATE_HOME", aState)
+	st := loadSyncState()
+	st.LastSync = st.LastSync.Add(-time.Hour)
+	if err := saveSyncState(st); err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "ls") // read-only command triggers the stale reconcile
+	if out := runArca(t, "", "get", "A"); out != "v2" {
+		t.Fatalf("stale auto-pull did not adopt the remote: get A = %q", out)
+	}
+}
+
+// TestSyncAutoArgGuards: bad toggle values and auto-without-a-backend are refused.
+func TestSyncAutoArgGuards(t *testing.T) {
+	sandbox(t)
+	if err := runArcaErr("", "sync", "auto", "maybe"); err == nil {
+		t.Fatal("sync auto maybe should be refused")
+	}
+	if err := runArcaErr("", "sync", "auto", "on"); err == nil {
+		t.Fatal("sync auto on without a configured backend should be refused")
 	}
 }

@@ -102,6 +102,15 @@ func (f *Fake) List(_ context.Context, keyPrefix string) ([]string, error) {
 	return out, nil
 }
 
+// Delete removes an object out-of-band, simulating storage-side violation of the
+// append-only contract. Tests only.
+func (f *Fake) Delete(key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.objects, key)
+	delete(f.etags, key)
+}
+
 // Corrupt replaces the head object out-of-band, simulating remote tampering or a
 // provider that ignored a conditional header. Tests only.
 func (f *Fake) Corrupt(envelope []byte, gen int) {

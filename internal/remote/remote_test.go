@@ -84,3 +84,42 @@ func TestFakeCASSemantics(t *testing.T) {
 		t.Fatalf("list = %v err %v", keys, err)
 	}
 }
+
+// TestFakeAuxiliaries covers the aux-object and test-hook surface in-package (Get,
+// Delete, Corrupt), which the sync tests exercise only cross-package.
+func TestFakeAuxiliaries(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	if _, err := f.Get(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get(missing) = %v", err)
+	}
+	if err := f.PutIfAbsent(ctx, "k", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := f.Get(ctx, "k"); err != nil || string(b) != "v" {
+		t.Fatalf("Get = %q err %v", b, err)
+	}
+	f.Delete("k")
+	if _, err := f.Get(ctx, "k"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("Delete did not remove the object")
+	}
+	f.Corrupt([]byte("older"), 1)
+	b, head, err := f.Fetch(ctx)
+	if err != nil || string(b) != "older" || head.Generation != 1 {
+		t.Fatalf("after Corrupt: %q gen %d err %v", b, head.Generation, err)
+	}
+}
+
+// TestKeyWithoutPrefix: a bare-bucket config joins keys without a leading slash.
+func TestKeyWithoutPrefix(t *testing.T) {
+	c, err := ParseURL("s3://justbucket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.key("store/current"); got != "store/current" {
+		t.Fatalf("key without prefix = %q", got)
+	}
+	if c.Region == "" {
+		t.Fatal("bare AWS URL should default a region")
+	}
+}

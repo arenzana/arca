@@ -7,6 +7,13 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **The audit trail follows the store off-machine (SEC-14, Option B).** Every sync escrows the
+  local audit log's increment as an append-only, age-encrypted segment
+  (`audit/<machine-id>/<seq>.age`, create-only on the backend; contents invisible to it). The
+  local SQLite log stays the fail-closed operational witness; `log --verify --remote` now checks
+  that the local chain still extends its escrowed history — self-tamper evidence a local rewrite
+  cannot retract, with segment-to-segment continuity catching backend-side deletions. Escrow is
+  best-effort (warn + retry next sync) and never blocks an access.
 - **`arca sync` — first-class multi-machine replication through an S3-compatible backend**
   (Cloudflare R2, MinIO, Garage, AWS S3), replacing "keep the store in a git repo" as the only
   sync story. The uploaded envelope is the whole store wrapped in one more age layer to the

@@ -205,6 +205,13 @@ func openEnvelope(envelope []byte) ([]byte, *store.Store, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("remote envelope did not validate as a store: %w", err)
 	}
+	// Load is deliberately tolerant for local files (fresh stores, older schemas). A pulled
+	// document replaces the local store wholesale, so hold it to what every real store has:
+	// a version, recipients, and at least one write behind it. This stops a wrong-but-
+	// decryptable object from silently wiping the local store.
+	if s.Version < 1 || len(s.Recipients) == 0 || s.Generation < 1 {
+		return nil, nil, fmt.Errorf("remote envelope did not validate as a store (version %d, %d recipient(s), generation %d)", s.Version, len(s.Recipients), s.Generation)
+	}
 	return plain, s, nil
 }
 
@@ -423,6 +430,7 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 	switch {
 	case L == S && R == S:
 		fmt.Fprintln(os.Stderr, "in sync: nothing to do")
+		escrowBestEffort(ctx, b, s.Recipients)
 		return nil
 	case L == S && R > S:
 		if pushOnly {
@@ -463,6 +471,7 @@ func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "pushed generation %d\n", rev.Generation)
+	escrowBestEffort(ctx, b, s.Recipients)
 	return nil
 }
 
@@ -496,5 +505,15 @@ func pullStore(ctx context.Context, b remote.Backend, st syncState) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "pulled generation %d\n", rev.Generation)
+	escrowBestEffort(ctx, b, rs.Recipients)
 	return nil
+}
+
+// escrowBestEffort ships new audit events off-machine after a successful sync (SEC-14
+// Option B). A failure is a warning: escrow strengthens the audit story, it must never
+// weaken the sync one.
+func escrowBestEffort(ctx context.Context, b remote.Backend, recipients []string) {
+	if err := escrowAudit(ctx, b, recipients); err != nil {
+		fmt.Fprintf(os.Stderr, "arca: warning: audit escrow failed (will retry on the next sync): %v\n", err)
+	}
 }

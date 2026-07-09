@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1872,7 +1873,7 @@ func newEnv() *cobra.Command {
 // newLog prints the access history, including the attributed AI agent and session.
 func newLog() *cobra.Command {
 	var limit int
-	var jsonOut, verify, requireSigned bool
+	var jsonOut, verify, requireSigned, remoteCheck bool
 	var anchor string
 	c := &cobra.Command{
 		Use:   "log [NAME]",
@@ -1889,13 +1890,16 @@ func newLog() *cobra.Command {
 			}
 			defer a.Close()
 			if verify {
-				return verifyLog(a, requireSigned, anchor)
+				return verifyLog(a, requireSigned, anchor, remoteCheck)
 			}
 			if requireSigned {
 				return fmt.Errorf("--require-signed is only valid with --verify")
 			}
 			if anchor != "" {
 				return fmt.Errorf("--anchor is only valid with --verify")
+			}
+			if remoteCheck {
+				return fmt.Errorf("--remote is only valid with --verify")
 			}
 			evs, err := a.Recent(name, limit)
 			if err != nil {
@@ -1934,6 +1938,7 @@ func newLog() *cobra.Command {
 	c.Flags().BoolVar(&verify, "verify", false, "verify the audit log's hash chain and signatures instead of printing it")
 	c.Flags().BoolVar(&requireSigned, "require-signed", false, "with --verify, also fail if any chained event is unsigned")
 	c.Flags().StringVar(&anchor, "anchor", "", "with --verify, also require the log to extend this previously-emitted anchor token")
+	c.Flags().BoolVar(&remoteCheck, "remote", false, "with --verify, also require the log to extend its escrowed off-machine history (needs sync configured)")
 	return c
 }
 
@@ -1944,7 +1949,7 @@ func newLog() *cobra.Command {
 // fails unless the chain still extends that head — the defense against the store and the audit DB
 // being rolled back *together* to a consistent older state, which every in-DB check necessarily
 // misses (SEC-14).
-func verifyLog(a *audit.Log, requireSigned bool, anchor string) error {
+func verifyLog(a *audit.Log, requireSigned bool, anchor string, remoteCheck bool) error {
 	r, err := a.Verify()
 	if err != nil {
 		return err
@@ -1979,6 +1984,18 @@ func verifyLog(a *audit.Log, requireSigned bool, anchor string) error {
 		}
 		if err := a.CheckAnchor(n, h); err != nil {
 			return fmt.Errorf("audit log integrity FAILED: %w — the store and audit DB may have been rolled back together; treat every secret readable at the anchor time as potentially resurrected", err)
+		}
+	}
+	// The escrowed history is the same check with an off-machine witness: segments this
+	// machine pushed on past syncs are append-only on the backend, so a local log that
+	// no longer extends them was rewritten or truncated here (SEC-14, Option B).
+	if remoteCheck {
+		b, err := openBackend()
+		if err != nil {
+			return err
+		}
+		if err := verifyAgainstEscrow(context.Background(), a, b); err != nil {
+			return fmt.Errorf("audit log integrity FAILED: %w", err)
 		}
 	}
 	fmt.Fprintf(os.Stderr, "audit log OK: %d event(s) chained, %d signed", r.Checked, r.Signed)
