@@ -6,6 +6,17 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-07-09
+
+Security rebuild — no functional changes.
+
+### Security
+- **Rebuilt on Go 1.26.5 for GO-2026-5856** (`crypto/tls`, fixed in 1.26.5). The vulnerable code
+  is reachable in arca via `crypto.Decrypt → age.Decrypt → tls.Conn.Read` (age's plugin path),
+  and the v0.6.4 binaries were compiled against the affected 1.26.4 standard library. The
+  toolchain is now pinned in `go.mod` (`toolchain go1.26.5`), so CI and releases can no longer
+  silently build on a stale patch release; the nightly `govulncheck` run is what caught this.
+
 ## [0.6.4] - 2026-07-08
 
 Closes every remaining code finding from the 2026-07 security audit (the SEC-06 and SEC-14
@@ -389,7 +400,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/arenzana/arca/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/arenzana/arca/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/arenzana/arca/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/arenzana/arca/compare/v0.6.1...v0.6.2
