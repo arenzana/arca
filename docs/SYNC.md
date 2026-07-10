@@ -19,14 +19,48 @@ arca sync auto on    # opportunistic sync: push after writes, periodic pull
 Nothing. The uploaded envelope is the whole store wrapped in **one more age layer to
 the store's own recipients** — on top of the per-value encryption the store already
 has. Names, tags, descriptions, policy, even the JSON shape are invisible to the
-backend; it stores bytes and learns only size and timing. Any machine holding a
-recipient identity can open the envelope, which is exactly the multi-machine model:
+backend; it stores bytes and learns only size and timing. Only a machine holding one of
+the store's recipient identities can open the envelope — which is exactly the
+multi-machine model.
+
+## Adding a machine to the fleet
+
+Each machine has its **own** age identity (there is no shared key). The store is
+encrypted to every machine's recipient key, so joining a new machine is two moves — mint
+its key and add it as a recipient — before it can pull. (A store pulled from the backend
+that *adds* a recipient your local store doesn't have is refused, so a new machine can't
+simply "adopt" the fleet store; it has to be granted access from a machine already in it.)
 
 ```sh
-# on a new machine: identity file + backend URL is all it takes
-arca sync init "s3://my-bucket/arca?endpoint=…"
-arca sync        # bootstraps the local store from the remote
+# 1. On the NEW machine — install arca, generate its identity, note the recipient key,
+#    and drop the empty starter store so the first sync bootstraps cleanly.
+arca init                                  # prints:  recipients: age1newmachine…
+rm ~/.config/arca/store.json               # keep the identity, discard the fresh store
+
+# 2. On a machine ALREADY in the fleet — grant the new key and push.
+arca recipients add age1newmachine…
+arca reencrypt                             # re-wrap every secret to the new key too
+arca sync                                  # push the updated store
+
+# 3. Back on the NEW machine — point it at the backend and pull.
+arca sync init "s3://my-bucket/arca?endpoint=…" --store-credentials --auto
+arca sync                                  # bootstraps the local store from the remote
 ```
+
+Step 3's `--store-credentials` persists the backend keys next to the identity (0600) so
+automatic sync needs no shell environment; `--auto` turns on opportunistic sync. To pass
+credentials to a remote host without putting them on a command line, feed them over stdin:
+
+```sh
+printf '%s\n%s\n' "$ACCESS_KEY" "$SECRET_KEY" | ssh host \
+  'read -r ak; read -r sk; ARCA_SYNC_ACCESS_KEY=$ak ARCA_SYNC_SECRET_KEY=$sk \
+   arca sync init "s3://my-bucket/arca?endpoint=…" --store-credentials --auto'
+```
+
+Removing a machine is the reverse: `recipients rm age1…` + `reencrypt` on any fleet
+machine, then rotate any secrets that machine could have read (removing a recipient stops
+it decrypting *future* stores, not copies it already holds — see the `recipients rm`
+warning).
 
 ## Safety model
 

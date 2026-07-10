@@ -69,6 +69,7 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Capability handles** | `handle create` mints an opaque `hdl_…` token; over MCP an agent uses it (`run_with_handle`) without ever learning the secret's name or value, or being able to enumerate the store |
 | **References** | `arca://NAME` resolved at render time by `inject` — agents manipulate references, not secrets |
 | **Teams** | Encrypt each value to multiple age recipients; `recipients add/rm` + `reencrypt` re-wrap the whole store |
+| **Multi-machine sync** | Optional `sync` replicates the store through any **S3-compatible** backend (R2, MinIO, Garage, S3). The backend is **untrusted**: the store is age-encrypted end-to-end (it sees only ciphertext), lost updates are impossible (conditional-write CAS), and replay/rollback/recipient-broadening are refused on pull. `sync auto on` for opportunistic push/pull; the audit trail is escrowed off-machine too (`log --verify --remote`) |
 | **JSON output** | `--json` on `ls`/`show`/`log`/`stale` for agents and scripts |
 | **Completion** | `completion bash\|zsh\|fish` with dynamic secret-name + tag suggestions |
 | **Migration** | `import` a dotenv **or JSON** stream (audited); `set NAME < file` for blobs; `env` for shell `eval` |
@@ -151,6 +152,7 @@ The README is the overview; the detail lives in [`docs/`](docs/):
 - **[AI agents & MCP](docs/MCP.md)** — the MCP server, its tools, and the agent-safety model.
 - **[Importing & migrating](docs/IMPORTING.md)** — pipe from sops, `.env`, JSON, AWS, Vault, 1Password, …
 - **[Configuration & storage](docs/CONFIGURATION.md)** — `ARCA_*` env vars, paths, and the store schema.
+- **[Syncing between machines](docs/SYNC.md)** — optional S3-compatible replication, the untrusted-backend model, automatic sync, audit escrow, and the multi-machine setup walkthrough.
 - **[Architecture](docs/ARCHITECTURE.md)** · **[Threat model](docs/THREAT-MODEL.md)** — how it's built and what it defends against.
 
 ---
