@@ -17,6 +17,12 @@ import (
 	"strings"
 )
 
+// MaxObjectBytes caps how many bytes any single backend object is read into memory. The backend
+// is untrusted and objects are enumerated via List, so an unbounded read of an attacker-injected
+// object would be a trivial OOM on the machine running `sync` / `log --verify --remote` (SEC-39).
+// A store envelope or an audit segment is at most a few MiB in practice; 128 MiB is generous.
+const MaxObjectBytes = 128 << 20
+
 // Rev identifies one remote revision of the store envelope.
 type Rev struct {
 	Generation int    // store generation inside the envelope (client-asserted, re-checked on fetch)

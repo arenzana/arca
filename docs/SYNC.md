@@ -38,9 +38,17 @@ arca sync        # bootstraps the local store from the remote
 - **Conflicts are reported, never merged.** If both sides advanced, `arca sync`
   explains the divergence and stops. `arca sync --pull` adopts the remote (explicitly
   discarding local divergence); there is no auto-merge of a secrets store.
-- **Rollback detection extends to the network (SEC-14).** A remote head that went
-  *backwards* (a restored bucket, a tampering backend) is refused on sync. Immutable
-  `store/revs/<generation>.age` objects replace git history as the forensic trail.
+- **Rollback / replay / recipient-broadening are refused on pull.** The rollback floor is the
+  durable high-water mark, checked before the local store is touched; a backend serving an
+  envelope older than the head it advertises, or a store that *adds* a recipient not already
+  local, is refused (use `--force` to adopt a legitimately-broader store, e.g. a teammate's new
+  key). Immutable `store/revs/<generation>.age` objects are the forensic trail.
+- **The escrowed audit trail is truncation-checked.** `log --verify --remote` refuses if the
+  backend has fewer segments than this machine escrowed. **Caveat — authenticity:** age gives the
+  backend *confidentiality* (it sees only ciphertext), not *authentication*. A backend that both
+  knows the recipients and serves a strictly-newer forged store can still substitute content;
+  the complete defense is an operator signature over the store, planned. Treat the backend as
+  honest-but-curious today; the refusals above close the replay/rollback class.
 - **Offline is a normal state.** The local file remains the source of truth for every
   read and exec; sync never sits in an access path. Automatic mode runs strictly
   *after* a command's real work and any failure is a warning, never an error.

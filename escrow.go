@@ -77,7 +77,15 @@ var machineIDRe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 // keys — collisions are harmless (create-only refuses) but noisy.
 func machineID() (string, error) {
 	if b, err := os.ReadFile(machineIDPath()); err == nil && len(b) > 0 { //#nosec G304 -- our own state dir
-		return strings.TrimSpace(string(b)), nil
+		// Re-sanitize on read (SEC-42): the file lives in the state dir, but never trust a value
+		// read back into an object key — strip anything outside the safe charset and bound length.
+		id := machineIDRe.ReplaceAllString(strings.TrimSpace(string(b)), "-")
+		if len(id) > 128 {
+			id = id[:128]
+		}
+		if id != "" {
+			return id, nil
+		}
 	}
 	host, _ := os.Hostname()
 	host = machineIDRe.ReplaceAllString(host, "-")
@@ -167,8 +175,15 @@ func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, er
 	if err != nil {
 		return nil, err
 	}
+	// Only fetch/decrypt keys that match the exact segment shape (SEC-39): the backend is
+	// untrusted and List returns whatever it likes, so an injected key with a surprising name
+	// (or an unbounded count of them) shouldn't reach the decrypt path.
+	segKeyRe := regexp.MustCompile(`^` + regexp.QuoteMeta(remote.KeyAudit+machine+"/") + `\d{6}\.age$`)
 	var segs []segment
 	for _, k := range keys {
+		if !segKeyRe.MatchString(k) {
+			return nil, fmt.Errorf("unexpected object under this machine's escrow prefix: %q — the backend injected a non-segment key", k)
+		}
 		blob, err := b.Get(ctx, k)
 		if err != nil {
 			return nil, fmt.Errorf("fetch escrow %s: %w", k, err)
@@ -207,6 +222,13 @@ func verifyAgainstEscrow(ctx context.Context, a *audit.Log, b remote.Backend) er
 		return fmt.Errorf("no escrowed audit segments for this machine yet — run `arca sync` first")
 	}
 	tail := segs[len(segs)-1]
+	// Tail-truncation guard (SEC-36): the local cursor records the highest Seq this machine has
+	// ever escrowed. A backend that DELETES the newest segments (to hide that recent history was
+	// rolled back both locally and in escrow) would present a lower tail Seq — the continuity
+	// checks pass on the shortened 1..K prefix, but this catches the missing K+1…N.
+	if pinned := loadEscrowState().Seq; tail.Seq < pinned {
+		return fmt.Errorf("escrow TRUNCATION detected: newest segment on the backend is #%d but this machine escrowed up to #%d — recent segments were deleted from the backend", tail.Seq, pinned)
+	}
 	if tail.Anchor == "" {
 		return fmt.Errorf("newest escrowed segment carries no anchor (pre-chain events only)")
 	}

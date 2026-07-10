@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
 )
 
@@ -404,22 +405,31 @@ func TestSyncForceOverridesRemoteRollback(t *testing.T) {
 	}
 }
 
-// TestPullTrustsEnvelopeOverMetadata: backend metadata is untrusted; the decrypted
-// envelope's own generation wins, with a warning.
-func TestPullTrustsEnvelopeOverMetadata(t *testing.T) {
+// TestPullRefusesHeadAheadOfEnvelope (SEC-38): a backend that advertises a HIGHER head
+// generation than the envelope it actually serves is replaying/downgrading — the pull is
+// refused as tamper rather than silently adopting the older payload. --force overrides.
+func TestPullRefusesHeadAheadOfEnvelope(t *testing.T) {
 	dir := sandbox(t)
 	fake := withFakeBackend(t)
 	runArca(t, "", "init")
 	runArca(t, "v1", "set", "A")
 	runArca(t, "", "sync")
 	env, _, _ := fake.Fetch(context.Background())
-	fake.Corrupt(env, 999) // same honest envelope, lying generation tag
+	fake.Corrupt(env, 999) // honest envelope (gen 2), lying metadata tag (gen 999)
 	switchMachine(t, dir)
-	runArca(t, "", "sync") // bootstrap pull: must adopt envelope's true generation
-	s, _, err := localStoreForSync()
-	if err != nil || s == nil || s.Generation >= 999 {
-		t.Fatalf("pulled generation = %+v err %v (metadata was trusted)", s, err)
+	err := runArcaErr("", "sync") // bootstrap pull must refuse the mismatch
+	if err == nil || !strings.Contains(err.Error(), "TAMPER") {
+		t.Fatalf("head-ahead-of-envelope should be refused, got: %v", err)
 	}
+	// A benign metadata LAG (envelope newer than the claimed head) is only a warning, adopted.
+	env2, _, _ := fake.Fetch(context.Background())
+	fake.Corrupt(env2, 1) // metadata gen 1 < envelope gen 2 — lag, not tamper
+	runArca(t, "", "sync")
+	s, _, err := localStoreForSync()
+	if err != nil || s == nil || s.Generation != 2 {
+		t.Fatalf("benign metadata lag should adopt the envelope: %+v err %v", s, err)
+	}
+	_ = dir
 }
 
 // TestSyncStateConfigErrorPaths: state/config writers fail cleanly when the state dir
@@ -566,4 +576,260 @@ func TestResolveSyncCredentials(t *testing.T) {
 	if a, s := resolveSyncCredentials(syncConfig{}); a != "env-ak" || s != "" {
 		t.Fatalf("nothing stored, partial env = %q/%q", a, s)
 	}
+}
+
+// TestPullRefusesRecipientBroadening (SEC-35): a pulled store that ADDS a recipient not in
+// the local set is refused without --force — the recipient-resurrection / injection defense.
+// Two machines share the identity; A adds a recipient and pushes, B (which never saw it) must
+// refuse the broadening on its fast-forward pull.
+func TestPullRefusesRecipientBroadening(t *testing.T) {
+	dir := sandbox(t)
+	withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync") // A pushes the single-recipient store
+
+	aStore, aAudit, aState := os.Getenv("ARCA_STORE"), os.Getenv("ARCA_AUDIT"), os.Getenv("XDG_STATE_HOME")
+	switchMachine(t, dir)
+	runArca(t, "", "sync") // B bootstraps: recipients == [self]
+
+	// A adds an attacker key and pushes the broader store at a higher generation.
+	t.Setenv("ARCA_STORE", aStore)
+	t.Setenv("ARCA_AUDIT", aAudit)
+	t.Setenv("XDG_STATE_HOME", aState)
+	_, evilRec, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "recipients", "add", evilRec)
+	runArca(t, "", "reencrypt")
+	runArca(t, "", "sync")
+
+	// B fast-forward-pulls the broader store — the added recipient must be refused.
+	switchMachine(t, dir)
+	err = runArcaErr("", "sync")
+	if err == nil || !strings.Contains(err.Error(), "ADD") {
+		t.Fatalf("recipient-broadening pull should be refused, got: %v", err)
+	}
+	// --force adopts it deliberately.
+	runArca(t, "", "sync", "--force")
+}
+
+// TestPullDurableFloorRefusesRollback (SEC-35): the rollback floor is the durable high-water
+// mark, so a replayed OLD envelope is refused even after the sync cursor is wiped.
+func TestPullDurableFloorRefusesRollback(t *testing.T) {
+	dir := sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	old, oldRev, _ := fake.Fetch(context.Background())
+	runArca(t, "v2", "rotate", "A")
+	runArca(t, "", "sync") // now at a higher generation; HWM advanced
+
+	// Wipe the sync cursor (the resettable file the OLD code trusted); the durable store.gen
+	// high-water mark still remembers the newer generation. Local is ahead of the wiped cursor,
+	// so the explicit `--pull` resolution routes to the pull path where the floor is enforced.
+	if err := os.Remove(syncStatePath()); err != nil {
+		t.Fatal(err)
+	}
+	fake.Corrupt(old, oldRev.Generation) // backend replays the old envelope (generation 2)
+
+	err := runArcaErr("", "sync", "--pull")
+	if err == nil || !strings.Contains(err.Error(), "ROLLBACK") {
+		t.Fatalf("replayed old envelope should be refused by the durable floor, got: %v", err)
+	}
+	_ = dir
+}
+
+// TestSyncConfigAtomicMode (SEC-37): saveSyncConfig writes 0600 atomically even when the
+// file already exists with a looser mode (the reachable "init URL then add credentials" path).
+func TestSyncConfigAtomicMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix perm bits")
+	}
+	sandbox(t)
+	runArca(t, "", "sync", "init", "s3://b/x?endpoint=h:1&insecure=1") // URL only
+	// Loosen the mode as a hostile/careless restore might.
+	if err := os.Chmod(syncConfigPath(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "AKIA")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "shh")
+	runArca(t, "", "sync", "init", "s3://b/x?endpoint=h:1&insecure=1", "--store-credentials")
+	fi, err := os.Stat(syncConfigPath())
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("credential rewrite did not re-tighten to 0600: mode=%v err=%v", fi.Mode(), err)
+	}
+}
+
+// TestAddedRecipients pins the recipient-diff helper directly.
+func TestAddedRecipients(t *testing.T) {
+	if got := addedRecipients([]string{"a", "b"}, []string{"a", "b"}); len(got) != 0 {
+		t.Fatalf("no change should add nothing, got %v", got)
+	}
+	if got := addedRecipients([]string{"a", "b"}, []string{"a"}); len(got) != 0 {
+		t.Fatalf("narrowing should add nothing, got %v", got)
+	}
+	if got := addedRecipients([]string{"a"}, []string{"a", "c"}); len(got) != 1 || got[0] != "c" {
+		t.Fatalf("broadening should report the added key, got %v", got)
+	}
+}
+
+// TestPullRecipientNarrowingAllowed: removing a recipient on pull is fine (not a broadening).
+func TestPullRecipientNarrowingAllowed(t *testing.T) {
+	dir := sandbox(t)
+	withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	_, rec, err := crypto.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "recipients", "add", rec)
+	runArca(t, "", "reencrypt")
+	runArca(t, "", "sync") // broad store pushed
+
+	aStore, aAudit, aState := os.Getenv("ARCA_STORE"), os.Getenv("ARCA_AUDIT"), os.Getenv("XDG_STATE_HOME")
+	switchMachine(t, dir)
+	runArca(t, "", "sync") // B bootstraps with both recipients
+
+	// A narrows back to one recipient and pushes.
+	t.Setenv("ARCA_STORE", aStore)
+	t.Setenv("ARCA_AUDIT", aAudit)
+	t.Setenv("XDG_STATE_HOME", aState)
+	runArca(t, "", "recipients", "rm", rec)
+	runArca(t, "", "reencrypt")
+	runArca(t, "", "sync")
+
+	// B fast-forward-pulls the narrowed store — allowed, no --force needed.
+	switchMachine(t, dir)
+	runArca(t, "", "sync")
+	if out := runArca(t, "", "get", "A"); out != "v1" {
+		t.Fatalf("narrowed pull should succeed: get A = %q", out)
+	}
+}
+
+// TestOpenEnvelopeValidationBranches exercises the three minimum-validity refusals directly.
+func TestOpenEnvelopeValidationBranches(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	s, _, err := localStoreForSync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := s.Recipients
+	for _, tc := range []struct{ name, body string }{
+		{"no recipients", `{"version":1,"generation":2,"recipients":[],"secrets":{}}`},
+		{"zero generation", `{"version":1,"generation":0,"recipients":["age1x"],"secrets":{}}`},
+	} {
+		env, err := sealEnvelope([]byte(tc.body), rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := openEnvelope(env); err == nil {
+			t.Fatalf("%s should be refused", tc.name)
+		}
+	}
+	// A valid minimal store passes.
+	env, _ := sealEnvelope([]byte(`{"version":1,"generation":3,"recipients":["age1x"],"secrets":{}}`), rec)
+	if _, got, err := openEnvelope(env); err != nil || got.Generation != 3 {
+		t.Fatalf("valid store should open: %+v err %v", got, err)
+	}
+}
+
+// TestWriteLocalStoreAndErrors covers writeLocalStore's happy path and localStoreForSync's
+// missing-store path (returns nil, nil, nil to allow bootstrap).
+func TestWriteLocalStoreAndErrors(t *testing.T) {
+	sandbox(t)
+	// No store yet: localStoreForSync reports "nothing local" without error.
+	s, raw, err := localStoreForSync()
+	if err != nil || s != nil || raw != nil {
+		t.Fatalf("missing store should be (nil,nil,nil), got %v %v %v", s, raw, err)
+	}
+	if err := writeLocalStore([]byte(`{"version":1,"generation":1,"recipients":["age1x"],"secrets":{}}`)); err != nil {
+		t.Fatalf("writeLocalStore: %v", err)
+	}
+	fi, err := os.Stat(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("written store mode = %v, want 0600", fi.Mode())
+	}
+}
+
+// TestPushStoreCASReconcileHint: a CAS mismatch surfaces with the reconcile hint.
+func TestPushStoreCASReconcileHint(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	// Another writer advances the head; our stale-prev push must mismatch with a hint.
+	head, _ := fake.Head(context.Background())
+	if _, err := fake.Push(context.Background(), []byte("other"), head.Generation+1, head); err != nil {
+		t.Fatal(err)
+	}
+	s, raw, _ := localStoreForSync()
+	s.Generation += 3
+	err := pushStore(context.Background(), fake, s, raw, head, loadSyncState())
+	if err == nil || !strings.Contains(err.Error(), "reconcile") {
+		t.Fatalf("stale push should hint reconcile, got: %v", err)
+	}
+}
+
+// TestRunSyncDecisionTableErrors covers the reconcile guard branches that return errors.
+func TestRunSyncDecisionTableErrors(t *testing.T) {
+	dir := sandbox(t)
+	fake := withFakeBackend(t)
+
+	// Neither side present.
+	if err := runArcaErr("", "sync"); err == nil {
+		t.Fatal("no local + empty remote should error")
+	}
+	// --pull against an empty remote.
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	if err := runArcaErr("", "sync", "--pull"); err == nil {
+		t.Fatal("--pull against empty remote should error")
+	}
+	runArca(t, "", "sync") // bootstrap push
+	// Remote ahead + --push refuses.
+	head, _ := fake.Head(context.Background())
+	if _, err := fake.Push(context.Background(), []byte("x"), head.Generation+1, head); err != nil {
+		t.Fatal(err)
+	}
+	if err := runArcaErr("", "sync", "--push"); err == nil || !strings.Contains(err.Error(), "ahead") {
+		t.Fatalf("--push with remote ahead = %v", err)
+	}
+	// Fresh machine + --push has nothing to push.
+	switchMachine(t, dir)
+	if err := runArcaErr("", "sync", "--push"); err == nil || !strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("--push on fresh machine = %v", err)
+	}
+}
+
+// TestEscrowBestEffortWarns: escrowBestEffort never returns an error; a broken recipient set
+// warns and the sync path is unaffected.
+func TestEscrowBestEffortWarns(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	escrowBestEffort(context.Background(), fake, []string{"not-a-valid-recipient"})
+	if keys, _ := fake.List(context.Background(), remote.KeyAudit); len(keys) != 0 {
+		t.Fatalf("broken escrow should have shipped nothing, got %v", keys)
+	}
+}
+
+// TestSyncStatusBranches covers sync status against an empty and a populated remote.
+func TestSyncStatusBranches(t *testing.T) {
+	sandbox(t)
+	withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "", "sync", "status") // empty remote branch
+	runArca(t, "v", "set", "A")
+	runArca(t, "", "sync")
+	runArca(t, "", "sync", "status") // synced branch
 }

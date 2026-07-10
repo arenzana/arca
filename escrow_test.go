@@ -184,3 +184,45 @@ func TestEscrowErrorPaths(t *testing.T) {
 		t.Fatal("escrowAudit should fail when the audit DB can't open")
 	}
 }
+
+// TestEscrowTailTruncationDetected (SEC-36): a backend that deletes the newest escrow
+// segments to hide a rollback is caught by the locally-pinned high-water Seq.
+func TestEscrowTailTruncationDetected(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	runArca(t, "v2", "rotate", "A")
+	runArca(t, "", "sync") // now 2 escrow segments; escrow-state.Seq == 2
+
+	runArca(t, "", "log", "--verify", "--remote") // honest: passes
+
+	// Backend deletes the newest segment (append-only violated).
+	keys, _ := fake.List(context.Background(), remote.KeyAudit)
+	fake.Delete(keys[len(keys)-1])
+	err := runArcaErr("", "log", "--verify", "--remote")
+	if err == nil || !strings.Contains(err.Error(), "TRUNCATION") {
+		t.Fatalf("escrow tail truncation should be detected, got: %v", err)
+	}
+}
+
+// TestEscrowRejectsInjectedKey (SEC-39): a non-segment object injected under this machine's
+// escrow prefix is refused before it is ever fetched/decrypted.
+func TestEscrowRejectsInjectedKey(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	m, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.PutIfAbsent(context.Background(), remote.KeyAudit+m+"/evil.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetchEscrowedSegments(context.Background(), fake); err == nil || !strings.Contains(err.Error(), "non-segment") {
+		t.Fatalf("injected non-segment key should be refused, got: %v", err)
+	}
+}
