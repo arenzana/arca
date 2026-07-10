@@ -36,6 +36,28 @@ archives:
       - goos: windows
         formats: [zip]
 
+# Linux packages (.rpm for RHEL/Rocky/Fedora, .deb for Debian/Ubuntu), published as plain
+# release assets — no hosted repo. They are listed in checksums.txt, so the cosign bundle
+# over the checksums covers them like every other artifact. Install with
+# `dnf install ./arca_*.rpm` / `dpkg -i arca_*.deb`.
+nfpms:
+  - id: packages
+    package_name: arca
+    formats: [rpm, deb]
+    vendor: Ismael Arenzana
+    homepage: https://github.com/arenzana/arca
+    maintainer: Ismael Arenzana <isma@arenzana.org>
+    description: age-encrypted, file-based secrets manager built to sit safely in front of AI agents
+    license: MIT
+    bindir: /usr/bin
+    # Same reproducibility discipline as the archives: pin content mtimes to the commit.
+    mtime: '{{ .CommitDate }}'
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/arca/LICENSE
+      - src: README.md
+        dst: /usr/share/doc/arca/README.md
+
 checksum:
   name_template: 'checksums.txt'
   algorithm: sha256

@@ -6,6 +6,12 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`.rpm` and `.deb` packages as release assets** (linux amd64/arm64), built by nfpm inside the
+  same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
+  the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
+  a hosted dnf/apt repo remains a possible follow-up.
+
 ## [0.7.0] - 2026-07-09
 
 `arca sync`: first-class multi-machine replication through an untrusted S3-compatible
