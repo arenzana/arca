@@ -435,7 +435,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/arenzana/arca/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/arenzana/arca/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/arenzana/arca/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/arenzana/arca/compare/v0.6.3...v0.6.4

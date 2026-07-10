@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -100,10 +101,27 @@ func saveSyncConfig(c syncConfig) error {
 	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(syncConfigPath(), b, 0o600); err != nil {
+	// Atomic + mode-enforced write (SEC-37): sync.json can hold cleartext backend credentials, so
+	// it must never be left half-written by a crash, and the 0600 must be guaranteed even when the
+	// file already exists with a looser mode (a plain WriteFile only chmods on create). CreateTemp
+	// makes a fresh 0600 file; the rename is atomic. Matches saveSyncState / saveEscrowState.
+	tmp, err := os.CreateTemp(stateDir(), "sync-config-*")
+	if err != nil {
 		return err
 	}
-	return nil
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), syncConfigPath())
 }
 
 // syncURL resolves the backend URL: ARCA_SYNC_URL first, then the state-dir sync.json.
@@ -219,6 +237,10 @@ func openEnvelope(envelope []byte) ([]byte, *store.Store, error) {
 		return nil, nil, err
 	}
 	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil { // explicit, not just CreateTemp's default (SEC-40)
+		tmp.Close()
+		return nil, nil, err
+	}
 	if _, err := tmp.Write(plain); err != nil {
 		tmp.Close()
 		return nil, nil, err
@@ -447,7 +469,7 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pushOnly {
 			return errors.New("--push requested but there is no local store (run `arca sync --pull` to bootstrap)")
 		}
-		return pullStore(ctx, b, st)
+		return pullStore(ctx, b, st, nil, force)
 	}
 
 	L, S, R := s.Generation, st.LastGeneration, head.Generation
@@ -459,7 +481,7 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pushOnly {
 			return fmt.Errorf("local store looks rolled back (generation %d < last synced %d) — refusing to push it; `arca sync --pull` restores the newest synced state", L, S)
 		}
-		return pullStore(ctx, b, st)
+		return pullStore(ctx, b, st, s, force)
 	}
 
 	switch {
@@ -471,7 +493,7 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pushOnly {
 			return fmt.Errorf("remote is ahead (generation %d > %d) and --push was requested; run without --push to pull first", R, L)
 		}
-		return pullStore(ctx, b, st)
+		return pullStore(ctx, b, st, s, force)
 	case L > S && (R == S || force):
 		if pullOnly {
 			return fmt.Errorf("local has unpushed changes (generation %d > last synced %d) and --pull was requested; run without --pull to push", L, S)
@@ -481,7 +503,7 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pullOnly {
 			// The operator explicitly chose the documented resolution: adopt the
 			// remote and discard local divergence.
-			return pullStore(ctx, b, st)
+			return pullStore(ctx, b, st, s, force)
 		}
 		return fmt.Errorf("sync CONFLICT: both sides advanced since the last sync (local generation %d, remote %d, last synced %d). No auto-merge for a secrets store: pull with `arca sync --pull` (discards local divergence) or re-apply the remote's changes locally and push", L, R, S)
 	}
@@ -510,7 +532,17 @@ func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte
 	return nil
 }
 
-func pullStore(ctx context.Context, b remote.Backend, st syncState) error {
+// pullStore adopts the remote store. Because the backend is untrusted and age gives
+// confidentiality but not writer-authentication, everything an attacker-controlled backend can
+// do — replay an old envelope, serve one at an unexpected generation, broaden the recipient set —
+// is refused HERE, before the local store is touched (SEC-35). `local` is the current local store
+// (nil when bootstrapping this machine); `force` overrides the refusals for a deliberate adopt.
+//
+// This is defense-in-depth, not authentication: a backend that both knows the (non-secret)
+// recipient keys AND serves a strictly-newer forged envelope can still substitute content. The
+// complete fix is an operator signature over the store (tracked separately). What this closes is
+// the whole replay/rollback/recipient-resurrection class against an established machine.
+func pullStore(ctx context.Context, b remote.Backend, st syncState, local *store.Store, force bool) error {
 	env, rev, err := b.Fetch(ctx)
 	if err != nil {
 		return err
@@ -519,15 +551,40 @@ func pullStore(ctx context.Context, b remote.Backend, st syncState) error {
 	if err != nil {
 		return err
 	}
-	// The envelope's own generation is authoritative over the backend's metadata tag —
-	// the backend is untrusted; the payload is what we verified.
+	// The envelope's own generation is authoritative over the backend's metadata tag. A backend
+	// that claims a HIGHER head generation than the envelope it actually serves is replaying/
+	// downgrading — refuse rather than silently trust the older payload (was: warn-and-adopt).
+	if rs.Generation < rev.Generation && !force {
+		return fmt.Errorf("remote TAMPER detected on pull: backend advertised head generation %d but served an envelope at generation %d — a replayed or rolled-back store; investigate, or --force to adopt it anyway", rev.Generation, rs.Generation)
+	}
 	if rs.Generation != rev.Generation {
 		fmt.Fprintf(os.Stderr, "arca: warning: backend metadata says generation %d but the envelope holds %d; trusting the envelope\n", rev.Generation, rs.Generation)
-		rev.Generation = rs.Generation
 	}
-	if rev.Generation < st.LastGeneration {
-		return fmt.Errorf("remote ROLLBACK detected on pull: envelope generation %d < last synced %d — refusing to adopt it", rev.Generation, st.LastGeneration)
+	rev.Generation = rs.Generation
+
+	// Rollback floor is the DURABLE high-water mark — the newest generation this machine has ever
+	// observed (SEC-14 `store.gen`) plus the last-synced cursor plus the current local store — not
+	// the resettable sync cursor alone. Checked BEFORE any write, and a hard refusal, not a warning.
+	floor := st.LastGeneration
+	if h := storeGenHWM(); h > floor {
+		floor = h
 	}
+	if local != nil && local.Generation > floor {
+		floor = local.Generation
+	}
+	if rs.Generation < floor && !force {
+		return fmt.Errorf("remote ROLLBACK detected on pull: envelope generation %d is behind this machine's high-water mark %d — an older store copy is being served; investigate, or --force to adopt it", rs.Generation, floor)
+	}
+
+	// Refuse a SILENT broadening of read access: a pulled store that ADDS recipients (e.g. a
+	// replayed pre-removal copy resurrecting a cut key, or a forged one injecting the attacker)
+	// must be an explicit operator choice. Narrowing/unchanged sets pull freely.
+	if local != nil && !force {
+		if added := addedRecipients(local.Recipients, rs.Recipients); len(added) > 0 {
+			return fmt.Errorf("pull would ADD %d recipient(s) not in the local store (%s) — refusing to broaden read access from an untrusted backend; if this is intended (a teammate's new key), re-run with --force", len(added), strings.Join(added, ", "))
+		}
+	}
+
 	if err := writeLocalStore(payload); err != nil {
 		return err
 	}
@@ -542,6 +599,21 @@ func pullStore(ctx context.Context, b remote.Backend, st syncState) error {
 	fmt.Fprintf(os.Stderr, "pulled generation %d\n", rev.Generation)
 	escrowBestEffort(ctx, b, rs.Recipients)
 	return nil
+}
+
+// addedRecipients returns the recipients present in next but not in prev.
+func addedRecipients(prev, next []string) []string {
+	have := make(map[string]bool, len(prev))
+	for _, r := range prev {
+		have[r] = true
+	}
+	var added []string
+	for _, r := range next {
+		if !have[r] {
+			added = append(added, r)
+		}
+	}
+	return added
 }
 
 // escrowBestEffort ships new audit events off-machine after a successful sync (SEC-14

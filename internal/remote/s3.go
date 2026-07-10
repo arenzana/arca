@@ -86,19 +86,33 @@ func (s *S3) Head(ctx context.Context) (Rev, error) {
 func (s *S3) Fetch(ctx context.Context) ([]byte, Rev, error) {
 	obj, err := s.client.GetObject(ctx, s.cfg.Bucket, s.cfg.key(keyCurrent), minio.GetObjectOptions{})
 	if err != nil {
+		if isNoSuchKey(err) {
+			return nil, Rev{}, ErrNotFound
+		}
 		return nil, Rev{}, fmt.Errorf("sync fetch: %w", err)
 	}
 	defer obj.Close()
-	b, err := io.ReadAll(obj)
+	// Stat first: minio's GetObject is lazy, so a missing object typically surfaces here — map it
+	// to ErrNotFound uniformly (SEC-41) — and it gives the size for the read bound (SEC-39).
+	st, err := obj.Stat()
 	if err != nil {
 		if isNoSuchKey(err) {
 			return nil, Rev{}, ErrNotFound
 		}
 		return nil, Rev{}, fmt.Errorf("sync fetch: %w", err)
 	}
-	st, err := obj.Stat()
+	if st.Size > MaxObjectBytes {
+		return nil, Rev{}, fmt.Errorf("sync fetch: remote object is %d bytes, exceeding the %d-byte limit", st.Size, int64(MaxObjectBytes))
+	}
+	b, err := io.ReadAll(io.LimitReader(obj, MaxObjectBytes+1))
 	if err != nil {
+		if isNoSuchKey(err) {
+			return nil, Rev{}, ErrNotFound
+		}
 		return nil, Rev{}, fmt.Errorf("sync fetch: %w", err)
+	}
+	if int64(len(b)) > MaxObjectBytes {
+		return nil, Rev{}, fmt.Errorf("sync fetch: remote object exceeds the %d-byte limit", int64(MaxObjectBytes))
 	}
 	gen, _ := strconv.Atoi(st.UserMetadata["Arca-Generation"])
 	return b, Rev{Generation: gen, Tag: st.ETag}, nil
@@ -134,6 +148,14 @@ func (s *S3) Push(ctx context.Context, envelope []byte, gen int, prev Rev) (Rev,
 		}
 		return Rev{}, fmt.Errorf("sync push: %w", err)
 	}
+	// Read-after-write CAS confirmation (SEC-38): a backend that silently IGNORES conditional
+	// headers returns 200 instead of 412, so the PutObject above would "succeed" even when we
+	// lost the race. Re-Head and confirm the head now carries the ETag we just wrote; a mismatch
+	// means either a concurrent writer landed between our PUT and this HEAD (a real conflict) or
+	// the backend doesn't honor conditional writes (unsafe backend) — either way, not a clean win.
+	if got, herr := s.Head(ctx); herr == nil && got.Tag != info.ETag {
+		return Rev{}, fmt.Errorf("%w: the backend did not preserve our conditional write (head is %q, expected %q) — it may not honor If-Match/If-None-Match; sync CAS safety is not guaranteed against it", ErrCASMismatch, got.Tag, info.ETag)
+	}
 	return Rev{Generation: gen, Tag: info.ETag}, nil
 }
 
@@ -156,12 +178,15 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	defer obj.Close()
-	b, err := io.ReadAll(obj)
+	b, err := io.ReadAll(io.LimitReader(obj, MaxObjectBytes+1)) // bound attacker-controlled objects (SEC-39)
 	if err != nil {
 		if isNoSuchKey(err) {
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	if int64(len(b)) > MaxObjectBytes {
+		return nil, fmt.Errorf("remote object %s exceeds the %d-byte limit", key, int64(MaxObjectBytes))
 	}
 	return b, nil
 }

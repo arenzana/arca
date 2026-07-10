@@ -259,6 +259,17 @@ var loadedGeneration = -1
 // storeGenPath is the local high-water mark of the store generation (state dir, never synced).
 func storeGenPath() string { return filepath.Join(stateDir(), "store.gen") }
 
+// storeGenHWM reads the local high-water mark without advancing it (0 if unset). Used as a
+// durable rollback floor on pull (SEC-35): the newest store generation this machine has ever
+// observed, which a network attacker cannot lower without also controlling the local state dir.
+func storeGenHWM() int {
+	if b, err := os.ReadFile(storeGenPath()); err == nil { //#nosec G304 -- our own state-dir path
+		n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		return n
+	}
+	return 0
+}
+
 func warnIfStoreRolledBack(gen int) {
 	if regressed, prev := recordStoreGeneration(gen); regressed {
 		fmt.Fprintf(os.Stderr, "arca: warning: the store looks rolled back (generation %d < last seen %d) — a rotated or deleted secret may have been resurrected; check the store's git history\n", gen, prev)
