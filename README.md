@@ -91,6 +91,16 @@ scoop bucket add arenzana https://github.com/arenzana/scoop-bucket
 scoop install arca
 ```
 
+**RPM / DEB** (RHEL/Rocky/Fedora, Debian/Ubuntu) — download from the
+[latest release](https://github.com/arenzana/arca/releases/latest) and:
+
+```sh
+sudo dnf install ./arca_<version>_linux_<arch>.rpm    # or: sudo dpkg -i arca_….deb
+```
+
+Packages are listed in `checksums.txt`, so the release's cosign bundle covers them
+(see [SECURITY.md](SECURITY.md)).
+
 **`go install`:**
 
 ```sh
