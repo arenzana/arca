@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -225,4 +226,31 @@ func TestEscrowRejectsInjectedKey(t *testing.T) {
 	if _, err := fetchEscrowedSegments(context.Background(), fake); err == nil || !strings.Contains(err.Error(), "non-segment") {
 		t.Fatalf("injected non-segment key should be refused, got: %v", err)
 	}
+}
+
+// TestFetchEscrowAcceptsLargeSeq (SEC-43): the segment-key validation regex must accept keys the
+// writer actually produces — %06d is a minimum width, so a Seq past 999999 has 7+ digits and must
+// still validate, or verifyAgainstEscrow would reject arca's own segment forever.
+func TestFetchEscrowAcceptsLargeSeq(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	m, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A well-formed 7-digit segment key (Seq 1000000) must pass the shape check, not be rejected
+	// as "injected". We only need the key to be accepted for fetch; a decrypt failure past that
+	// point is fine — the point is the regex doesn't reject a legitimately-large sequence key.
+	key := m + "-check" // isolate: use a fresh machine prefix that has no real segments
+	_ = key
+	// Directly assert the regex the reader builds accepts 6- and 7-digit keys.
+	re := escrowKeyRegexp(m)
+	for _, seq := range []int{1, 999999, 1000000, 12345678} {
+		k := fmt.Sprintf("%s%s/%06d.age", remote.KeyAudit, m, seq)
+		if !re.MatchString(k) {
+			t.Fatalf("seq %d: writer key %q rejected by the reader regex", seq, k)
+		}
+	}
+	_ = fake
 }

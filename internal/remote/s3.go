@@ -175,6 +175,9 @@ func (s *S3) PutIfAbsent(ctx context.Context, key string, data []byte) error {
 func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
 	obj, err := s.client.GetObject(ctx, s.cfg.Bucket, s.cfg.key(key), minio.GetObjectOptions{})
 	if err != nil {
+		if isNoSuchKey(err) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	defer obj.Close()

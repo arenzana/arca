@@ -150,7 +150,7 @@ func applyMigrations(s *Store, target int, migs map[int]migration) error {
 // Save writes the store atomically and with restrictive permissions:
 //   - serialize to a temp file in the same directory (so rename is atomic on the same fs),
 //   - chmod 0600 before writing any bytes,
-//   - fsync-free rename over the destination.
+//   - fsync the temp file, then rename over the destination.
 //
 // The temp file is removed on any early-return error path via the deferred Remove.
 func (s *Store) Save() error {

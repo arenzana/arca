@@ -158,6 +158,13 @@ func escrowAudit(ctx context.Context, b remote.Backend, recipients []string) err
 	return saveEscrowState(escrowState{LastID: last, Seq: seg.Seq, PrevAnchor: anchor})
 }
 
+// escrowKeyRegexp matches exactly the segment keys the writer produces for this machine:
+// audit/<machine>/<seq>.age. \d{6,} (not \d{6}) because %06d is a minimum width — a Seq past
+// 999999 has 7+ digits and must still validate (SEC-43).
+func escrowKeyRegexp(machine string) *regexp.Regexp {
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(remote.KeyAudit+machine+"/") + `\d{6,}\.age$`)
+}
+
 // fetchEscrowedSegments pulls and decrypts this machine's segments, oldest first, and
 // checks their continuity (each segment's prev_anchor must equal its predecessor's
 // anchor). Returns the parsed segments.
@@ -178,7 +185,7 @@ func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, er
 	// Only fetch/decrypt keys that match the exact segment shape (SEC-39): the backend is
 	// untrusted and List returns whatever it likes, so an injected key with a surprising name
 	// (or an unbounded count of them) shouldn't reach the decrypt path.
-	segKeyRe := regexp.MustCompile(`^` + regexp.QuoteMeta(remote.KeyAudit+machine+"/") + `\d{6}\.age$`)
+	segKeyRe := escrowKeyRegexp(machine)
 	var segs []segment
 	for _, k := range keys {
 		if !segKeyRe.MatchString(k) {
