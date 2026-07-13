@@ -43,6 +43,7 @@ type Secret struct {
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
 	Canary          bool              `json:"canary,omitempty"`           // DEPRECATED (pre-0.6.2): decoy flag. Read for back-compat but no longer written — the designation now lives in the local canary registry, out of the synced store (SEC-04).
 	RequireGrant    bool              `json:"require_grant,omitempty"`    // usable only via exec/MCP with a matching active grant
+	AgentExposed    bool              `json:"agent_exposed,omitempty"`    // opt-in: visible/usable to AI agents via the MCP server when it runs in --strict (deny-by-default) mode
 	RateLimit       int               `json:"rate_limit,omitempty"`       // max uses per RateWindow (0 = unlimited)
 	RateWindow      string            `json:"rate_window,omitempty"`      // the window for RateLimit (e.g. "1h"); empty defaults to 1h
 	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
