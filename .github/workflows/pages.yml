@@ -37,7 +37,7 @@ jobs:
       - name: htmlhint
         run: npx --yes htmlhint@1.1.4 "docs/**/*.html"
       - name: link check (local assets)
-        uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
         with:
           # --offline verifies relative links/assets exist without flaky network checks.
           args: --offline --verbose docs/*.html
