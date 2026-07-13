@@ -42,8 +42,27 @@ The intended flow is *use, don't reveal*: an agent calls `run_with_secrets` (or 
 so a command can use a secret, reserving `read_secret` for when the value genuinely must enter the
 model context.
 
-Register it with Claude Code:
+## Deny-by-default agent exposure (`--strict`)
+
+By default the MCP tools operate over **every** secret in the store — a wide default. Run the server
+in strict mode to flip that to an explicit allow-list, so an agent only sees and uses secrets you
+have opted in:
 
 ```sh
-claude mcp add arca -- arca mcp
+arca agent allow DEPLOY_TOKEN        # expose just what the agent needs
+arca agent allow GITHUB_TOKEN
+arca agent ls                        # review the allow-list
+arca mcp --strict                    # or set ARCA_AGENT_STRICT=1
+```
+
+Under `--strict`, `list_secrets` hides anything not allowed, and `show_secret`/`read_secret`/
+`run_with_secrets` **refuse** it with a pointer to `arca agent allow NAME`. Revoke with
+`arca agent deny NAME`. Without `--strict` the server stays backwards-compatible but prints a loud
+warning on startup that every secret is reachable — a future major release makes strict the default.
+`arca doctor` also flags a store whose MCP exposure isn't scoped.
+
+Register it with Claude Code (add `--strict` once you've built your allow-list):
+
+```sh
+claude mcp add arca -- arca mcp --strict
 ```

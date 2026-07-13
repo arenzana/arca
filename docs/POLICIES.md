@@ -20,6 +20,25 @@ arca get PROD_DB_PASSWORD          # refused
 arca exec --only PROD_DB_PASSWORD -- psql   # allowed (value in the child's env)
 ```
 
+## `agent allow` (deny-by-default agent exposure)
+
+A per-secret opt-in (`agent_exposed`) that controls whether an agent sees a secret at all. When the
+MCP server runs with `--strict` (or `ARCA_AGENT_STRICT=1`), only allow-listed secrets are visible or
+usable to an agent; everything else is hidden from `list_secrets` and refused by
+`show`/`read`/`run_with_secrets`. This is a coarse *reachability* gate that sits in front of the
+finer policies above (`--no-print`, `--require-approval`, grants): a secret an agent can't reach is
+never subject to them in the first place.
+
+```sh
+arca agent allow DEPLOY_TOKEN      # opt this secret in
+arca agent ls                      # review the allow-list
+arca mcp --strict                  # agents now see only allow-listed secrets
+arca agent deny DEPLOY_TOKEN       # revoke
+```
+
+Without `--strict` every secret is exposed (the server warns loudly on startup); `arca doctor` flags
+a store whose exposure isn't scoped. See [AI agents & the MCP server](MCP.md).
+
 ## `--require-approval` (human gate)
 
 A human must confirm each release **on the controlling terminal** — every time. There is no

@@ -58,9 +58,9 @@ func (s *Secret) Expired(now time.Time) bool {
 
 // Store is the whole document. path is where it loads from / saves to (not serialized).
 type Store struct {
-	Version    int                `json:"version"`
-	Generation int                `json:"generation,omitempty"` // monotonic save counter; bumped on every Save so a rollback (a restored older copy) is detectable (SEC-14)
-	Recipients []string           `json:"recipients"`           // age recipients re-encrypted to on `set`
+	Version    int      `json:"version"`
+	Generation int      `json:"generation,omitempty"` // monotonic save counter; bumped on every Save so a rollback (a restored older copy) is detectable (SEC-14)
+	Recipients []string `json:"recipients"`           // age recipients re-encrypted to on `set`
 	// RecipientLabels maps a recipient pubkey → a human label ("name@machine"), so exposure
 	// reporting (`who-can-read`, `exposure`, `doctor`) can name who can decrypt instead of
 	// printing bare age1… keys. Cleartext metadata, optional; a missing entry just means unlabeled.

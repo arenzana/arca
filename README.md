@@ -63,6 +63,9 @@ attributed to the calling agent. No daemon, no account, no proprietary backend.
 | **Expiry (TTL)** | `--ttl 30m\|12h\|7d\|2w` or `--expires-at`; expired secrets are **refused on every access path** and surfaced by `stale` |
 | **Audit** | Local SQLite log of every access; agent **name/version/session** attribution; **fail-closed** by default; **hash-chained + per-session signed** so tampering is detectable (`log --verify`) |
 | **AI-safety policies** | `--no-print` (exec-only), `--require-approval` (human approval), least-privilege `exec --only` |
+| **Deny-by-default agents** | `arca mcp --strict` exposes only the secrets you `arca agent allow` — an agent sees and uses nothing else (list/show/read/run all refuse it) |
+| **Health check** | `arca doctor` audits your setup — identity-key perms/location, decryption blast radius, high-privilege secret names, rotation/expiry, agent exposure, audit-chain integrity — ranked by severity with a fix per finding (`--json`, `--fix`) |
+| **Exposure visibility** | `arca who-can-read` / `arca exposure` show which recipients can decrypt each secret; label keys with `recipients add --label name@machine` |
 | **Canary secrets** | Plant realistic decoys (`canary --template stripe`); any use trips a loud, signed audit alert — leak detection, not just prevention |
 | **JIT grants** | `--require-grant` secrets are usable only via a `grant` scoped to a command, a use count, and a time window — bind a secret to *what* an agent does, not just whether it can see it |
 | **Rate limiting** | `set --rate 10/1h` caps how often a secret may be used in a rolling window; the throttle is recorded, so a runaway agent hammering a secret is stopped and surfaced |
