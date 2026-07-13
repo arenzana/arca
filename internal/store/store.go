@@ -60,7 +60,11 @@ type Store struct {
 	Version    int                `json:"version"`
 	Generation int                `json:"generation,omitempty"` // monotonic save counter; bumped on every Save so a rollback (a restored older copy) is detectable (SEC-14)
 	Recipients []string           `json:"recipients"`           // age recipients re-encrypted to on `set`
-	Secrets    map[string]*Secret `json:"secrets"`
+	// RecipientLabels maps a recipient pubkey → a human label ("name@machine"), so exposure
+	// reporting (`who-can-read`, `exposure`, `doctor`) can name who can decrypt instead of
+	// printing bare age1… keys. Cleartext metadata, optional; a missing entry just means unlabeled.
+	RecipientLabels map[string]string  `json:"recipient_labels,omitempty"`
+	Secrets         map[string]*Secret `json:"secrets"`
 
 	path string
 }
@@ -186,6 +190,26 @@ func (s *Store) Save() error {
 		return err
 	}
 	return os.Rename(tmpName, s.path)
+}
+
+// Label returns the human label for a recipient pubkey, or "" if none is recorded.
+func (s *Store) Label(recipient string) string {
+	if s.RecipientLabels == nil {
+		return ""
+	}
+	return s.RecipientLabels[recipient]
+}
+
+// SetLabel records (or clears, if label == "") the human label for a recipient.
+func (s *Store) SetLabel(recipient, label string) {
+	if label == "" {
+		delete(s.RecipientLabels, recipient)
+		return
+	}
+	if s.RecipientLabels == nil {
+		s.RecipientLabels = map[string]string{}
+	}
+	s.RecipientLabels[recipient] = label
 }
 
 // Names returns the secret names in sorted order, for stable listing output.

@@ -83,7 +83,11 @@ func newRecipients() *cobra.Command {
 				return err
 			}
 			for _, r := range s.Recipients {
-				fmt.Println(r)
+				if label := s.Label(r); label != "" {
+					fmt.Printf("%s  %s\n", r, label)
+				} else {
+					fmt.Println(r)
+				}
 			}
 			return nil
 		},
@@ -93,11 +97,17 @@ func newRecipients() *cobra.Command {
 }
 
 func newRecipientsAdd() *cobra.Command {
-	return &cobra.Command{
+	var label string
+	c := &cobra.Command{
 		Use:   "add RECIPIENT [RECIPIENT...]",
 		Short: "Add age recipient(s) (run `reencrypt` to apply to existing secrets)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			// A label names WHO/WHICH machine a key belongs to (for exposure reporting). It can't be
+			// applied unambiguously to a batch, so require exactly one recipient when --label is given.
+			if label != "" && len(args) != 1 {
+				return fmt.Errorf("--label applies to a single recipient; add them one at a time")
+			}
 			unlock, err := lockStore()
 			if err != nil {
 				return err
@@ -119,17 +129,28 @@ func newRecipientsAdd() *cobra.Command {
 				s.Recipients = append(s.Recipients, r)
 				added++
 			}
-			if added == 0 {
+			// Record the label even if the recipient already existed (lets `add --label` back-fill a
+			// label onto an already-present key without re-adding it).
+			if label != "" {
+				s.SetLabel(args[0], label)
+			}
+			if added == 0 && label == "" {
 				fmt.Fprintln(os.Stderr, "no new recipients")
 				return nil
 			}
 			if err := s.Save(); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "added %d recipient(s); run `arca reencrypt` to re-wrap existing secrets\n", added)
+			if added > 0 {
+				fmt.Fprintf(os.Stderr, "added %d recipient(s); run `arca reencrypt` to re-wrap existing secrets\n", added)
+			} else {
+				fmt.Fprintf(os.Stderr, "labeled recipient %q\n", label)
+			}
 			return nil
 		},
 	}
+	c.Flags().StringVar(&label, "label", "", "human label for the recipient (e.g. \"alice@laptop\"); used by exposure reports")
+	return c
 }
 
 func newRecipientsRm() *cobra.Command {
@@ -163,6 +184,9 @@ func newRecipientsRm() *cobra.Command {
 				return nil
 			}
 			s.Recipients = kept
+			for _, r := range args { // drop labels for removed recipients
+				s.SetLabel(r, "")
+			}
 			if err := s.Save(); err != nil {
 				return err
 			}
