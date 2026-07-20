@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -252,7 +253,7 @@ func TestPushStoreCASRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Generation += 5 // pretend a local mutation targeting a new generation
-	if err := pushStore(context.Background(), fake, s, raw, head, loadSyncState()); err == nil || !strings.Contains(err.Error(), "reconcile") {
+	if err := pushStore(context.Background(), fake, s, raw, head, loadSyncState(), false); err == nil || !strings.Contains(err.Error(), "reconcile") {
 		t.Fatalf("stale-prev push = %v, want a CAS reconcile hint", err)
 	}
 }
@@ -773,7 +774,7 @@ func TestPushStoreCASReconcileHint(t *testing.T) {
 	}
 	s, raw, _ := localStoreForSync()
 	s.Generation += 3
-	err := pushStore(context.Background(), fake, s, raw, head, loadSyncState())
+	err := pushStore(context.Background(), fake, s, raw, head, loadSyncState(), false)
 	if err == nil || !strings.Contains(err.Error(), "reconcile") {
 		t.Fatalf("stale push should hint reconcile, got: %v", err)
 	}
@@ -832,4 +833,100 @@ func TestSyncStatusBranches(t *testing.T) {
 	runArca(t, "v", "set", "A")
 	runArca(t, "", "sync")
 	runArca(t, "", "sync", "status") // synced branch
+}
+
+// captureStderr swaps os.Stderr for a temp file around fn and returns what was written,
+// mirroring execArca's stdout swap. Not parallel-safe (shares the process global).
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "arca-err-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	oldStderr, oldLog := os.Stderr, syncLog
+	os.Stderr, syncLog = f, f // syncLog is the sync subsystem's own sink; redirect both
+	defer func() { os.Stderr, syncLog = oldStderr, oldLog; f.Close() }()
+	fn()
+	_ = f.Sync()
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(f.Name())
+	return string(b)
+}
+
+// TestSyncQuietSuppressesInformationalOutput locks in the auto-sync UX fix: an up-to-date sync
+// announces "in sync: nothing to do" only when NOT quiet. The quiet path (used by opportunistic
+// auto-sync) must stay silent so its output never trails another command — e.g. appending to
+// `get`'s deliberately newline-free value (`<value>in sync: nothing to do`).
+func TestSyncQuietSuppressesInformationalOutput(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "A")
+	runArca(t, "", "sync") // now L == S == R: the "nothing to do" branch
+
+	verbose := captureStderr(t, func() {
+		if err := runSyncCtx(context.Background(), fake, false, false, false, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(verbose, "in sync: nothing to do") {
+		t.Fatalf("explicit sync should announce being up to date, got %q", verbose)
+	}
+
+	quiet := captureStderr(t, func() {
+		if err := runSyncCtx(context.Background(), fake, false, false, false, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(quiet, "nothing to do") {
+		t.Fatalf("quiet auto-sync must not print the up-to-date notice, got %q", quiet)
+	}
+}
+
+// TestNewlineGuard: the guard prepends exactly one newline before the first byte and then
+// passes through unchanged, and writes nothing when nothing is written.
+func TestNewlineGuard(t *testing.T) {
+	var buf strings.Builder
+	g := &newlineGuard{w: &buf}
+	fmt.Fprint(g, "first")
+	fmt.Fprint(g, " second")
+	if got := buf.String(); got != "\nfirst second" {
+		t.Fatalf("guard output = %q, want %q", got, "\nfirst second")
+	}
+
+	var empty strings.Builder
+	eg := &newlineGuard{w: &empty}
+	fmt.Fprint(eg, "") // a zero-length write must not trigger the leading newline
+	if empty.Len() != 0 {
+		t.Fatalf("empty write should produce nothing, got %q", empty.String())
+	}
+}
+
+// TestAutoSyncOutputNeverTrailsCommand locks in the collision fix end to end: when auto-sync
+// emits a warning (here, a failing audit escrow) it must begin on its own line rather than
+// running into a preceding `get`'s newline-free value. It exercises maybeAutoSync via the same
+// syncLog guard the real post-command hook installs.
+func TestAutoSyncOutputNeverTrailsCommand(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "A") // leaves an un-escrowed audit event to ship
+
+	// Force a real warning: escrow to a broken recipient set, routed through the guard
+	// exactly as maybeAutoSync routes auto-sync output.
+	out := captureStderr(t, func() {
+		prev := syncLog
+		syncLog = &newlineGuard{w: os.Stderr}
+		defer func() { syncLog = prev }()
+		escrowBestEffort(context.Background(), fake, []string{"not-a-valid-recipient"})
+	})
+	if !strings.HasPrefix(out, "\n") {
+		t.Fatalf("guarded auto-sync output must start on its own line, got %q", out)
+	}
+	if !strings.Contains(out, "audit escrow failed") {
+		t.Fatalf("the warning itself must still be visible, got %q", out)
+	}
 }

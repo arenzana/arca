@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,35 @@ const autoSyncStaleness = 15 * time.Minute
 // autoSyncTimeout bounds the post-command network work so a hung backend can't
 // wedge the CLI.
 const autoSyncTimeout = 10 * time.Second
+
+// syncLog is where the sync machinery writes its human-facing notices, warnings, and
+// errors. It defaults to stderr — the explicit `arca sync` command's output. Opportunistic
+// auto-sync temporarily swaps in a newlineGuard (see maybeAutoSync) so whatever it emits
+// can't run into the output of the command that triggered it.
+var syncLog io.Writer = os.Stderr
+
+// newlineGuard wraps a writer so the first byte written is preceded by exactly one newline;
+// once anything has been written it is a transparent pass-through. Auto-sync routes its
+// output through one so a warning or error starts on its own line instead of trailing the
+// just-finished command (notably `get`, whose value carries no trailing newline). On a
+// clean, silent sync nothing is written, so no stray blank line is produced.
+type newlineGuard struct {
+	w       io.Writer
+	written bool
+}
+
+func (g *newlineGuard) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if !g.written {
+		g.written = true
+		if _, err := io.WriteString(g.w, "\n"); err != nil {
+			return 0, err
+		}
+	}
+	return g.w.Write(p)
+}
 
 func loadSyncState() syncState {
 	var st syncState
@@ -160,15 +190,24 @@ func maybeAutoSync(invokedSync bool) {
 	if !mutated && !stale {
 		return
 	}
+	// Route everything this opportunistic sync prints through a guard that prepends one
+	// newline before its first byte, so a warning or error can't run into the output of
+	// the command that triggered it (notably `get`, whose value has no trailing newline).
+	// quiet=true below silences the routine success notices, so on a clean sync the guard
+	// writes nothing and no blank line appears — output shows up only when something is wrong.
+	prev := syncLog
+	syncLog = &newlineGuard{w: prev}
+	defer func() { syncLog = prev }()
+
 	b, err := openBackend()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "arca: auto-sync skipped: %v\n", err)
+		fmt.Fprintf(syncLog, "arca: auto-sync skipped: %v\n", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), autoSyncTimeout)
 	defer cancel()
-	if err := runSyncCtx(ctx, b, false, false, false); err != nil {
-		fmt.Fprintf(os.Stderr, "arca: auto-sync: %v\n", err)
+	if err := runSyncCtx(ctx, b, false, false, false, true); err != nil {
+		fmt.Fprintf(syncLog, "arca: auto-sync: %v\n", err)
 	}
 }
 
@@ -439,10 +478,13 @@ func newSyncStatus() *cobra.Command {
 //	L > S  && R > S      → conflict: both sides advanced — report, never merge
 //	L < S                → the LOCAL store rolled back → refuse push; pull repairs it
 func runSync(b remote.Backend, pullOnly, pushOnly, force bool) error {
-	return runSyncCtx(context.Background(), b, pullOnly, pushOnly, force)
+	return runSyncCtx(context.Background(), b, pullOnly, pushOnly, force, false)
 }
 
-func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force bool) error {
+// quiet suppresses the informational success lines ("in sync: nothing to do",
+// "pushed/pulled generation N"); warnings and errors are always emitted. It is set for
+// opportunistic auto-sync so its chatter never trails another command's output.
+func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force, quiet bool) error {
 	s, raw, err := localStoreForSync()
 	if err != nil {
 		return err
@@ -463,13 +505,13 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pullOnly {
 			return errors.New("--pull requested but the remote is empty")
 		}
-		return pushStore(ctx, b, s, raw, remote.Rev{}, st)
+		return pushStore(ctx, b, s, raw, remote.Rev{}, st, quiet)
 
 	case s == nil:
 		if pushOnly {
 			return errors.New("--push requested but there is no local store (run `arca sync --pull` to bootstrap)")
 		}
-		return pullStore(ctx, b, st, nil, force)
+		return pullStore(ctx, b, st, nil, force, quiet)
 	}
 
 	L, S, R := s.Generation, st.LastGeneration, head.Generation
@@ -481,35 +523,37 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pushOnly {
 			return fmt.Errorf("local store looks rolled back (generation %d < last synced %d) — refusing to push it; `arca sync --pull` restores the newest synced state", L, S)
 		}
-		return pullStore(ctx, b, st, s, force)
+		return pullStore(ctx, b, st, s, force, quiet)
 	}
 
 	switch {
 	case L == S && R == S:
-		fmt.Fprintln(os.Stderr, "in sync: nothing to do")
+		if !quiet {
+			fmt.Fprintln(syncLog, "in sync: nothing to do")
+		}
 		escrowBestEffort(ctx, b, s.Recipients)
 		return nil
 	case L == S && R > S:
 		if pushOnly {
 			return fmt.Errorf("remote is ahead (generation %d > %d) and --push was requested; run without --push to pull first", R, L)
 		}
-		return pullStore(ctx, b, st, s, force)
+		return pullStore(ctx, b, st, s, force, quiet)
 	case L > S && (R == S || force):
 		if pullOnly {
 			return fmt.Errorf("local has unpushed changes (generation %d > last synced %d) and --pull was requested; run without --pull to push", L, S)
 		}
-		return pushStore(ctx, b, s, raw, head, st)
+		return pushStore(ctx, b, s, raw, head, st, quiet)
 	default: // L > S && R > S — divergence
 		if pullOnly {
 			// The operator explicitly chose the documented resolution: adopt the
 			// remote and discard local divergence.
-			return pullStore(ctx, b, st, s, force)
+			return pullStore(ctx, b, st, s, force, quiet)
 		}
 		return fmt.Errorf("sync CONFLICT: both sides advanced since the last sync (local generation %d, remote %d, last synced %d). No auto-merge for a secrets store: pull with `arca sync --pull` (discards local divergence) or re-apply the remote's changes locally and push", L, R, S)
 	}
 }
 
-func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte, prev remote.Rev, st syncState) error {
+func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte, prev remote.Rev, st syncState, quiet bool) error {
 	env, err := sealEnvelope(raw, s.Recipients)
 	if err != nil {
 		return err
@@ -527,7 +571,9 @@ func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte
 	if err := logAudit("sync-push", "-", ""); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "pushed generation %d\n", rev.Generation)
+	if !quiet {
+		fmt.Fprintf(syncLog, "pushed generation %d\n", rev.Generation)
+	}
 	escrowBestEffort(ctx, b, s.Recipients)
 	return nil
 }
@@ -542,7 +588,7 @@ func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte
 // recipient keys AND serves a strictly-newer forged envelope can still substitute content. The
 // complete fix is an operator signature over the store (tracked separately). What this closes is
 // the whole replay/rollback/recipient-resurrection class against an established machine.
-func pullStore(ctx context.Context, b remote.Backend, st syncState, local *store.Store, force bool) error {
+func pullStore(ctx context.Context, b remote.Backend, st syncState, local *store.Store, force, quiet bool) error {
 	env, rev, err := b.Fetch(ctx)
 	if err != nil {
 		return err
@@ -558,7 +604,7 @@ func pullStore(ctx context.Context, b remote.Backend, st syncState, local *store
 		return fmt.Errorf("remote TAMPER detected on pull: backend advertised head generation %d but served an envelope at generation %d — a replayed or rolled-back store; investigate, or --force to adopt it anyway", rev.Generation, rs.Generation)
 	}
 	if rs.Generation != rev.Generation {
-		fmt.Fprintf(os.Stderr, "arca: warning: backend metadata says generation %d but the envelope holds %d; trusting the envelope\n", rev.Generation, rs.Generation)
+		fmt.Fprintf(syncLog, "arca: warning: backend metadata says generation %d but the envelope holds %d; trusting the envelope\n", rev.Generation, rs.Generation)
 	}
 	rev.Generation = rs.Generation
 
@@ -596,7 +642,9 @@ func pullStore(ctx context.Context, b remote.Backend, st syncState, local *store
 	if err := logAudit("sync-pull", "-", ""); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "pulled generation %d\n", rev.Generation)
+	if !quiet {
+		fmt.Fprintf(syncLog, "pulled generation %d\n", rev.Generation)
+	}
 	escrowBestEffort(ctx, b, rs.Recipients)
 	return nil
 }
@@ -621,6 +669,6 @@ func addedRecipients(prev, next []string) []string {
 // weaken the sync one.
 func escrowBestEffort(ctx context.Context, b remote.Backend, recipients []string) {
 	if err := escrowAudit(ctx, b, recipients); err != nil {
-		fmt.Fprintf(os.Stderr, "arca: warning: audit escrow failed (will retry on the next sync): %v\n", err)
+		fmt.Fprintf(syncLog, "arca: warning: audit escrow failed (will retry on the next sync): %v\n", err)
 	}
 }
