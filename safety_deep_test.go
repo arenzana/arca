@@ -1,8 +1,6 @@
 package main
 
 import (
-	"io"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -129,21 +127,8 @@ func TestWarnAgentExposure(t *testing.T) {
 	}
 }
 
-// captureStderr redirects os.Stderr around fn and returns what it wrote.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-	fn()
-	_ = w.Close()
-	os.Stderr = old
-	b, _ := io.ReadAll(r)
-	return string(b)
-}
+// captureStderr lives in sync_test.go (it also redirects the sync subsystem's syncLog
+// sink); the doctor/safety tests below reuse it.
 
 // --- doctor: deeper checks -------------------------------------------------
 
