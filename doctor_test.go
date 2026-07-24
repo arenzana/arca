@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,9 @@ func TestGitRoot(t *testing.T) {
 }
 
 func TestDoctorIdentityPermsHighAndFix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits aren't Windows' access-control mechanism; checkIdentity skips the perm check there")
+	}
 	dir := sandbox(t)
 	runArca(t, "", "init")
 	idPath := filepath.Join(dir, "id.txt")

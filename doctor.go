@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 
@@ -87,10 +88,16 @@ func checkIdentity(e *doctorEnv) []finding {
 		return []finding{f("identity", sevLow, "identity key file not found at the default path",
 			e.identityPath+" — fine if you use SOPS_AGE_KEY_FILE/ARCA_IDENTITY or a hardware key", "")}
 	}
-	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-		out = append(out, f("identity", sevHigh,
-			fmt.Sprintf("identity key is mode %o (group/other can read it)", perm),
-			"anyone who can read this file can decrypt every secret you can", "chmod 600 "+e.identityPath+"   (or run `arca doctor --fix`)"))
+	// POSIX permission bits are the access-control mechanism only on Unix. On Windows Go
+	// emulates the mode (a writable file always reports 0666), so perm&0o077 is meaningless
+	// there — checking it would raise a HIGH that `--fix` can never clear. Access on Windows
+	// is governed by ACLs, which this check does not (yet) inspect.
+	if runtime.GOOS != "windows" {
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			out = append(out, f("identity", sevHigh,
+				fmt.Sprintf("identity key is mode %o (group/other can read it)", perm),
+				"anyone who can read this file can decrypt every secret you can", "chmod 600 "+e.identityPath+"   (or run `arca doctor --fix`)"))
+		}
 	}
 	if root := gitRoot(filepath.Dir(e.identityPath)); root != "" {
 		out = append(out, f("identity", sevHigh,
@@ -275,7 +282,11 @@ func runDoctor() []finding {
 }
 
 // fixIdentityPerms is the one unambiguously safe auto-repair: tighten a loose identity key to 0600.
+// No-op on Windows, where POSIX mode bits aren't the access-control mechanism (see checkIdentity).
 func fixIdentityPerms() (bool, error) {
+	if runtime.GOOS == "windows" {
+		return false, nil
+	}
 	p := identityPath()
 	fi, err := os.Stat(p)
 	if err != nil {
