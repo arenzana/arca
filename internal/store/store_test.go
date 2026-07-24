@@ -249,3 +249,24 @@ func TestApplyMigrations(t *testing.T) {
 		t.Fatal("expected the migration error to propagate")
 	}
 }
+
+// TestRecipientLabels covers Label/SetLabel: nil-map reads, set, overwrite, and clear.
+func TestRecipientLabels(t *testing.T) {
+	var s Store // zero value: RecipientLabels is nil
+	if got := s.Label("age1abc"); got != "" {
+		t.Fatalf("nil-map Label = %q, want empty", got)
+	}
+	s.SetLabel("age1abc", "laptop") // first set allocates the map
+	if got := s.Label("age1abc"); got != "laptop" {
+		t.Fatalf("Label after set = %q, want laptop", got)
+	}
+	s.SetLabel("age1abc", "workstation") // overwrite
+	if got := s.Label("age1abc"); got != "workstation" {
+		t.Fatalf("Label after overwrite = %q, want workstation", got)
+	}
+	s.SetLabel("age1abc", "") // empty clears
+	if got := s.Label("age1abc"); got != "" {
+		t.Fatalf("Label after clear = %q, want empty", got)
+	}
+	s.SetLabel("age1def", "") // clearing an absent key is a no-op, not a panic
+}

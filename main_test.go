@@ -158,8 +158,9 @@ func sandbox(t *testing.T) string {
 	t.Setenv("ARCA_AGENT_MARKERS", "") // and any operator-registered custom markers
 	t.Setenv("ARCA_SYNC_URL", "")      // no accidental network sync from the developer's env
 	t.Setenv("ARCA_SYNC_AUTO", "")
-	t.Setenv("ARCA_SYNC_ACCESS_KEY", "") // and no ambient sync credentials (a developer with real
-	t.Setenv("ARCA_SYNC_SECRET_KEY", "") // ARCA_SYNC_* creds in-env must not skew credential tests)
+	// NB: ARCA_SYNC_ACCESS_KEY/SECRET_KEY are deliberately NOT cleared here — the sync e2e
+	// test (sandbox + real MinIO creds from the workflow env) depends on them surviving.
+	// A credential test that needs them absent clears them itself (t.Setenv, auto-restored).
 	return dir
 }
 
