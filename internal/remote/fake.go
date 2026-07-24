@@ -72,7 +72,7 @@ func (f *Fake) PutIfAbsent(_ context.Context, key string, data []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, exists := f.objects[key]; exists {
-		return fmt.Errorf("remote object %s already exists (append-only)", key)
+		return fmt.Errorf("remote object %s %w", key, ErrObjectExists)
 	}
 	f.objects[key] = append([]byte(nil), data...)
 	f.etags[key] = f.nextTag()

@@ -16,6 +16,7 @@ All paths are overridable so the store can live in your dotfiles while the audit
 | `AI_AGENT` | let any agent self-identify: `name` or `name_version_agent` | — |
 | `ARCA_AGENT_MARKERS` | register custom agent markers: comma-separated `name=ENVVAR` | — |
 | `ARCA_APPROVAL` | `deny` refuses a `--require-approval` release (fail-safe); anything else is ignored — approval always needs an interactive terminal (no `allow` bypass) | — |
+| `ARCA_AGENT_STRICT` | deny-by-default MCP exposure (same as `arca mcp --strict`): agents see only `arca agent allow`-ed secrets | off (all secrets exposed, with a startup warning) |
 | `ARCA_SYNC_URL` | sync backend (`s3://bucket/prefix?endpoint=…`), overrides `arca sync init` | — |
 | `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` | sync credentials (fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) | — |
 | `ARCA_SYNC_AUTO` | force automatic sync on (`1`) or off (`0`), overriding `arca sync auto` | per `sync.json` |

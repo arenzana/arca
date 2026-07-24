@@ -114,6 +114,36 @@ blocks a secret access. What it deliberately does **not** provide is fleet-wide
 *enforcement* (rate limits across machines) — that requires a trusted arbiter, which
 the dumb backend is not.
 
+### Troubleshooting: `audit escrow failed … already exists (append-only)`
+
+```
+arca: warning: audit escrow failed (will retry on the next sync):
+remote object audit/<machine-id>/NNNNNN.age already exists (append-only)
+```
+
+The local **escrow cursor** (`escrow-state.json` in the state dir) has fallen *behind*
+the remote: the next sequence slot it wants to write is already taken. The usual cause
+is a state dir that was **restored or rolled back** to an older snapshot (a backup
+restore, a synced dotfiles checkout, a machine migration) while the remote kept the
+newer segments. Your secrets are unaffected — only the off-machine audit copy is stuck.
+
+- **Same machine, cursor behind (the common case): self-healing.** On the collision arca
+  reconciles the cursor to the remote's newest segment for this machine and retries once,
+  so an ordinary sync clears it. If you see the warning, run `arca sync` once and it
+  should not return.
+- **Escrow identity collides with another machine (rare): reset it.** If two machines
+  ended up with the *same* `machine-id` (e.g. the whole state dir — including `machine-id`
+  — was copied between hosts), the newest remote segment is not part of this machine's
+  audit log, and arca refuses to splice two chains. It says so and points here. Recover by
+  giving this host a fresh escrow identity:
+
+  ```sh
+  arca sync reset-escrow   # rotates machine-id, resets the cursor, re-escrows under a new prefix
+  ```
+
+  This touches only the escrow identity and cursor — never the store, the age identity, or
+  the local audit log. The previous segments stay on the backend as an orphaned prefix.
+
 ## Configuration
 
 | What | How |

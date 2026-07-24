@@ -18,13 +18,16 @@
 | `edit NAME` | Edit a secret's value in `$EDITOR` (re-encrypted) | — |
 | `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
 | `annotate NAME` | Edit a secret's tags/description/metadata **without** changing its value (works on `--no-print` secrets) | `--tag --add-tag --rm-tag --desc --meta k=v --rm-meta` |
-| `recipients` | List age recipients; `add`/`rm` subcommands manage the set | — |
+| `recipients` | List age recipients (with labels); `add`/`rm` subcommands manage the set | `add --label name@machine` |
+| `who-can-read [NAME]` | Show which recipients can decrypt the store (or one secret); flags high-privilege names | — |
+| `exposure` | List secrets by blast radius (recipients that can decrypt each); flags master/admin-looking names | `--sensitive` |
+| `doctor` | Security & health check of your setup, ranked by severity with a remedy per finding | `--json`, `--fix` |
 | `reencrypt` | Re-encrypt every secret to the current recipient set | — |
 | `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) — see [Importing](IMPORTING.md) | `--json`, `--dry-run`, `--overwrite`, `--prefix P`, `--tag t` |
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
 | `exec -- CMD` | Run CMD with secrets injected as env (audited); injected values are redacted from its output | `--only a,b`, `--redact auto\|on\|off`, `--reveal` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
-| `sync` | Replicate the store through an S3-compatible backend (see [SYNC.md](SYNC.md)); envelope-encrypted, CAS-safe | `--pull`, `--push`, `--force`; `sync init URL`, `sync status`, `sync auto on\|off` |
+| `sync` | Replicate the store through an S3-compatible backend (see [SYNC.md](SYNC.md)); envelope-encrypted, CAS-safe | `--pull`, `--push`, `--force`; `sync init URL`, `sync status`, `sync auto on\|off`, `sync reset-escrow` |
 | `log [NAME]` | Access history (agent/session/actor); `--verify` checks the log's integrity and emits an anchor token to store off-machine | `--limit N`, `--json`, `--verify`, `--require-signed`, `--anchor TOKEN`, `--remote` |
 | `canary [NAME]` | Plant a decoy secret (any use trips a signed alert), or list canaries and their trips | `--template`, `--list`, `--tag`, `--desc` |
 | `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window | `--command`, `--uses`, `--ttl`, `--agent` |
@@ -32,7 +35,8 @@
 | `revoke SECRET` | Remove the active grant for a secret | — |
 | `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value — operator-only (refused for a detected agent) | `--ttl`, `--command`, `--as`, `--override` |
 | `handle ls` / `handle revoke ID` | List or revoke handles | — |
-| `mcp` | Run an MCP server exposing arca to AI agents (stdio) — see [MCP](MCP.md) | — |
+| `mcp` | Run an MCP server exposing arca to AI agents (stdio) — see [MCP](MCP.md) | `--strict` (deny-by-default agent exposure) |
+| `agent allow/deny/ls NAME` | Manage which secrets a `--strict` MCP server exposes to agents | — |
 | `version` | Print version, commit, build date, and toolchain (`arca --version` prints just the version) | `--json` |
 | `completion SHELL` | Shell completion script (bash/zsh/fish/powershell) | — |
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/remote"
 )
 
@@ -225,6 +226,278 @@ func TestEscrowRejectsInjectedKey(t *testing.T) {
 	}
 	if _, err := fetchEscrowedSegments(context.Background(), fake); err == nil || !strings.Contains(err.Error(), "non-segment") {
 		t.Fatalf("injected non-segment key should be refused, got: %v", err)
+	}
+}
+
+// storeRecipients returns the store's age recipients, so a test can drive escrowAudit
+// directly (the same keys sync would pass).
+func storeRecipients(t *testing.T) []string {
+	t.Helper()
+	s, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.Recipients
+}
+
+// TestEscrowSelfHealsBehindCursor reproduces the field bug: a restored/rolled-back state
+// dir rewinds the escrow cursor behind the remote, so the next escrow targets an occupied
+// segment slot. The self-heal must reconcile the cursor to the remote's newest segment and
+// ship the increment as the NEXT slot — recovering silently instead of warning forever.
+func TestEscrowSelfHealsBehindCursor(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync") // seg 1
+	runArca(t, "v2", "rotate", "A")
+	runArca(t, "", "sync") // seg 2; cursor Seq == 2
+
+	segs, err := fetchEscrowedSegments(context.Background(), fake)
+	if err != nil || len(segs) != 2 {
+		t.Fatalf("precondition: want 2 segments, got %d (err %v)", len(segs), err)
+	}
+
+	// Simulate the restore: rewind the cursor to just after segment 1. The occupied slot
+	// 000002 is now what a naive escrow would (re)target.
+	if err := saveEscrowState(escrowState{LastID: segs[0].LastID, Seq: 1, PrevAnchor: segs[0].Anchor}); err != nil {
+		t.Fatal(err)
+	}
+
+	// New activity, then escrow. It must NOT error and must land segment 3, chained.
+	runArca(t, "", "get", "A")
+	if err := escrowAudit(context.Background(), fake, storeRecipients(t)); err != nil {
+		t.Fatalf("self-heal should recover a behind cursor, got: %v", err)
+	}
+
+	segs, err = fetchEscrowedSegments(context.Background(), fake)
+	if err != nil {
+		t.Fatalf("post-heal fetch (also re-checks continuity): %v", err)
+	}
+	if len(segs) != 3 {
+		t.Fatalf("want 3 segments after self-heal, got %d", len(segs))
+	}
+	if segs[2].PrevAnchor != segs[1].Anchor || segs[2].FirstID != segs[1].LastID+1 {
+		t.Fatalf("healed segment 3 does not chain onto 2: %+v", segs)
+	}
+	if st := loadEscrowState(); st.Seq != 3 {
+		t.Fatalf("cursor did not advance to 3 after heal: %+v", st)
+	}
+}
+
+// TestEscrowSelfHealCursorOnly: a behind cursor with NO new events to ship still heals —
+// the cursor is reconciled to the remote tail and no spurious segment is written.
+func TestEscrowSelfHealCursorOnly(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync") // seg 1
+	runArca(t, "v2", "rotate", "A")
+	runArca(t, "", "sync") // seg 2
+
+	segs, _ := fetchEscrowedSegments(context.Background(), fake)
+	if len(segs) != 2 {
+		t.Fatalf("precondition: want 2 segments, got %d", len(segs))
+	}
+	// Rewind the cursor but add nothing new.
+	if err := saveEscrowState(escrowState{LastID: segs[0].LastID, Seq: 1, PrevAnchor: segs[0].Anchor}); err != nil {
+		t.Fatal(err)
+	}
+	if err := escrowAudit(context.Background(), fake, storeRecipients(t)); err != nil {
+		t.Fatalf("cursor-only self-heal should not error: %v", err)
+	}
+	if st := loadEscrowState(); st.Seq != 2 || st.LastID != segs[1].LastID {
+		t.Fatalf("cursor not reconciled to the remote tail: %+v", st)
+	}
+	if got, _ := fetchEscrowedSegments(context.Background(), fake); len(got) != 2 {
+		t.Fatalf("no new segment should be written when nothing is pending, got %d", len(got))
+	}
+}
+
+// TestEscrowReconcileRefusesForeignChain: when the occupied slot belongs to a DIFFERENT
+// machine sharing this escrow identity (its segments don't extend the local log), the
+// self-heal must refuse to splice the chains and point the operator at reset-escrow.
+func TestEscrowReconcileRefusesForeignChain(t *testing.T) {
+	dir := sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	runArca(t, "v2", "rotate", "A")
+	runArca(t, "", "sync") // 2 segments anchored to THIS log
+
+	// Replace the local audit log with a fresh, unrelated chain (as if a second machine
+	// reused this machine-id). The escrowed anchors no longer describe the local log.
+	if err := os.Remove(dir + "/audit.db"); err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "get", "A") // fresh 1-event log
+
+	// Force a collision with something to ship: cursor at the very start.
+	if err := saveEscrowState(escrowState{LastID: 0, Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	err := escrowAudit(context.Background(), fake, storeRecipients(t))
+	if err == nil {
+		t.Fatal("reconcile must refuse a foreign chain rather than splice it")
+	}
+	if !strings.Contains(err.Error(), "reset-escrow") {
+		t.Fatalf("refusal should point at reset-escrow, got: %v", err)
+	}
+}
+
+// TestSyncResetEscrowCommand: `arca sync reset-escrow` rotates the identity, leaves the old
+// segments intact on the backend, and re-escrows the full local log under the fresh prefix.
+func TestSyncResetEscrowCommand(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync") // seg 1 under the original identity
+
+	m1, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "sync", "reset-escrow")
+
+	m2, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m1 == m2 {
+		t.Fatalf("reset-escrow did not rotate the identity (still %s)", m1)
+	}
+	oldKeys, _ := fake.List(context.Background(), remote.KeyAudit+m1+"/")
+	if len(oldKeys) != 1 {
+		t.Fatalf("previous segments must remain on the backend, got %v", oldKeys)
+	}
+	newKeys, _ := fake.List(context.Background(), remote.KeyAudit+m2+"/")
+	if len(newKeys) != 1 {
+		t.Fatalf("full log should be re-escrowed under the new prefix, got %v", newKeys)
+	}
+	if st := loadEscrowState(); st.Seq != 1 {
+		t.Fatalf("cursor should restart at 1 under the new identity: %+v", st)
+	}
+}
+
+// TestReconcileEscrowCursorErrors covers the two refusals: a cursor that is not actually
+// behind the remote tail, and a prefix with no readable segment history.
+func TestReconcileEscrowCursorErrors(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync") // 1 segment; remote tail Seq == 1
+
+	a, err := audit.Open(auditPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	// Cursor already at/ahead of the remote tail — advancing wouldn't clear a collision.
+	if err := saveEscrowState(escrowState{Seq: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileEscrowCursor(context.Background(), a, fake); err == nil || !strings.Contains(err.Error(), "not reconciling") {
+		t.Fatalf("want a not-behind refusal, got: %v", err)
+	}
+
+	// Nothing readable under this machine's prefix — reconcile can't guess a cursor.
+	if err := reconcileEscrowCursor(context.Background(), a, remote.NewFake()); err == nil || !strings.Contains(err.Error(), "no readable segment") {
+		t.Fatalf("want a no-history refusal, got: %v", err)
+	}
+
+	// A backend that injects a non-segment key makes the fetch — hence reconcile — fail loudly.
+	bad := remote.NewFake()
+	m, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bad.PutIfAbsent(context.Background(), remote.KeyAudit+m+"/evil.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileEscrowCursor(context.Background(), a, bad); err == nil || !strings.Contains(err.Error(), "reconciling it failed") {
+		t.Fatalf("want a fetch-failure refusal, got: %v", err)
+	}
+}
+
+// TestReseatEscrowIdentityError: an unusable state dir makes the reseat fail (rather than
+// silently pretend it rotated).
+func TestReseatEscrowIdentityError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+	dir := sandbox(t)
+	blocker := dir + "/blk"
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", blocker) // the state dir now sits under a regular file
+	if _, _, err := reseatEscrowIdentity(); err == nil {
+		t.Fatal("reseat should fail when the state dir is unusable")
+	}
+}
+
+// TestSyncResetEscrowNoBackend: reset-escrow rotates the identity even when no backend is
+// configured; it just leaves the re-escrow to the next `arca sync`.
+func TestSyncResetEscrowNoBackend(t *testing.T) {
+	sandbox(t) // no withFakeBackend → openBackend fails (sync unconfigured)
+	runArca(t, "", "init")
+	m1, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "sync", "reset-escrow") // must succeed despite no backend
+	m2, err := machineID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m1 == m2 {
+		t.Fatalf("reset-escrow should rotate the identity even without a backend (still %s)", m1)
+	}
+}
+
+// TestSyncResetEscrowFreshNoStore: on a machine with no prior escrow identity and no store
+// yet, reset-escrow still sets a first identity (oldID == "") and defers escrow to the next
+// sync because there is no store to read recipients from.
+func TestSyncResetEscrowFreshNoStore(t *testing.T) {
+	sandbox(t)
+	withFakeBackend(t) // backend opens, but there is no store
+	if currentMachineID() != "" {
+		t.Fatal("precondition: expected no prior escrow identity")
+	}
+	runArca(t, "", "sync", "reset-escrow")
+	if currentMachineID() == "" {
+		t.Fatal("reset-escrow should have set a first identity")
+	}
+}
+
+// TestReseatEscrowIdentity unit-covers the reset helper: it rotates the id, clears the
+// cursor, and reports the change; a second call rotates again (fresh suffix each time).
+func TestReseatEscrowIdentity(t *testing.T) {
+	sandbox(t)
+	orig, err := machineID() // materialize an identity + a cursor
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveEscrowState(escrowState{LastID: 99, Seq: 7}); err != nil {
+		t.Fatal(err)
+	}
+	old, next, err := reseatEscrowIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old != orig || next == orig || next == "" {
+		t.Fatalf("reseat did not rotate: old=%q new=%q orig=%q", old, next, orig)
+	}
+	if st := loadEscrowState(); st.Seq != 0 || st.LastID != 0 {
+		t.Fatalf("reseat must clear the cursor, got %+v", st)
+	}
+	if cur := currentMachineID(); cur != next {
+		t.Fatalf("currentMachineID = %q, want the new id %q", cur, next)
 	}
 }
 

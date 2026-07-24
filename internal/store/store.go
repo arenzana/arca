@@ -43,6 +43,7 @@ type Secret struct {
 	RequireApproval bool              `json:"require_approval,omitempty"` // human must approve each release
 	Canary          bool              `json:"canary,omitempty"`           // DEPRECATED (pre-0.6.2): decoy flag. Read for back-compat but no longer written — the designation now lives in the local canary registry, out of the synced store (SEC-04).
 	RequireGrant    bool              `json:"require_grant,omitempty"`    // usable only via exec/MCP with a matching active grant
+	AgentExposed    bool              `json:"agent_exposed,omitempty"`    // opt-in: visible/usable to AI agents via the MCP server when it runs in --strict (deny-by-default) mode
 	RateLimit       int               `json:"rate_limit,omitempty"`       // max uses per RateWindow (0 = unlimited)
 	RateWindow      string            `json:"rate_window,omitempty"`      // the window for RateLimit (e.g. "1h"); empty defaults to 1h
 	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
@@ -57,10 +58,14 @@ func (s *Secret) Expired(now time.Time) bool {
 
 // Store is the whole document. path is where it loads from / saves to (not serialized).
 type Store struct {
-	Version    int                `json:"version"`
-	Generation int                `json:"generation,omitempty"` // monotonic save counter; bumped on every Save so a rollback (a restored older copy) is detectable (SEC-14)
-	Recipients []string           `json:"recipients"`           // age recipients re-encrypted to on `set`
-	Secrets    map[string]*Secret `json:"secrets"`
+	Version    int      `json:"version"`
+	Generation int      `json:"generation,omitempty"` // monotonic save counter; bumped on every Save so a rollback (a restored older copy) is detectable (SEC-14)
+	Recipients []string `json:"recipients"`           // age recipients re-encrypted to on `set`
+	// RecipientLabels maps a recipient pubkey → a human label ("name@machine"), so exposure
+	// reporting (`who-can-read`, `exposure`, `doctor`) can name who can decrypt instead of
+	// printing bare age1… keys. Cleartext metadata, optional; a missing entry just means unlabeled.
+	RecipientLabels map[string]string  `json:"recipient_labels,omitempty"`
+	Secrets         map[string]*Secret `json:"secrets"`
 
 	path string
 }
@@ -186,6 +191,26 @@ func (s *Store) Save() error {
 		return err
 	}
 	return os.Rename(tmpName, s.path)
+}
+
+// Label returns the human label for a recipient pubkey, or "" if none is recorded.
+func (s *Store) Label(recipient string) string {
+	if s.RecipientLabels == nil {
+		return ""
+	}
+	return s.RecipientLabels[recipient]
+}
+
+// SetLabel records (or clears, if label == "") the human label for a recipient.
+func (s *Store) SetLabel(recipient, label string) {
+	if label == "" {
+		delete(s.RecipientLabels, recipient)
+		return
+	}
+	if s.RecipientLabels == nil {
+		s.RecipientLabels = map[string]string{}
+	}
+	s.RecipientLabels[recipient] = label
 }
 
 // Names returns the secret names in sorted order, for stable listing output.

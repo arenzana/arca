@@ -29,16 +29,39 @@ import (
 )
 
 func newMCP() *cobra.Command {
-	return &cobra.Command{
+	c := &cobra.Command{
 		Use:   "mcp",
 		Short: "Run an MCP server exposing arca to AI agents over stdio",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			warnAgentExposure()
 			s := server.NewMCPServer("arca", appVersion())
 			registerMCPTools(s)
 			return server.ServeStdio(s)
 		},
 	}
+	c.Flags().BoolVar(&mcpStrictFlag, "strict", false, "deny-by-default: agents only see secrets marked `arca agent allow` (recommended)")
+	return c
+}
+
+// warnAgentExposure prints, to stderr (never the stdio JSON-RPC channel), what the agent can reach.
+// Under --strict it confirms the deny-by-default scope; otherwise it warns loudly that EVERY secret
+// is exposed and points at the fix — the warn half of the warn-then-flip rollout.
+func warnAgentExposure() {
+	if agentStrict() {
+		n := 0
+		if s, err := openStore(); err == nil {
+			for _, name := range s.Names() {
+				if s.Secrets[name].AgentExposed {
+					n++
+				}
+			}
+		}
+		fmt.Fprintf(os.Stderr, "arca mcp: strict mode — agents can see %d explicitly-exposed secret(s) (manage with `arca agent`)\n", n)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "arca mcp: ⚠ NON-STRICT — every secret in the store is visible/usable to the connected agent.")
+	fmt.Fprintln(os.Stderr, "          Run with --strict (or ARCA_AGENT_STRICT=1) and `arca agent allow NAME` to expose only what an agent needs.")
 }
 
 // registerMCPTools wires arca's capabilities onto an MCP server.
@@ -136,6 +159,9 @@ func mcpListSecrets(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResu
 	out := []meta{}
 	for _, name := range s.Names() {
 		sec := s.Secrets[name]
+		if agentDenied(sec.AgentExposed) { // strict mode: agents only see explicitly-exposed secrets
+			continue
+		}
 		m := meta{
 			Name: name, Tags: sec.Tags, Description: sec.Description,
 			NoPrint: sec.NoPrint, RequireApproval: sec.RequireApproval,
@@ -161,6 +187,9 @@ func mcpShowSecret(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	if sec == nil {
 		return mcp.NewToolResultError("no such secret: " + name), nil
 	}
+	if agentDenied(sec.AgentExposed) {
+		return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
+	}
 	return jsonResult(map[string]any{
 		"name": name, "tags": sec.Tags, "description": sec.Description,
 		"no_print": sec.NoPrint, "require_approval": sec.RequireApproval,
@@ -178,6 +207,9 @@ func mcpReadSecret(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	sec := s.Secrets[name]
 	if sec == nil {
 		return mcp.NewToolResultError("no such secret: " + name), nil
+	}
+	if agentDenied(sec.AgentExposed) {
+		return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
 	}
 	if sec.NoPrint {
 		return mcp.NewToolResultError(name + " is marked --no-print; use run_with_secrets"), nil
@@ -223,6 +255,9 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		sec := s.Secrets[name]
 		if sec == nil {
 			return mcp.NewToolResultError("no such secret: " + name), nil
+		}
+		if agentDenied(sec.AgentExposed) {
+			return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
 		}
 		// Defense in depth: refuse to inject a name that isn't a valid identifier (poisoned store).
 		if err := validName(name); err != nil {

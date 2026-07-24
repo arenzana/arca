@@ -76,8 +76,17 @@ func TestFakeCASSemantics(t *testing.T) {
 	if err := f.PutIfAbsent(ctx, "audit/m1/000001.age", []byte("seg")); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.PutIfAbsent(ctx, "audit/m1/000001.age", []byte("evil")); err == nil {
+	dup := f.PutIfAbsent(ctx, "audit/m1/000001.age", []byte("evil"))
+	if dup == nil {
 		t.Fatal("PutIfAbsent must refuse to replace")
+	}
+	// The refusal must carry the ErrObjectExists sentinel (callers recover via errors.Is,
+	// not by scraping the message) while still naming the key in its text.
+	if !errors.Is(dup, ErrObjectExists) {
+		t.Fatalf("PutIfAbsent collision must wrap ErrObjectExists, got: %v", dup)
+	}
+	if !strings.Contains(dup.Error(), "audit/m1/000001.age") || !strings.Contains(dup.Error(), "already exists") {
+		t.Fatalf("collision message lost its detail: %v", dup)
 	}
 	keys, err := f.List(ctx, "audit/m1/")
 	if err != nil || len(keys) != 1 || !strings.HasSuffix(keys[0], "000001.age") {

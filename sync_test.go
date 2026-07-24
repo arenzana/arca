@@ -528,6 +528,10 @@ func TestSyncAutoArgGuards(t *testing.T) {
 // both are present, and the flag without env is refused.
 func TestSyncInitStoreCredentials(t *testing.T) {
 	sandbox(t)
+	// This test asserts the no-env refusal path, so clear any ambient sync credentials a
+	// developer machine may carry (sandbox leaves them alone for the sync e2e test's sake).
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "")
 	if err := runArcaErr("", "sync", "init", "s3://b/x?endpoint=h:1", "--store-credentials"); err == nil {
 		t.Fatal("--store-credentials without env should be refused")
 	}
