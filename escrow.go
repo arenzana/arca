@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,6 +110,14 @@ func machineID() (string, error) {
 // escrowAudit pushes everything not yet escrowed as one new segment. Best-effort:
 // callers print the returned error as a warning and move on. recipients are the
 // store's — the same keys that can open the store envelope can read the trail.
+//
+// Self-healing (the create-only slot is already taken): a state dir restored from an
+// older backup rewinds the local cursor behind the remote, so every subsequent escrow
+// retries an occupied sequence slot and warns forever. On that collision escrowAudit
+// reconciles the cursor to the remote's newest segment for this machine and retries
+// once, so the stuck cursor recovers on its own. It refuses to reconcile — and surfaces
+// the collision — when the local log does not extend that segment (an escrow-identity
+// collision with another machine); `arca sync reset-escrow` is the fix for that.
 func escrowAudit(ctx context.Context, b remote.Backend, recipients []string) error {
 	a, err := audit.Open(auditPath())
 	if err != nil {
@@ -116,6 +125,24 @@ func escrowAudit(ctx context.Context, b remote.Backend, recipients []string) err
 	}
 	defer a.Close()
 
+	err = escrowOnce(ctx, a, b, recipients)
+	if !errors.Is(err, remote.ErrObjectExists) {
+		return err // nil, or a non-collision failure the caller warns about
+	}
+	// The next sequence slot is taken — the local cursor is behind the remote. Adopt
+	// the remote's newest segment as the cursor, then retry exactly once. A second
+	// collision (e.g. a concurrent writer that grabbed the freed slot first) is left to
+	// the next sync rather than looped on here.
+	if rerr := reconcileEscrowCursor(ctx, a, b); rerr != nil {
+		return rerr
+	}
+	return escrowOnce(ctx, a, b, recipients)
+}
+
+// escrowOnce ships the audit increment since the local cursor as one create-only
+// segment and advances the cursor on success. A collision returns remote.ErrObjectExists
+// unchanged so escrowAudit can decide whether to reconcile.
+func escrowOnce(ctx context.Context, a *audit.Log, b remote.Backend, recipients []string) error {
 	st := loadEscrowState()
 	rows, err := a.EventsSince(st.LastID)
 	if err != nil {
@@ -156,6 +183,72 @@ func escrowAudit(ctx context.Context, b remote.Backend, recipients []string) err
 		return err
 	}
 	return saveEscrowState(escrowState{LastID: last, Seq: seg.Seq, PrevAnchor: anchor})
+}
+
+// reconcileEscrowCursor advances a behind cursor to the remote's newest segment for
+// this machine, so the next push lands on a free slot. It refuses — returning a
+// descriptive error pointing at `arca sync reset-escrow` — when the local log does not
+// extend that segment's anchor: the remote segments then belong to another machine
+// sharing this escrow identity, and continuing on the same prefix would splice two
+// divergent chains.
+//
+// The membership test is CheckAnchor, not a full Verify: escrow runs on every sync and
+// must stay cheap, and Verify would refuse to heal a log that carries an older,
+// unrelated integrity finding. A tampered local log that spuriously passes CheckAnchor
+// would only advance this cursor — the tamper is still caught by `log --verify` and
+// `--remote`, which escrow never substitutes for.
+func reconcileEscrowCursor(ctx context.Context, a *audit.Log, b remote.Backend) error {
+	segs, err := fetchEscrowedSegments(ctx, b)
+	if err != nil {
+		return fmt.Errorf("escrow cursor is behind the remote and reconciling it failed: %w", err)
+	}
+	if len(segs) == 0 {
+		return errors.New("escrow cursor is behind the remote but no readable segment history was found for this machine")
+	}
+	tail := segs[len(segs)-1]
+	if cur := loadEscrowState().Seq; tail.Seq <= cur {
+		// The occupied slot is not simply ahead of us — advancing wouldn't clear it
+		// (e.g. a concurrent writer already lost its CAS). Surface rather than loop.
+		return fmt.Errorf("escrow collision at segment #%d but the remote's newest segment is only #%d — not a behind-cursor; not reconciling", cur+1, tail.Seq)
+	}
+	if tail.Anchor != "" {
+		n, h, err := audit.ParseAnchor(tail.Anchor)
+		if err != nil {
+			return err
+		}
+		if err := a.CheckAnchor(n, h); err != nil {
+			return fmt.Errorf("the remote's newest escrow segment (#%d) is not part of this machine's audit log: %w — the escrow identity likely collides with another machine; run `arca sync reset-escrow`", tail.Seq, err)
+		}
+	}
+	return saveEscrowState(escrowState{LastID: tail.LastID, Seq: tail.Seq, PrevAnchor: tail.Anchor})
+}
+
+// currentMachineID returns the stored escrow identity without generating one — empty
+// if this machine has never escrowed. Unlike machineID it never writes.
+func currentMachineID() string {
+	b, err := os.ReadFile(machineIDPath()) //#nosec G304 -- our own state dir
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// reseatEscrowIdentity gives this machine a brand-new escrow identity: it clears the
+// machine-id and the escrow cursor so the next escrow starts a fresh append-only
+// history under a new prefix. It is the recovery for an escrow-identity collision (two
+// machines that ended up with the same machine-id), where reconciling in place is
+// unsafe. Secrets, the store, and the local audit log are untouched — only the
+// off-machine audit copy restarts under a new name. Returns the old and new ids.
+func reseatEscrowIdentity() (oldID, newID string, err error) {
+	oldID = currentMachineID()
+	if err := os.Remove(machineIDPath()); err != nil && !os.IsNotExist(err) {
+		return "", "", err
+	}
+	if err := os.Remove(escrowStatePath()); err != nil && !os.IsNotExist(err) {
+		return "", "", err
+	}
+	newID, err = machineID() // regenerate a fresh suffix now
+	return oldID, newID, err
 }
 
 // escrowKeyRegexp matches exactly the segment keys the writer produces for this machine:

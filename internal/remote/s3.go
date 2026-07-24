@@ -165,7 +165,7 @@ func (s *S3) PutIfAbsent(ctx context.Context, key string, data []byte) error {
 	if _, err := s.client.PutObject(ctx, s.cfg.Bucket, s.cfg.key(key),
 		bytes.NewReader(data), int64(len(data)), opts); err != nil {
 		if isPreconditionFailed(err) {
-			return fmt.Errorf("remote object %s already exists (append-only)", key)
+			return fmt.Errorf("remote object %s %w", key, ErrObjectExists)
 		}
 		return err
 	}

@@ -365,8 +365,52 @@ func newSync() *cobra.Command {
 	c.Flags().BoolVar(&pushOnly, "push", false, "only push (upload local changes)")
 	c.Flags().BoolVar(&force, "force", false, "accept a remote that regressed (rolled back) — read the warning first")
 
-	c.AddCommand(newSyncInit(), newSyncStatus(), newSyncAuto())
+	c.AddCommand(newSyncInit(), newSyncStatus(), newSyncAuto(), newSyncResetEscrow())
 	return c
+}
+
+// newSyncResetEscrow recovers an escrow that keeps colliding because this machine's
+// escrow identity clashes with another's — the case the automatic in-place reconcile
+// (escrowAudit) deliberately refuses. It rotates the identity and resets the cursor,
+// then re-escrows the full local audit log under the new prefix when a backend is
+// reachable. Secrets, the store, and the local audit log are never touched.
+func newSyncResetEscrow() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-escrow",
+		Short: "Restart this machine's audit escrow under a fresh identity (recovers a stuck/colliding escrow)",
+		Long: "Rotates this machine's escrow identity and resets its escrow cursor, then re-escrows the\n" +
+			"full local audit log under a new append-only prefix on the next sync. Use it when audit\n" +
+			"escrow keeps warning that a segment 'already exists (append-only)' and the automatic\n" +
+			"reconcile refused because the escrow identity collides with another machine's.\n\n" +
+			"Secrets, the store, and the local audit log are NOT touched — only the off-machine audit\n" +
+			"copy restarts under a new name; the previous segments remain on the backend.",
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			oldID, newID, err := reseatEscrowIdentity()
+			if err != nil {
+				return err
+			}
+			if oldID == "" {
+				fmt.Fprintf(os.Stderr, "escrow identity set: %s (no previous identity)\n", newID)
+			} else {
+				fmt.Fprintf(os.Stderr, "escrow identity reseated: %s -> %s\n", oldID, newID)
+			}
+			// One-step recovery: re-escrow now if a backend and store are available;
+			// otherwise the next `arca sync` (or auto-sync) picks it up.
+			b, berr := openBackend()
+			if berr != nil {
+				fmt.Fprintln(os.Stderr, "run `arca sync` to escrow the audit log under the new identity")
+				return nil
+			}
+			s, _, serr := localStoreForSync()
+			if serr != nil || s == nil {
+				fmt.Fprintln(os.Stderr, "run `arca sync` to escrow the audit log under the new identity")
+				return nil
+			}
+			escrowBestEffort(context.Background(), b, s.Recipients)
+			return nil
+		},
+	}
 }
 
 func newSyncInit() *cobra.Command {

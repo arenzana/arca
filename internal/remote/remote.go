@@ -39,6 +39,12 @@ var ErrCASMismatch = errors.New("remote changed since last sync (concurrent push
 // ErrNotFound is returned by Head/Fetch when the backend holds no envelope yet.
 var ErrNotFound = errors.New("no store on the remote yet")
 
+// ErrObjectExists is returned by PutIfAbsent when the key is already present — the
+// create-only write was refused (the append-only contract held). Callers that can
+// recover from a taken slot (escrow reconciling a behind cursor) match it with
+// errors.Is rather than scraping the message.
+var ErrObjectExists = errors.New("already exists (append-only)")
+
 // Backend replicates envelopes. Implementations must be safe for sequential use by
 // one process; arca is a short-lived single command and never shares a Backend.
 type Backend interface {
