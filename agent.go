@@ -15,8 +15,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// mcpStrictFlag is set by `arca mcp --strict`. agentStrict() also honours ARCA_AGENT_STRICT so the
-// mode can be enabled without editing the MCP launch command (e.g. from an agent-runner's env).
+// mcpStrictFlag is set by `arca mcp --strict`, which is the form to document and to use. strict is
+// deny-by-default, and a deny-by-default control must not depend on the environment to be ON: any
+// launch context that does not inherit the variable — a launchd/systemd unit, an editor-spawned MCP
+// server, a sudo invocation that scrubs the env, a runner started before the variable was exported —
+// silently comes up in the *permissive* mode, with only a stderr notice nobody reads. The flag lives
+// on the command line, so it either is there or the command visibly differs.
+//
+// agentStrict() also honours ARCA_AGENT_STRICT, and that is kept because the direction is safe: the
+// variable can only turn strict ON, never off (there is no "false" case below and mcpStrictFlag is
+// checked first), consistent with arca's rule that the environment may refuse but never grant. Treat
+// it as a way to tighten a launcher you cannot edit, not as the way to configure strict mode.
 var mcpStrictFlag bool
 
 func agentStrict() bool {

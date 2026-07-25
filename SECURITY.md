@@ -66,10 +66,15 @@ With that framing, the controls are:
   mistake — so genuinely non-interactive control-plane use is refused rather than silently allowed.
   The commands that only *restrict* — `agent deny`, `disable`, `recipients rm`, `handle revoke` —
   stay usable headless, so incident response is never gated on a terminal.
-  *Residual:* an agent sharing the operator's controlling terminal can attempt to answer its own
+  *Residuals:* an agent sharing the operator's controlling terminal can attempt to answer its own
   prompt (on macOS `TIOCSTI` is unprivileged). That converts a silent self-authorization into a
   visible one rather than making it impossible; containment still requires the age identity to be
-  out of the agent's reach, per the framing above.
+  out of the agent's reach, per the framing above. Separately, the anchor covers the commands whose
+  only job is to widen access; it does **not** cover a policy bit cleared in passing by `arca set` /
+  `arca generate` (`--require-approval=false` and friends). That path is bounded to
+  destroy-and-downgrade — both commands overwrite the value first, so clearing the bit costs the
+  secret and is audited — rather than the silent escalation this anchor closes, but it is not
+  anchored. See T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 - **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
   pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
   log), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it

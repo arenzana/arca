@@ -164,6 +164,41 @@ current recipient set, and the audit log now names added keys on the machine whe
 they were added. Review both. See `GUIDES/` for the response runbook if an
 unrecognized key is found.
 
+### T13 — Clearing a policy bit on the write path is not anchored — ⚠ OPEN (residual of T11)
+T11 anchors the six commands that *widen* access. It does not anchor the two that
+*write a value*, and those can clear a policy bit on the way past:
+`arca set NAME --require-approval=false` (likewise `--no-print=false`,
+`--require-grant=false`, `--rate ""`) and the same flags on `arca generate`. Those
+are the complete set — `sec.NoPrint` / `RequireApproval` / `RequireGrant` /
+`RateLimit` are written from exactly two places, `set` (`main.go`) and `generate`
+(`generate.go`); `rotate`, `edit` and `annotate` do not touch policy.
+
+**Why this is ranked below the six, rather than folded into T11.** The anchor exists
+to stop *silent escalation of read capability*. This is not that. In both commands
+the value write is unconditional and comes first (`sec.Value = armored`, before the
+`Flags().Changed(...)` block), so clearing the bit costs the secret: the caller must
+supply a replacement value, and an agent that needed `--require-approval` cleared is
+by definition one that could not read the old value to put back. The outcome is
+**destroy-and-downgrade** — audited as `op=set` / `op=generate`, immediately visible
+to every legitimate consumer, and recoverable from `sync` or `escrow` — where T11's
+paths were silent, permanent, and left the value in place. Controls are ranked by the
+failure they prevent; this one prevents a lesser failure.
+
+*Not addressed, deliberately.* The fix is a different predicate from the six: those
+are unconditional `requireOperator()` calls, whereas this must fire only when
+(the target already exists) **and** (a policy bit is moving 1→0) — otherwise every
+first-time `set` prompts and the anchor becomes noise the operator learns to answer
+`y` to. That earns its own change and its own tests rather than riding along with
+T11.
+
+*Interaction with the empty-value guard.* Before the guard on `set`/`rotate` refused
+an empty stdin read, this was materially worse: `arca set NAME --require-approval=false
+</dev/null` cleared the policy bit **and** stored empty over the real value and exited
+0 — silent destruction, because the store keeps only the current value. With the guard
+in place the destructive half is refused outright, which is what leaves this at
+destroy-and-downgrade. `generate` was never in that shape: it reads no stdin and always
+substitutes a fresh random value.
+
 ### T3 — Shell / environment injection via crafted secret names
 A hand-edited or synced store containing a name like `x=...; rm -rf` could break
 out of `eval "$(arca env)"`, or a name like `LD_PRELOAD`/`PATH` could hijack the
@@ -284,6 +319,7 @@ describes intended behaviour rather than current behaviour is worse than none.
 | ID | Summary | Severity |
 |----|---------|----------|
 | T12 (residual) | The recipient set is not pinned in local state, so a recipient added on another machine and synced in is not surfaced on load; `doctor` reports blast radius as a static count with no baseline | Medium |
+| T13 (residual) | `set` / `generate` can clear a policy bit (`--require-approval=false`, `--no-print=false`, `--require-grant=false`, `--rate ""`) without the T11 anchor. Bounded to destroy-and-downgrade — the value write is unconditional and comes first, so the clear costs the secret and is audited — rather than the silent escalation T11 closes | Low-Medium |
 | — | `sync` performs no store locking, so a concurrent pull can silently revert a mutation — including a `rotate` or `recipients rm` performed as incident remediation. It also forks the `generation` counter that T9's rollback detection and the signed audit events depend on | High |
 | — | The MCP `run_with_secrets` path buffers command output unbounded with no timeout. Beyond denial of service, the process heap holds injected values in cleartext, so an agent-driven OOM produces a core dump containing them where core dumps are enabled | High |
 

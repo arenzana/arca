@@ -37,7 +37,10 @@ All notable changes to arca are documented here. The format follows
   the same reason, and a test enforces the absence. The cost is that non-interactive control-plane
   use (CI issuing a grant, a provisioning script adding a key) is now refused rather than silently
   allowed; the intended answer is an operator-minted, scoped, expiring capability, not a variable.
-  See T11/T12 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the residuals.
+  Scope: this covers the commands whose job is to widen access. A policy bit cleared in passing by
+  `set` / `generate` (`--require-approval=false` and friends) is **not** anchored — both overwrite
+  the value first, so that path is destroy-and-downgrade and audited rather than silent escalation.
+  See T11/T12/T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the residuals.
 
 ### Added
 - **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push
