@@ -428,13 +428,25 @@ window needed.
   anything.
 
 Choosing between them is a cost decision rather than a security one — the first is
-strictly stronger today and strictly more annoying. Recovering from a failed release
-run is cheapest under either shape by **publishing the stranded draft** rather than
-re-pointing the tag: publishing is a release action and needs no ruleset change,
-while re-pointing needs its own disable/re-enable cycle. Until one is in place, **a
-tag with no corresponding approved deployment is the signal to look for**, and it is
-worth checking over any period the pushing credential was reachable by something
-other than the operator.
+strictly stronger today and strictly more annoying.
+
+*Recovering from a failed release run* splits into two cases under either shape, and
+the run's own step list says which: **did the goreleaser step run?**
+
+- **It did not.** Nothing was built, no release object exists, and nothing was pushed
+  to the Homebrew tap or the Scoop bucket. The tag is inert — re-point or delete it
+  freely, which under the ruleset costs one more disable/re-enable cycle. Cutting the
+  next patch number instead costs no cycle at all, and is usually right, because a run
+  that died this early normally died on something the tagged tree has to fix anyway.
+- **It succeeded.** A draft release exists *and the tap and bucket were already pushed
+  inside that same step.* **Publish the draft; do not re-point the tag.** Re-pointing
+  leaves the tap advertising a cask whose checksums came from a build no longer at the
+  tag — by hand, the divergence that shipped a broken `v0.6.1`. Publishing needs no
+  ruleset change, and it closes the window instead of reopening it.
+
+Until one is in place, **a tag with no corresponding approved deployment is the signal
+to look for**, and it is worth checking over any period the pushing credential was
+reachable by something other than the operator.
 
 ## Residual risks (accepted)
 
