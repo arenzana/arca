@@ -37,6 +37,27 @@ bypass arca entirely), and host compromise (malware, a key-logger, memory
 scraping). arca raises the bar for an agent, not for an attacker who already owns
 the machine.
 
+**The out-of-scope line and the in-scope adversary overlap, and that must be
+stated plainly.** The agent arca is built to constrain is typically a coding
+assistant with a shell tool — which is a local process running as the operator.
+It is therefore *already* the excluded party, and the exclusion is doing more
+work than a casual reader will assume. The honest formulation is not "agents are
+in scope, local users are out" but:
+
+> arca constrains an agent that acts **through the arca interface**. It does not
+> constrain an agent with arbitrary filesystem read, which takes the age identity
+> directly and decrypts the store without invoking arca — no policy consulted, no
+> audit event, no canary. Every control in this document is void against that
+> agent.
+
+This is not a defect to be fixed; it is unfixable in-process without moving the
+key out of the operator's reach (TPM, hardware token, remote signer). It is
+recorded here because it determines whether the rest of the model is meaningful
+or decorative. arca is worth deploying under the honest framing — as a control
+on the sanctioned path, and as detection and attribution for everything that
+uses it — provided the deployment either restricts the agent's read access to
+the identity path or accepts this knowingly.
+
 ## Threats considered and how they are addressed
 
 ### T1 — Secret value leaks through a side channel
@@ -59,6 +80,59 @@ but it cannot open `/dev/tty` / `CONIN$` when no human terminal exists — so a
 headless caller stays fail-closed and always leaves a read record. *Residual:*
 on Windows, a console-attached agent process does have `CONIN$`; the terminal
 anchor there is weaker than on Unix (same trade-off as approval).
+
+### T11 — An agent edits the policy instead of defeating it — ⚠ OPEN
+T2's terminal anchor is applied to the commands that *release* a value. It is not
+applied to the commands that *change the rules*. `arca grant`, `arca agent allow`,
+`arca enable`, `arca recipients add`, and `arca reencrypt` all succeed today for a
+detected agent with no controlling terminal.
+
+The consequence is that the strongest per-secret controls are self-servable in one
+extra step. An agent refused by `--require-grant` runs `arca grant NAME --ttl 1h
+--uses 99` and retries successfully. An agent invisible under a `--strict` MCP
+server runs `arca agent allow NAME` and becomes visible. The documented workflow
+in T2 — "for unattended-but-authorized use, the operator issues a scoped `grant`
+or `handle`" — assumes the operator issues it; nothing enforces that.
+
+*Not addressed.* The intended fix is to route control-plane mutations through the
+same anchor `approve()` already uses (detected agent or no controlling terminal →
+refuse). The trade-off is real and unresolved: it breaks legitimate
+non-interactive use such as CI issuing a grant or a provisioning script adding a
+teammate's key. It must **not** be re-opened with an environment variable — that
+reproduces the `ARCA_APPROVAL=allow` mistake T2 exists to record. The intended
+escape hatch is an operator-minted admin capability (the shape `handle` already
+uses): created interactively once, scoped, and expiring.
+
+### T12 — Recipient injection: exfiltration that never enters an access path — ⚠ OPEN
+The widest case of T11, called out separately because its blast radius and its
+audit behaviour are both different in kind.
+
+`arca recipients add <attacker key>` followed by `arca reencrypt` re-wraps every
+stored value to an additional age key. The holder of that key then decrypts the
+store directly, offline, permanently, and on every machine the store syncs to.
+Because the path never calls `gate()`, it is unaffected by *all* per-secret
+policy: `--no-print`, `--require-approval`, `--require-grant`, expiry, disable and
+rate limits are all irrelevant to it. No read event is recorded, and a canary in
+the same store is re-wrapped to the attacker's key **silently** — the decoy is
+exfiltrated without tripping.
+
+Auditing is also incomplete here: `recipients add` writes no audit event at all
+today. `reencrypt` writes one (`op=reencrypt`, `name=*`) which does not name the
+key that was added, so the log shows that a re-wrap happened but not that the
+recipient set grew or to whom. `arca log --verify` still reports a clean chain —
+correctly, since the chain is honest about everything it was told, and it was
+never told.
+
+*Not addressed.* Three separable fixes: (1) audit `recipients add`, recording the
+added key — cheap and independent of the rest; (2) apply the T11 anchor to the
+recipient commands; (3) pin the recipient set in local state (the pattern
+`storeGenPath()` already uses for rollback) so a change is surfaced on load and
+raised by `doctor`, which currently reports decryption blast radius at LOW and as
+a static count with no baseline to compare against.
+
+*Detection in the meantime:* `arca who-can-read` / `arca exposure` show the
+current recipient set. Review it directly; the audit log will not show this
+change. See `GUIDES/` for the response runbook if an unrecognized key is found.
 
 ### T3 — Shell / environment injection via crafted secret names
 A hand-edited or synced store containing a name like `x=...; rm -rf` could break
@@ -158,10 +232,31 @@ minimal (see [CONTRIBUTING.md](../CONTRIBUTING.md#dependencies)).
 
 ## Residual risks (accepted)
 
-- A hostile local user or compromised host can read secrets — out of scope by design.
+- A hostile local user or compromised host can read secrets — out of scope by
+  design. **This includes an AI agent with unrestricted filesystem read**, which
+  is the same class of party arca otherwise constrains; see the trust-boundary
+  section above for why this is stated rather than mitigated.
 - Audit attribution is self-reported, not cryptographically verified.
 - A subprocess invoked with a secret can itself disclose that secret; choosing
   the command is the operator's responsibility.
+- Sync backend credentials, when persisted with `sync init --store-credentials`,
+  are stored in cleartext at `0600` in the state directory — the same bootstrap
+  class as the age identity, and reachable by the same party as the first item.
 
 These are documented rather than mitigated because they fall outside the single
 trust boundary arca is designed to enforce.
+
+## Open findings (not yet addressed)
+
+Recorded here so this document does not read as an all-clear. A threat model that
+describes intended behaviour rather than current behaviour is worse than none.
+
+| ID | Summary | Severity |
+|----|---------|----------|
+| T11 | Control-plane mutations are not terminal-anchored; an agent can edit the policy that governs it | High |
+| T12 | Recipient injection exfiltrates every secret outside any access path; `recipients add` is unaudited | High |
+| — | `sync` performs no store locking, so a concurrent pull can silently revert a mutation — including a `rotate` or `recipients rm` performed as incident remediation. It also forks the `generation` counter that T9's rollback detection and the signed audit events depend on | High |
+| — | The MCP `run_with_secrets` path buffers command output unbounded with no timeout. Beyond denial of service, the process heap holds injected values in cleartext, so an agent-driven OOM produces a core dump containing them where core dumps are enabled | High |
+
+The last two were identified during backend review; they are recorded here
+because their consequences land on trust boundaries this document owns.
