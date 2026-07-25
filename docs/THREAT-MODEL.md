@@ -93,9 +93,9 @@ preserve. An operator's redirect (no agent marker) is unaffected, terminal or no
 *Residual:* on Windows, a console-attached agent process does have `CONIN$`; the
 terminal anchor there is weaker than on Unix (same trade-off as approval). And
 detection remains the trigger for the `$ARCA_AUDIT` refusal, so an agent that
-scrubs its own markers evades it — that is the standing limit of env-based
-detection (see T15), not new to this control; what the fix removes is the case
-where an agent did *not* have to hide to go unaudited.
+scrubs its own markers evades it — the standing limit of env-based detection
+stated above, not new to this control; what the fix removes is the case where
+an agent did *not* have to hide to go unaudited.
 
 ### T11 — An agent edits the policy instead of defeating it — ✅ ADDRESSED
 T2's terminal anchor is applied to the commands that *release* a value. It was not

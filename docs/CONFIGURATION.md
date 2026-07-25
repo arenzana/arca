@@ -41,6 +41,11 @@ store reconciled it against your personal store's backend and replaced its conte
 second store's legitimately lower generation tripped the rollback warning against the first
 store's high-water mark.
 
+Two spellings of one store still key to two dirs if you symlink the store *file* itself, or if its
+parent directory doesn't exist yet when the key is first computed — symlinks are resolved on the
+directory, never the file. A split is the safe direction: the store's state looks fresh and
+`arca doctor` names the dirs so you can merge them.
+
 Two entries are deliberately **not** per store:
 
 - **`$XDG_STATE_HOME/arca/machine-id`** identifies this *machine* to escrow. Keying it per store
@@ -52,11 +57,12 @@ Two entries are deliberately **not** per store:
   **One restriction:** if arca detects an AI agent and `$ARCA_AUDIT` points anywhere other than the
   store's own audit DB, the command is refused. An agent controls its own environment, so an
   honoured redirect would hand it an unread log *and* a fresh rate-limit window on every secret —
-  the audit log is what the rate limit counts. This is the one place agent detection alone is the
-  trigger, without the controlling-terminal hatch that `ARCA_STRICT_AUDIT=0` and `get --no-log`
-  use: an agent running under a pty has a terminal, and a hatch here would return the bypass.
-  Nothing changes for an operator, headless or not. If a human's shell exports an agent marker
-  (`AI_AGENT`, `CLAUDECODE`, …), unset it for that command; the refusal names the expected path.
+  the audit log is what the rate limit counts. Here there is no controlling-terminal hatch of the
+  kind `ARCA_STRICT_AUDIT=0` and `get --no-log` use: an agent running under a pty has a terminal,
+  and a hatch here would return the bypass. (`exec`'s forced redaction is anchored the same way —
+  detection alone, no terminal test.) Nothing changes for an operator, headless or not. If a
+  human's shell exports an agent marker (`AI_AGENT`, `CLAUDECODE`, …), unset it for that command;
+  the refusal names the expected path.
 
 **Upgrading:** the first arca command after the upgrade moves the existing flat state into the
 per-store directory for whichever store it is running against, once. Nothing is copied and nothing
