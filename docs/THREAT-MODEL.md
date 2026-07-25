@@ -385,26 +385,54 @@ the credential. `can_admins_bypass` also defaults to true on a new environment.
 So any credential used for automated pushes must be checked against the approval
 endpoint and the bypass setting, not only against `contents`.
 
-*Also not addressed — tag creation is unrestricted.* No ruleset covers
-`refs/tags/*`, so the hostile tag can still be created, and per the residual above
-the environment gate does not stop it producing a signed Release. Restricting the
-tag is the only proposed control that stops that tag *existing*, and it comes in two
-shapes with very different costs:
+*Also not addressed — the tag ref is unrestricted, for creation and for movement.*
+No ruleset covers `refs/tags/*`, so the hostile tag can still be created — or an
+existing one re-pointed — and per the residual above the environment gate does not
+stop either producing a signed Release. Restricting the tag ref is the only proposed
+control that stops that tag *existing*, and it comes in two shapes with very
+different costs. Both need the same three rules:
 
-- **Restrict creations on `refs/tags/v*` with an empty bypass list — available
-  today.** Cutting a release then becomes: disable the rule, push the tag, re-enable
-  it. That is a UI/API action, on a channel a git credential does not have, so it
-  holds even while every push uses the operator's own key. The cost is recurring
-  friction on every release, in a repository where releases are cut by hand.
-- **Restrict creations with the automation identity excluded from bypass.** Much
-  lower friction, but it needs an identity to exclude: a bypass list cannot
-  distinguish the operator at a terminal from an agent holding a copy of the
-  operator's key, so this shape only becomes available once agent pushes use a
-  separate credential.
+    target: tag    pattern: refs/tags/v*    enforcement: active
+    rules: restrict creations + restrict updates + restrict deletions
+
+**All three, not only creations.** GitHub's *New tag ruleset* form selects
+*Restrict deletions* by default and leaves creations and updates unselected, so
+ticking the one rule this finding is usually named by lands on creations plus
+deletions with updates open — which pays the full friction while leaving the
+movement path below intact.
+
+*Why `update` is load-bearing.* Immutable releases is enabled on this repository,
+and GitHub documents that "once an immutable release is published, its associated
+Git tag is locked to a specific commit, cannot be changed, and cannot be deleted
+while the release exists." That locks the tag at **publish**, not at push, and
+`.goreleaser.yaml` creates the release as a draft which the workflow publishes in
+its second-to-last step. So a release run that ends before that step leaves a `v*`
+tag whose release is unpublished and therefore still movable. The window is not
+hypothetical here: of 17 `release.yml` runs, two ended before the publish step —
+`v0.2.0` on a blocked syft download, `v0.5.0` on a failed provenance attestation —
+and `v0.2.0` was re-pointed to a different commit while its window was open, with
+the workflow firing again on the new commit. Separately, `v0.1.0` predates the
+setting and its release is `immutable: false`, so that tag is movable today with no
+window needed.
+
+- **Empty bypass list — available today.** Cutting a release then becomes: disable
+  the rule, push the tag, re-enable it. That is a UI/API action, on a channel a git
+  credential does not have, so it holds even while every push uses the operator's
+  own key. The cost is recurring friction on every release, in a repository where
+  releases are cut by hand.
+- **The automation identity excluded from bypass.** Much lower friction, but it
+  needs an identity to exclude: a bypass list cannot distinguish the operator at a
+  terminal from an agent holding a copy of the operator's key, so this shape becomes
+  available only once agent pushes use a separate credential *and* the copies of the
+  operator's key are gone. Adding the separate credential does not by itself remove
+  anything.
 
 Choosing between them is a cost decision rather than a security one — the first is
-strictly stronger today and strictly more annoying. Until one is in place, **a tag
-with no corresponding approved deployment is the signal to look for**, and it is
+strictly stronger today and strictly more annoying. Recovering from a failed release
+run is cheapest under either shape by **publishing the stranded draft** rather than
+re-pointing the tag: publishing is a release action and needs no ruleset change,
+while re-pointing needs its own disable/re-enable cycle. Until one is in place, **a
+tag with no corresponding approved deployment is the signal to look for**, and it is
 worth checking over any period the pushing credential was reachable by something
 other than the operator.
 
