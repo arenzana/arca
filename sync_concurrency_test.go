@@ -649,14 +649,14 @@ func TestCASDetectsChange(t *testing.T) {
 	runArca(t, "hunter2", "set", "API")
 
 	tests := []struct {
-		name  string
+		name   string
 		mutate func(t *testing.T)
-		want  error
+		want   error
 	}{
 		{
-			name:  "unchanged",
+			name:   "unchanged",
 			mutate: func(*testing.T) {},
-			want:  nil,
+			want:   nil,
 		},
 		{
 			name: "store rewritten",
