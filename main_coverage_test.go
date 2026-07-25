@@ -166,9 +166,15 @@ func TestDetectIdentityCursorAndNone(t *testing.T) {
 // audit db, operations abort by default (and a read won't disclose); opting out via
 // ARCA_STRICT_AUDIT=0 lets them proceed despite the broken log.
 func TestAuditFailureModes(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
-	if err := os.WriteFile(filepath.Join(dir, "audit.db"), []byte("not a database"), 0o600); err != nil {
+	// `init` does not record an audit event, so the per-store state dir may not exist yet — it is
+	// created by audit.Open on the first recorded access. Corrupting the DB before that means
+	// creating the directory ourselves.
+	if err := os.MkdirAll(filepath.Dir(auditPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(auditPath(), []byte("not a database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// Default: fail-closed — abort when the access can't be audited.

@@ -47,6 +47,15 @@ Two entries are deliberately **not** per store:
   one DB interleave their hash chains and `arca log --verify` on either reads the other's events as
   its own. Setting `ARCA_AUDIT` explicitly is how you opt into one shared log anyway.
 
+  **One restriction:** if arca detects an AI agent and `$ARCA_AUDIT` points anywhere other than the
+  store's own audit DB, the command is refused. An agent controls its own environment, so an
+  honoured redirect would hand it an unread log *and* a fresh rate-limit window on every secret —
+  the audit log is what the rate limit counts. This is the one place agent detection alone is the
+  trigger, without the controlling-terminal hatch that `ARCA_STRICT_AUDIT=0` and `get --no-log`
+  use: an agent running under a pty has a terminal, and a hatch here would return the bypass.
+  Nothing changes for an operator, headless or not. If a human's shell exports an agent marker
+  (`AI_AGENT`, `CLAUDECODE`, …), unset it for that command; the refusal names the expected path.
+
 **Upgrading:** the first arca command after the upgrade moves the existing flat state into the
 per-store directory for whichever store it is running against, once. Nothing is copied and nothing
 is deleted. If you have a second store, it starts with empty state — that is the fix working, and

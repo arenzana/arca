@@ -61,8 +61,13 @@ var legacyStateEntries = []string{
 // Both split one store into two dirs, which is the conservative direction — a split degrades to
 // "this store's state looks fresh", which `arca doctor` names and an operator can repair by moving
 // the dir, whereas collapsing two distinct stores onto one dir is the clobber R5 is about.
-func absStorePath() string {
-	p := storePath()
+func absStorePath() string { return resolvePath(storePath()) }
+
+// resolvePath makes p absolute and symlink-resolves its containing DIRECTORY, leaving the final
+// element alone. Factored out of absStorePath so the audit-redirect check (R4/D2) compares paths
+// by the same rule the state key is derived from — two spellings of one path must not read as two
+// different paths in one place and one path in the other.
+func resolvePath(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return filepath.Clean(p) // Abs only fails if the cwd is unavailable; degrade, don't panic
@@ -72,6 +77,33 @@ func absStorePath() string {
 		return abs // parent does not exist yet, or is unreadable
 	}
 	return filepath.Join(dir, filepath.Base(abs))
+}
+
+// sameFile reports whether a and b name the same file. The string comparison of resolved paths
+// comes first because it is the only one that works before the file exists — the audit DB is
+// routinely named before it is created. os.SameFile is the fallback for the cases string equality
+// cannot see: a case-insensitive filesystem (Windows CI runs this code), a hard link, or a bind
+// mount. It can only run when both paths already resolve to something on disk.
+//
+// One of the two paths is $ARCA_AUDIT — attacker-influenced by construction, since deciding what
+// to do about an attacker's chosen path is this function's entire job. gosec's taint analysis is
+// right that the value is untrusted and wrong that it is a traversal: nothing here opens, reads or
+// writes the path, the only output is a bool, and a stat that fails yields false, which is the
+// refusing answer. Both stats carry the annotation because either argument may be the tainted one.
+func sameFile(a, b string) bool {
+	ra, rb := resolvePath(a), resolvePath(b)
+	if ra == rb {
+		return true
+	}
+	fa, err := os.Stat(ra) //#nosec G703 -- metadata only, never opened; a failed stat refuses
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(rb) //#nosec G703 -- metadata only, never opened; a failed stat refuses
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 // storeStateKey is the directory name for the active store: the first 16 hex digits of

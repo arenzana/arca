@@ -56,9 +56,25 @@ or `handle` interactively. The other two knobs, `ARCA_STRICT_AUDIT=0` and
 caller **with a controlling terminal**. Env-var-based agent detection alone would
 be advisory (an agent controls its own environment and can scrub the markers),
 but it cannot open `/dev/tty` / `CONIN$` when no human terminal exists — so a
-headless caller stays fail-closed and always leaves a read record. *Residual:*
-on Windows, a console-attached agent process does have `CONIN$`; the terminal
-anchor there is weaker than on Unix (same trade-off as approval).
+headless caller stays fail-closed and always leaves a read record.
+
+A third knob, **`$ARCA_AUDIT`**, was unanchored until it was closed: it selects
+*which* DB the fail-closed write goes to, so redirecting it to a scratch file
+neutralized the audit log, the rate limit (the log is the counter) and the canary
+registry at once, with no knob visibly turned off. It is now handled differently
+from the other two — a detected agent whose `$ARCA_AUDIT` resolves to anything
+other than the store's own DB has its **command refused**, with no
+controlling-terminal hatch. The hatch is deliberately absent here: an agent
+running under a pty *does* have a terminal, so extending it would hand the bypass
+straight back, and unlike the other two knobs there is no legitimate agent use to
+preserve. An operator's redirect (no agent marker) is unaffected, terminal or not.
+
+*Residual:* on Windows, a console-attached agent process does have `CONIN$`; the
+terminal anchor there is weaker than on Unix (same trade-off as approval). And
+detection remains the trigger for the `$ARCA_AUDIT` refusal, so an agent that
+scrubs its own markers evades it — that is the standing limit of env-based
+detection (see T15), not new to this control; what the fix removes is the case
+where an agent did *not* have to hide to go unaudited.
 
 ### T3 — Shell / environment injection via crafted secret names
 A hand-edited or synced store containing a name like `x=...; rm -rf` could break

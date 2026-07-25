@@ -334,9 +334,13 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError("handle target no longer exists"), nil
 	}
 	// The handle is the authorization to *use* the secret, so grant/approval gating is bypassed;
-	// but a canary trips, an expired secret is refused, and a rate limit still applies.
+	// but a canary trips, an expired secret is refused, and a rate limit still applies. A trip that
+	// cannot be recorded fails the call (D2) — this path bypasses gate(), so it has to carry the
+	// same fail-closed rule itself rather than inheriting it.
 	if isCanary(h.Secret, sec) {
-		tripCanary(h.Secret)
+		if err := tripCanary(h.Secret); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 	}
 	if sec.Expired(time.Now()) {
 		return mcp.NewToolResultError("the secret behind this handle has expired"), nil

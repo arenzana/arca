@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -119,7 +118,7 @@ func TestVerifyDetectsInLogGenerationRegression(t *testing.T) {
 // passes — only an anchor stored off the machine catches it. Also covers the happy path (a
 // grown log still extends an old anchor) and a malformed token.
 func TestAnchorDetectsJointRollback(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v1", "set", "A")
 
@@ -128,7 +127,7 @@ func TestAnchorDetectsJointRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldAudit, err := os.ReadFile(filepath.Join(dir, "audit.db"))
+	oldAudit, err := os.ReadFile(auditPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +149,7 @@ func TestAnchorDetectsJointRollback(t *testing.T) {
 	if err := os.WriteFile(storePath(), oldStore, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "audit.db"), oldAudit, 0o600); err != nil {
+	if err := os.WriteFile(auditPath(), oldAudit, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(storeGenPath()); err != nil && !os.IsNotExist(err) {

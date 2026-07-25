@@ -166,11 +166,11 @@ func TestEditRenameAuditFailClosed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a /bin/sh editor")
 	}
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "A")
 	runArca(t, "v", "set", "B")
-	if err := os.WriteFile(filepath.Join(dir, "audit.db"), []byte("not a database"), 0o600); err != nil {
+	if err := os.WriteFile(auditPath(), []byte("not a database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("EDITOR", "true") // a no-op editor; edit still re-encrypts and audits

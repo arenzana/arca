@@ -59,6 +59,28 @@ All notable changes to arca are documented here. The format follows
   failed stored an empty value over the real one and exited 0, with no undo — the store keeps only
   the current value. See `--allow-empty` above.
 
+### Security
+- **An AI agent can no longer redirect its own audit log.** `$ARCA_AUDIT` was honoured
+  unconditionally, and an agent controls its own environment — so pointing it at a scratch file
+  bought the agent a log nobody reads, a *fresh rate-limit window on every secret* (the audit log
+  is the rate counter), and a canary registry whose trips land where the operator never looks,
+  while `arca log`, `arca canary --list` and `arca doctor` stayed clean against the real DB.
+  A command now **refuses to run** when an agent is detected and `$ARCA_AUDIT` resolves to
+  anything other than that store's own audit DB. It refuses rather than ignoring the variable:
+  falling back to the real log silently would leave the agent believing it is unaudited and the
+  operator holding a log that contradicts the environment they can see.
+
+  Unchanged for everyone else: `$ARCA_AUDIT` remains the documented way for an *operator* to point
+  several stores at one shared log, with or without a terminal, so scripts and CI are unaffected.
+  Setting it to the path arca would have used anyway is not a redirection and is not refused.
+- **A canary trip that cannot be recorded now blocks the access.** `tripCanary` discarded the
+  audit write's error, which made the tripwire the one event in arca that was not fail-closed: a
+  caller who had already broken the audit DB could take a decoy and leave no trace but a line on
+  the stderr it was reading itself. Tripping still does **not** block the access when the trip
+  records normally — the value is fake, and letting the caller take it is what keeps the trap
+  useful. Both access paths carry the rule, including MCP `run_with_handle`, which bypasses the
+  policy gate and so had to be fixed separately.
+
 ## [0.7.0] - 2026-07-09
 
 `arca sync`: first-class multi-machine replication through an untrusted S3-compatible
