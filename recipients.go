@@ -121,28 +121,50 @@ func newRecipientsAdd() *cobra.Command {
 			if _, err := crypto.ParseRecipients(args); err != nil {
 				return fmt.Errorf("invalid recipient: %w", err)
 			}
-			added := 0
+			var added []string
 			for _, r := range args {
 				if contains(s.Recipients, r) {
 					continue
 				}
 				s.Recipients = append(s.Recipients, r)
-				added++
+				added = append(added, r)
 			}
 			// Record the label even if the recipient already existed (lets `add --label` back-fill a
 			// label onto an already-present key without re-adding it).
+			relabeled := ""
 			if label != "" {
+				if s.Label(args[0]) != label {
+					relabeled = args[0]
+				}
 				s.SetLabel(args[0], label)
 			}
-			if added == 0 && label == "" {
+			if len(added) == 0 && label == "" {
 				fmt.Fprintln(os.Stderr, "no new recipients")
 				return nil
 			}
 			if err := s.Save(); err != nil {
 				return err
 			}
-			if added > 0 {
-				fmt.Fprintf(os.Stderr, "added %d recipient(s); run `arca reencrypt` to re-wrap existing secrets\n", added)
+			// Audit each added key by name (SEC-44). Adding a recipient grants permanent decryption
+			// rights to every secret, on every machine the store reaches — the widest-blast-radius
+			// mutation arca supports — and it went unrecorded until now, so the log could show a
+			// `reencrypt` with no trace of the key it re-wrapped to. Recorded after the save, matching
+			// `recipients rm`, so the log never claims a change that failed to persist.
+			for _, r := range added {
+				if err := logAudit("recipients-add", r, ""); err != nil {
+					return err
+				}
+			}
+			// A relabel is audited too: labels are how an operator recognizes a key during review
+			// (`who-can-read`, `exposure`, `doctor`), so renaming an unfamiliar key to something
+			// trusted-looking is a way to hide it from exactly that check.
+			if relabeled != "" {
+				if err := logAudit("recipients-label", relabeled, ""); err != nil {
+					return err
+				}
+			}
+			if len(added) > 0 {
+				fmt.Fprintf(os.Stderr, "added %d recipient(s); run `arca reencrypt` to re-wrap existing secrets\n", len(added))
 			} else {
 				fmt.Fprintf(os.Stderr, "labeled recipient %q\n", label)
 			}

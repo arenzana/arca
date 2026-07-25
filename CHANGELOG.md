@@ -6,7 +6,28 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **`recipients add` is now audited (SEC-44).** Adding an age recipient grants permanent decryption
+  rights to every secret in the store, on every machine the store reaches — the widest-blast-radius
+  mutation arca supports — and it previously wrote no audit event at all. The log could show a
+  `reencrypt` with no trace of the key it re-wrapped to, and `log --verify` still reported a clean
+  chain (correctly: the chain is honest about everything it is told, and it was never told). Each
+  added key is now recorded individually as `op=recipients-add` with the key in the `name` field, so
+  the log answers *which* key was added. Re-adding an existing key stays a no-op and logs nothing.
+  A **relabel is also recorded** (`op=recipients-label`): labels are how an operator recognizes a key
+  during review (`who-can-read`, `exposure`, `doctor`), so renaming an unfamiliar key to something
+  trusted-looking is a way to hide it from exactly that check.
+  This closes the audit half of the recipient-injection gap; the control-plane anchor (an agent can
+  still *run* `recipients add` without a terminal) is tracked separately as T11/T12 in
+  [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
 ### Added
+- **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push
+  and PR. arca is a secrets manager: a test fixture, doc example, or recipe carrying a real
+  credential is a plausible mistake with outsized blast radius, and git history makes it permanent.
+  Invoked via `go run tool@version` like the other linters, so it is verified through the Go checksum
+  database and needs no marketplace action or license; `--redact` keeps a match out of the public CI
+  log.
 - **`.rpm` and `.deb` packages as release assets** (linux amd64/arm64), built by nfpm inside the
   same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
   the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
