@@ -28,10 +28,10 @@ import (
 )
 
 // syncStatePath holds what this machine last saw on the remote (never synced itself).
-func syncStatePath() string { return filepath.Join(stateDir(), "sync-state.json") }
+func syncStatePath() string { return filepath.Join(storeStateDir(), "sync-state.json") }
 
 // syncConfigPath optionally pins the sync URL so it survives shells (ARCA_SYNC_URL wins).
-func syncConfigPath() string { return filepath.Join(stateDir(), "sync.json") }
+func syncConfigPath() string { return filepath.Join(storeStateDir(), "sync.json") }
 
 type syncState struct {
 	LastGeneration int       `json:"last_generation"` // remote generation at last successful sync
@@ -105,7 +105,7 @@ func saveSyncState(st syncState) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
 		return err
 	}
 	tmp := syncStatePath() + ".tmp"
@@ -129,14 +129,14 @@ func saveSyncConfig(c syncConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
 		return err
 	}
 	// Atomic + mode-enforced write (SEC-37): sync.json can hold cleartext backend credentials, so
 	// it must never be left half-written by a crash, and the 0600 must be guaranteed even when the
 	// file already exists with a looser mode (a plain WriteFile only chmods on create). CreateTemp
 	// makes a fresh 0600 file; the rename is atomic. Matches saveSyncState / saveEscrowState.
-	tmp, err := os.CreateTemp(stateDir(), "sync-config-*")
+	tmp, err := os.CreateTemp(storeStateDir(), "sync-config-*")
 	if err != nil {
 		return err
 	}
@@ -277,10 +277,10 @@ func openEnvelope(envelope []byte) ([]byte, *store.Store, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("open envelope (is this machine a recipient?): %w", err)
 	}
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil { // fresh machine: nothing exists yet
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil { // fresh machine: nothing exists yet
 		return nil, nil, err
 	}
-	tmp, err := os.CreateTemp(stateDir(), "sync-pull-*")
+	tmp, err := os.CreateTemp(storeStateDir(), "sync-pull-*")
 	if err != nil {
 		return nil, nil, err
 	}

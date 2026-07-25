@@ -205,11 +205,15 @@ func storePath() string {
 }
 
 // auditPath is the local SQLite audit DB (do not sync). Override with $ARCA_AUDIT.
+//
+// It lives in the per-store state dir because it is per-store data: two stores sharing one audit
+// DB interleave their chains, so `log --verify` on either reads the other's events as its own.
+// $ARCA_AUDIT still wins, which is how an operator deliberately points several stores at one log.
 func auditPath() string {
 	if p := os.Getenv("ARCA_AUDIT"); p != "" {
 		return p
 	}
-	return filepath.Join(stateDir(), "audit.db")
+	return filepath.Join(storeStateDir(), "audit.db")
 }
 
 // identityPath is the age private key. It defaults to reusing the caller's existing
@@ -258,7 +262,7 @@ var curStore *store.Store
 var loadedGeneration = -1
 
 // storeGenPath is the local high-water mark of the store generation (state dir, never synced).
-func storeGenPath() string { return filepath.Join(stateDir(), "store.gen") }
+func storeGenPath() string { return filepath.Join(storeStateDir(), "store.gen") }
 
 // storeGenHWM reads the local high-water mark without advancing it (0 if unset). Used as a
 // durable rollback floor on pull (SEC-35): the newest store generation this machine has ever

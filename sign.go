@@ -34,9 +34,13 @@ func auditSigner() (*audit.Signer, error) {
 
 // sessionKeyPath derives the key file path from a hash of the session id, so an arbitrary session
 // string never has to be a safe filename.
+//
+// Sessions follow the audit DB into the per-store state dir (D4): the key is what verifies that
+// DB's event signatures, so separating the two would leave a log whose signatures cannot be
+// checked.
 func sessionKeyPath(sid string) string {
 	h := sha256.Sum256([]byte(sid))
-	return filepath.Join(stateDir(), "sessions", hex.EncodeToString(h[:16])+".key")
+	return filepath.Join(storeStateDir(), "sessions", hex.EncodeToString(h[:16])+".key")
 }
 
 // loadOrCreateSeed reads an existing 32-byte Ed25519 seed, or generates and writes one.

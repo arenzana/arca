@@ -290,8 +290,18 @@ func TestPathResolution(t *testing.T) {
 	if configDir() != "/x/cfg/arca" || stateDir() != "/x/state/arca" {
 		t.Fatalf("xdg dirs: %s %s", configDir(), stateDir())
 	}
-	if storePath() != "/x/cfg/arca/store.json" || auditPath() != "/x/state/arca/audit.db" || identityPath() != "/x/cfg/arca/identity.txt" {
+	// The audit DB moved into the per-store state dir (D4), so its default is keyed to the store
+	// rather than shared. Asserted as a property, not a literal: hard-coding the hash would make
+	// this test a restatement of storeStateKey rather than a check on it.
+	if storePath() != "/x/cfg/arca/store.json" || identityPath() != "/x/cfg/arca/identity.txt" {
 		t.Fatal("default paths")
+	}
+	wantAudit := filepath.Join(storeStateDir(), "audit.db")
+	if auditPath() != wantAudit {
+		t.Fatalf("default audit path = %s, want %s", auditPath(), wantAudit)
+	}
+	if !strings.HasPrefix(storeStateDir(), "/x/state/arca/stores/") {
+		t.Fatalf("per-store state dir = %s, want it under the XDG state dir", storeStateDir())
 	}
 
 	t.Setenv("SOPS_AGE_KEY_FILE", "/sops/key")

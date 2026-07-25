@@ -17,6 +17,23 @@ All notable changes to arca are documented here. The format follows
   `--allow-empty` when the empty value is deliberate. Whitespace is a value, not an absence: a
   single space still stores.
 
+### Changed
+- **Local state is now kept per store, under `$XDG_STATE_HOME/arca/stores/<store-key>/`.** The
+  sync config and cursor, the rollback high-water mark, grants, handles, the canary registry, the
+  escrow cursor, the audit DB and the session signing keys were shared by every store on a machine.
+  Running two stores — the documented personal/work split, one `ARCA_STORE` away — meant a `sync`
+  against store B reconciled it against store A's backend and replaced its contents, and B's
+  legitimately lower generation tripped the rollback warning against A's high-water mark. The
+  directory name is derived from the store's absolute path; `machine-id` deliberately stays shared,
+  because it identifies the machine to escrow rather than the store.
+
+  The first command after upgrading moves the existing state into the per-store directory for the
+  store it is running against, once. Nothing is copied and nothing is deleted, and a failure warns
+  rather than taking the command down. A *second* store starts with empty state — that is the fix —
+  and `arca doctor` gains a `state-dir` check that names which store adopted the shared state, so
+  an unexpectedly empty grants list is explained rather than mysterious. `$ARCA_AUDIT` still wins
+  when set, which is how you point several stores at one audit log deliberately.
+
 ### Fixed
 - **A sync can no longer lose a concurrent local write.** `arca sync` did its network work while
   holding no lock and then committed a decision computed *before* that network round trip, so a
