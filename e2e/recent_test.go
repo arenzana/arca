@@ -13,8 +13,17 @@ import (
 	"testing"
 )
 
-// TestDisableEnable covers the kill switch: a disabled secret is refused on every read path and
-// surfaced to a human, and enabling it restores use while preserving a real future expiry (SEC-13).
+// TestDisableEnable covers the half of the kill switch a headless caller can drive: a disabled
+// secret is refused on every read path and surfaced to a human. `disable` is deliberately
+// unanchored — arca's rule is that a caller may always narrow its own access — so all of that is
+// unchanged.
+//
+// `enable` widens access and is anchored (T11/T12), so the second half is now a refusal assertion.
+// Lost here: that enabling restores use *and preserves a real future expiry* rather than wiping it
+// or now-stamping it (SEC-13). That claim keeps in-process coverage in disable_test.go
+// TestDisableEnablePreservesExpiry, which asserts the same round-trip with the operator prompt
+// stubbed. The asymmetry this test now shows is worth having on its own: the kill switch still
+// works in an incident with no terminal, and only un-killing needs a human.
 func TestDisableEnable(t *testing.T) {
 	b := sandbox(t)
 	b.must(t, "", "init")
@@ -35,13 +44,16 @@ func TestDisableEnable(t *testing.T) {
 		t.Fatalf("ls should flag [disabled]: %q", out)
 	}
 
-	// enable restores use, and the real expiry survived the round-trip (not wiped, not now-stamped).
-	b.must(t, "", "enable", "API")
-	if out := b.must(t, "", "get", "API"); out != "topsecret" {
-		t.Fatalf("get after enable = %q", out)
+	// Re-enabling widens access, so it is operator-only. Disabling was not.
+	assertControlPlaneRefused(t, b, "enable", "API")
+
+	// And the refusal left the kill switch on: a secret that could be re-enabled by a refused
+	// command would make the anchor decorative.
+	if _, _, code := b.run(t, "", "get", "API"); code == 0 {
+		t.Fatal("get succeeded after a refused `enable`; the secret was re-enabled anyway")
 	}
-	if out := b.must(t, "", "show", "API"); !strings.Contains(out, "expires") || strings.Contains(out, "EXPIRED") {
-		t.Fatalf("expiry should be preserved and still valid after enable: %q", out)
+	if out := b.must(t, "", "show", "API"); !strings.Contains(out, "DISABLED") {
+		t.Fatalf("show should still flag DISABLED after a refused enable: %q", out)
 	}
 }
 
@@ -124,10 +136,21 @@ func TestStoreRollback(t *testing.T) {
 	}
 }
 
-// TestRecipientRevocation covers SEC-15: removing a recipient auto-re-encrypts existing secrets to
-// the remaining key(s) AND prints the honest warning that this does not revoke what the removed key
-// could already read (git history / backups) — you must rotate the values for that.
-func TestRecipientRevocation(t *testing.T) {
+// TestRecipientAddIsOperatorOnly replaces the former TestRecipientRevocation.
+//
+// Adding an age recipient grants permanent decryption rights to every secret in the store, on every
+// machine the store reaches — the widest-blast-radius mutation arca supports — so it is anchored
+// (T11/T12) and a headless black-box caller cannot perform it. Every later step of the old test
+// needed a second recipient to exist first.
+//
+// Lost here: SEC-15's revocation behaviour — that `recipients rm` auto-re-encrypts to the remaining
+// key(s), prints the honest "this does not revoke what that key could already read" warning naming
+// git history and `arca rotate`, and leaves the secret decryptable by us. That keeps in-process
+// coverage in recipients_sec15_test.go (TestRecipientsRmReencrypts, TestWarnRecipientRevocation)
+// and recipients_audit_test.go. `recipients rm` itself is unanchored and still usable headless,
+// which is the property that matters mid-incident; it is only unreachable *here* because this test
+// can no longer create something to remove.
+func TestRecipientAddIsOperatorOnly(t *testing.T) {
 	b := sandbox(t)
 	b.must(t, "", "init")
 	b.must(t, "topsecret", "set", "API")
@@ -139,19 +162,15 @@ func TestRecipientRevocation(t *testing.T) {
 	if !strings.HasPrefix(otherRecip, "age1") {
 		t.Fatalf("unexpected recipient string: %q", otherRecip)
 	}
-	b.must(t, "", "recipients", "add", otherRecip)
 
-	_, errOut, code := b.run(t, "", "recipients", "rm", otherRecip)
-	if code != 0 {
-		t.Fatalf("recipients rm failed: %s", errOut)
+	assertControlPlaneRefused(t, b, "recipients", "add", otherRecip)
+
+	// The refusal added nobody. This is the assertion that matters most in the file: a partial
+	// success here is a permanent, store-wide grant of decryption rights.
+	if out := b.must(t, "", "recipients"); strings.Contains(out, otherRecip) {
+		t.Fatalf("a refused `recipients add` still added the key:\n%s", out)
 	}
-	for _, want := range []string{"re-encrypted", "does NOT revoke", "git history", "arca rotate API"} {
-		if !strings.Contains(errOut, want) {
-			t.Fatalf("recipients rm stderr missing %q:\n%s", want, errOut)
-		}
-	}
-	// Still decryptable by us after the auto-reencrypt.
 	if out := b.must(t, "", "get", "API"); out != "topsecret" {
-		t.Fatalf("get after recipient rm = %q", out)
+		t.Fatalf("get after a refused recipients add = %q", out)
 	}
 }
