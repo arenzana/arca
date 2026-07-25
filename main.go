@@ -765,15 +765,7 @@ func gate(sec *store.Secret, name, cmdline string) error {
 // access hasn't been recorded yet, so it is allowed iff the prior uses within the window are below
 // the cap. A refusal is itself recorded (op=ratelimit) as a throttle signal.
 func checkRateLimit(sec *store.Secret, name string) error {
-	winStr := sec.RateWindow
-	if winStr == "" {
-		winStr = "1h"
-	}
-	win, err := parseTTL(winStr)
-	if err != nil {
-		win = time.Hour
-		winStr = "1h"
-	}
+	win, winStr := rateWindow(sec.RateWindow)
 	a, err := audit.Open(auditPath())
 	if err != nil {
 		return err
@@ -791,6 +783,26 @@ func checkRateLimit(sec *store.Secret, name string) error {
 		fmt.Fprintf(os.Stderr, "note: %s is at its last permitted use in this %s window\n", name, winStr)
 	}
 	return nil
+}
+
+// rateWindow resolves a stored RateWindow to the window actually enforced, returning both the
+// duration and the string form used in messages. An empty window means the documented 1h default;
+// an unparseable one can only come from a hand-edited store, and falling back to 1h keeps a
+// malformed field from disabling the cap entirely.
+//
+// Extracted from checkRateLimit so requirePolicyOperator (operator.go) compares rate limits by the
+// same rule that enforces them. A second copy of this defaulting would let the anchor guard a
+// policy the access path does not apply.
+func rateWindow(stored string) (time.Duration, string) {
+	winStr := stored
+	if winStr == "" {
+		winStr = "1h"
+	}
+	win, err := parseTTL(winStr)
+	if err != nil {
+		return time.Hour, "1h"
+	}
+	return win, winStr
 }
 
 // parseRate parses a "--rate N/DURATION" value (e.g. "10/1h") into a use cap and a window string.
@@ -979,6 +991,14 @@ func newSet() *cobra.Command {
 			}
 			recips, err := crypto.ParseRecipients(s.Recipients)
 			if err != nil {
+				return err
+			}
+			// T13/R28: relaxing the policy on a secret that already exists is a control-plane
+			// change wearing a write command's clothes. Anchor it before the value is read, so a
+			// refusal costs nothing (the write below is unconditional and would destroy the value
+			// on its way to a policy change the caller is not allowed to make).
+			if err := requirePolicyOperator("set", name, cmd.Flags().Changed, s.Secrets[name],
+				noPrint, requireApproval, requireGrant, canary, rate); err != nil {
 				return err
 			}
 			val, err := readValue("Value: ")

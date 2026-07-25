@@ -164,14 +164,23 @@ current recipient set, and the audit log now names added keys on the machine whe
 they were added. Review both. See `GUIDES/` for the response runbook if an
 unrecognized key is found.
 
-### T13 — Clearing a policy bit on the write path is not anchored — ⚠ OPEN (residual of T11)
-T11 anchors the six commands that *widen* access. It does not anchor the two that
-*write a value*, and those can clear a policy bit on the way past:
+### T13 — Clearing a policy bit on the write path is not anchored — ✅ ADDRESSED
+T11 anchors the six commands that *widen* access. It did not anchor the two that
+*write a value*, and those could clear a policy bit on the way past:
 `arca set NAME --require-approval=false` (likewise `--no-print=false`,
-`--require-grant=false`, `--rate ""`) and the same flags on `arca generate`. Those
-are the complete set — `sec.NoPrint` / `RequireApproval` / `RequireGrant` /
-`RateLimit` are written from exactly two places, `set` (`main.go`) and `generate`
-(`generate.go`); `rotate`, `edit` and `annotate` do not touch policy.
+`--require-grant=false`, `--rate ""`) and the same flags on `arca generate`.
+`sec.NoPrint` / `RequireApproval` / `RequireGrant` / `RateLimit` are written from
+exactly two places, `set` (`main.go`) and `generate` (`generate.go`); `rotate`,
+`edit` and `annotate` do not touch policy.
+
+**This entry previously called those four "the complete set". They are not.** The
+same `Flags().Changed(...)` block writes a fifth: `--canary=false` calls
+`unmarkCanary(name)`, and `set`/`generate` are the **only** path in the CLI that
+disarms a decoy — `arca canary` plants and lists, and has no unmark subcommand. So
+the field that turns a tripwire off was both unanchored and unlisted. Ranked with
+the other four rather than above them, because it removes a *detection* control
+rather than escalating read capability, but it is the one a reader of the old entry
+would have implemented a fix without.
 
 **Why this is ranked below the six, rather than folded into T11.** The anchor exists
 to stop *silent escalation of read capability*. This is not that. In both commands
@@ -184,12 +193,40 @@ to every legitimate consumer, and recoverable from `sync` or `escrow` — where 
 paths were silent, permanent, and left the value in place. Controls are ranked by the
 failure they prevent; this one prevents a lesser failure.
 
-*Not addressed, deliberately.* The fix is a different predicate from the six: those
-are unconditional `requireOperator()` calls, whereas this must fire only when
-(the target already exists) **and** (a policy bit is moving 1→0) — otherwise every
-first-time `set` prompts and the anchor becomes noise the operator learns to answer
-`y` to. That earns its own change and its own tests rather than riding along with
-T11.
+*Addressed.* `requirePolicyOperator()` (`operator.go`) anchors both commands, with a
+predicate deliberately narrower than the six: it fires only when (the target already
+exists) **and** (this invocation leaves it less protected than it is now). Creating a
+secret with a loose policy is a choice, not a downgrade, and tightening never needs a
+terminal. The narrowness is the point — an unconditional prompt on every first `set`
+is noise the operator learns to answer `y` to, which would cost the other six anchors
+their meaning.
+
+Two details that are load-bearing rather than incidental:
+
+- **The rate limit is compared, not pattern-matched.** Anchoring only the `--rate ""`
+  spelling this entry originally named would be theatre: a caller refused that writes
+  `--rate 1000000/1s` and holds the same capability. Clearing is treated as the
+  limiting case of raising. The window defaulting is shared with `checkRateLimit()`
+  through one helper, so the anchor guards the limit that is actually enforced.
+- **The guard runs before the value is read.** The value write is unconditional and
+  precedes the policy block, so a refusal arriving after it would leave the caller
+  having destroyed the secret it was refused permission to downgrade — an anchor that
+  only adds damage. Pinned by a test that reads the value back after a refusal, and by
+  a second one that checks the decoy registry is untouched.
+
+*Residual — detection of the caller is not the control here, but the terminal is.* An
+agent that scrubs its environment markers is still refused, because it cannot open a
+controlling terminal that does not exist; the marker check only produces the readable
+error. That is T11's standing property, unchanged.
+
+*Not addressed — expiry.* `--ttl` / `--expires-at` on an existing secret overwrite
+`ExpiresAt` unconditionally, so `arca set NAME --ttl 30d` extends a secret that would
+have expired tomorrow, with no anchor. It is deliberately **not** folded into this
+predicate: `applyExpiry()` is shared with a third command, it has no clearing path, and
+comparing "extend" against "shorten" across a relative TTL and an absolute date is its
+own rule. Ranked Low — an extension neither reveals a value nor widens who may read it,
+and the expiry is visible in `arca show`. Filed rather than fixed here so the predicate
+this entry describes stays the one the code implements.
 
 *Interaction with the empty-value guard.* Before the guard on `set`/`rotate` refused
 an empty stdin read, this was materially worse: `arca set NAME --require-approval=false
@@ -319,7 +356,7 @@ describes intended behaviour rather than current behaviour is worse than none.
 | ID | Summary | Severity |
 |----|---------|----------|
 | T12 (residual) | The recipient set is not pinned in local state, so a recipient added on another machine and synced in is not surfaced on load; `doctor` reports blast radius as a static count with no baseline | Medium |
-| T13 (residual) | `set` / `generate` can clear a policy bit (`--require-approval=false`, `--no-print=false`, `--require-grant=false`, `--rate ""`) without the T11 anchor. Bounded to destroy-and-downgrade — the value write is unconditional and comes first, so the clear costs the secret and is audited — rather than the silent escalation T11 closes | Low-Medium |
+| T13 (residual) | `set` / `generate` extend an expiry (`--ttl`, `--expires-at`) on an existing secret with no anchor: `applyExpiry()` overwrites `ExpiresAt` unconditionally and has no clearing path. Not folded into the policy predicate that closed T13's five relaxation flags — the helper is shared with a third command and "extend versus shorten" needs its own rule across a relative TTL and an absolute date. Neither reveals a value nor widens who may read one, and the expiry is visible in `arca show` | Low |
 | — | `sync` performs no store locking, so a concurrent pull can silently revert a mutation — including a `rotate` or `recipients rm` performed as incident remediation. It also forks the `generation` counter that T9's rollback detection and the signed audit events depend on | High |
 | — | The MCP `run_with_secrets` path buffers command output unbounded with no timeout. Beyond denial of service, the process heap holds injected values in cleartext, so an agent-driven OOM produces a core dump containing them where core dumps are enabled | High |
 
