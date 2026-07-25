@@ -42,6 +42,33 @@ The intended flow is *use, don't reveal*: an agent calls `run_with_secrets` (or 
 so a command can use a secret, reserving `read_secret` for when the value genuinely must enter the
 model context.
 
+### Resource bounds on the exec tools
+
+`run_with_secrets` and `run_with_handle` let the **agent** choose the command. Unlike `arca exec`,
+which streams a child's output straight to your terminal, these tools have to hold that output in
+memory to return it in the tool result — so both the memory and the lifetime of an agent-chosen
+command are bounded:
+
+| Bound | Default | Override | Ceiling |
+|---|---|---|---|
+| Captured output, per stream | 1 MiB | `ARCA_MCP_MAX_OUTPUT` (bytes) | 16 MiB (floor 4 KiB) |
+| Child wall-clock deadline | 120s | `ARCA_MCP_TIMEOUT` (`90s`, `2m`, or bare seconds) | 600s (floor 1s) |
+
+Output past the cap is discarded and the result carries an explicit `[arca: output truncated …]`
+notice, so an agent is never silently handed a partial answer as if it were complete. A command
+that outlives its deadline is killed and reported as an error rather than a mysterious exit code.
+
+Both overrides are **clamped to their range, never honoured verbatim** — a value above the ceiling
+becomes the ceiling. This is deliberate and follows the same reasoning as `ARCA_AGENT_STRICT`:
+when the agent is the one launching `arca mcp`, the agent owns the environment, so a knob that
+could be set to "unlimited" would be a documented way to remove the bound rather than tune it.
+
+The server also drops its core-dump limit (`RLIMIT_CORE`) to 0 at startup on Unix. The process
+holds injected secret values in cleartext for its lifetime, and a crash dump on a host that
+collects them would contain every one. Windows has no equivalent per-process control — suppressing
+a Windows Error Reporting dump is machine-wide policy (the WER `LocalDumps` keys), so on Windows
+this is an operator/deployment step rather than something arca can do for you.
+
 ## Deny-by-default agent exposure (`--strict`)
 
 By default the MCP tools operate over **every** secret in the store — a wide default. Run the server

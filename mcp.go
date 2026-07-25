@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,6 +35,13 @@ func newMCP() *cobra.Command {
 		Short: "Run an MCP server exposing arca to AI agents over stdio",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			// This process holds injected secret values in cleartext for its whole lifetime, and
+			// the agent chooses commands that can crash it. Don't leave those values in a core
+			// dump. Best-effort: a host that refuses the call is not a reason to refuse service,
+			// but the operator should know the exposure is still open.
+			if err := disableCoreDumps(); err != nil {
+				fmt.Fprintf(os.Stderr, "arca mcp: warning: could not disable core dumps (%v) — a crash dump could contain secret values\n", err)
+			}
 			warnAgentExposure()
 			s := server.NewMCPServer("arca", appVersion())
 			registerMCPTools(s)
@@ -291,23 +299,60 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 // pats replaced by its marker — so a command that prints an injected secret can't leak it into the
 // model's response. stdout and stderr use separate redacting writers (each written by one os/exec
 // goroutine) to avoid a data race, then are concatenated.
+//
+// The agent picks the command, so both of the resources it consumes are bounded here (see
+// mcplimits.go): captured output is capped per stream, and the child gets a wall-clock deadline.
+// Unlike `arca exec`, which streams to the operator's stdout, these tools have to hold the output
+// in memory to return it — so without a cap the agent would control arca's heap.
 func runRedacted(ctx context.Context, command string, args, env []string, pats []redactPattern) (string, int, error) {
+	timeout := mcpExecTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, command, args...) //#nosec G204 -- the command is the agent's explicit request; running it with injected secrets is this tool's purpose
 	cmd.Env = env
+	// Killing the child does not necessarily free its output pipes: any grandchild that inherited
+	// them keeps Wait blocked, which would defeat the deadline. WaitDelay bounds that wait.
+	cmd.WaitDelay = mcpWaitDelay
+
+	// The cap wraps the destination buffers, i.e. DOWNSTREAM of redaction. It must not sit between
+	// the child and the redactWriter: that writer deliberately holds back up to maxLen-1 bytes so a
+	// secret split across two writes still matches (redact.go), and cutting its input could emit a
+	// partial secret at the boundary. Capping its output means only already-redacted bytes are ever
+	// discarded.
+	limit := mcpMaxOutput()
 	var outB, errB bytes.Buffer
-	rwOut := newRedactWriter(&outB, pats)
-	rwErr := newRedactWriter(&errB, pats)
+	capOut := &capWriter{dst: &outB, limit: limit}
+	capErr := &capWriter{dst: &errB, limit: limit}
+	rwOut := newRedactWriter(capOut, pats)
+	rwErr := newRedactWriter(capErr, pats)
 	cmd.Stdout, cmd.Stderr = rwOut, rwErr
+
 	runErr := cmd.Run()
+	// Flush before inspecting the outcome: the final scan of each held-back tail happens here, and
+	// skipping it on the error paths would leave an unscanned tail unredacted.
 	_ = rwOut.Flush()
 	_ = rwErr.Flush()
+
+	// A deadline kill surfaces as a signal death, which would otherwise be reported as the
+	// ordinary exit code -1 and hide the fact that the command never finished. Cancellation is
+	// reported separately: the caller's context going away (server shutdown) is not a timeout,
+	// and saying so would send the agent chasing a limit that was never reached.
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "", 0, fmt.Errorf("command exceeded the %s limit and was killed (raise with %s, ceiling %s)",
+			timeout, envMCPTimeout, maxMCPTimeout)
+	case errors.Is(ctx.Err(), context.Canceled):
+		return "", 0, fmt.Errorf("command was cancelled before it finished: %w", ctx.Err())
+	}
+
 	exitCode := 0
 	if ee, ok := runErr.(*exec.ExitError); ok {
 		exitCode = ee.ExitCode()
 	} else if runErr != nil {
 		return "", 0, runErr
 	}
-	return outB.String() + errB.String(), exitCode, nil
+	return outB.String() + errB.String() + truncationNotice(limit, capOut, capErr), exitCode, nil
 }
 
 // mcpRunWithHandle runs a command using an opaque handle instead of a secret name: the agent never

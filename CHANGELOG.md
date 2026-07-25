@@ -6,6 +6,23 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **The MCP exec tools no longer let an agent exhaust arca's memory or wedge it indefinitely.**
+  `run_with_secrets` and `run_with_handle` capture their child's output to return it in the tool
+  result, and that capture had no ceiling and the child no deadline — so an agent-chosen `yes`,
+  `cat /dev/urandom`, or simply a hung command could grow arca's heap without limit or block a
+  worker forever. Output is now capped per stream (1 MiB, `ARCA_MCP_MAX_OUTPUT`) with an explicit
+  truncation notice in the result, and the child gets a wall-clock deadline (120s,
+  `ARCA_MCP_TIMEOUT`) after which it is killed and the call reported as an error. Both overrides
+  are **clamped** to a range rather than honoured verbatim — an agent that owns the environment
+  must not be able to spell "unlimited". `arca exec` is unaffected: it streams to stdout and was
+  never unbounded. The cap deliberately sits *downstream* of redaction, so truncation can only
+  ever discard bytes that already passed the redact writer's split-value hold-back.
+- **`arca mcp` disables core dumps at startup** (`RLIMIT_CORE` → 0, Unix). The server holds
+  injected secret values in cleartext for its whole lifetime, so a crash — including one an agent
+  can drive — would otherwise leave those values in a dump on any host that collects them.
+  Windows has no per-process equivalent; that remains machine-wide WER policy.
+
 ### Added
 - **`.rpm` and `.deb` packages as release assets** (linux amd64/arm64), built by nfpm inside the
   same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
