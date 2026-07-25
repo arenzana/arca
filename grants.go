@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 )
 
@@ -56,18 +57,11 @@ func loadGrants() (map[string]Grant, error) {
 }
 
 func saveGrants(g map[string]Grant) error {
-	if err := os.MkdirAll(filepath.Dir(grantsPath()), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(grantFile{Grants: g}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := grantsPath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil { //#nosec G304 -- operator state dir
-		return err
-	}
-	return os.Rename(tmp, grantsPath())
+	return atomicfile.Write(grantsPath(), b, 0o600)
 }
 
 // globMatch reports whether s matches pattern, where '*' is a wildcard for any run of characters.

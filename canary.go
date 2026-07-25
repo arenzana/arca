@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
@@ -48,9 +49,6 @@ func loadCanaries() (map[string]bool, error) {
 }
 
 func saveCanaries(set map[string]bool) error {
-	if err := os.MkdirAll(filepath.Dir(canariesPath()), 0o700); err != nil {
-		return err
-	}
 	names := make([]string, 0, len(set))
 	for n := range set {
 		names = append(names, n)
@@ -60,11 +58,7 @@ func saveCanaries(set map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	tmp := canariesPath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil { //#nosec G304 -- operator state dir
-		return err
-	}
-	return os.Rename(tmp, canariesPath())
+	return atomicfile.Write(canariesPath(), b, 0o600)
 }
 
 // migrateLegacyCanaries retroactively applies SEC-04 to a pre-0.6.2 store (FU-5): any cleartext

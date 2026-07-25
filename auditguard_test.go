@@ -7,10 +7,24 @@ package main
 //  2. tripCanary() discarded logAudit's error, making the tripwire the one event in arca that was
 //     not fail-closed. An unrecordable trip now fails the access.
 //
-// Every test here that asserts the NEW behaviour is written to fail against the pre-fix baseline
-// (f984ce5) using only symbols that exist there, per merge rule 2. The two that assert *preserved*
-// behaviour — the operator's own use of $ARCA_AUDIT, and a canary staying non-blocking when the
-// trip records fine — pass on both sides on purpose: they are what stops the fix overshooting.
+// Ten tests: six assert the NEW behaviour and fail against the pre-fix baseline (f984ce5) per
+// merge rule 2; four assert *preserved* behaviour — the operator's own use of $ARCA_AUDIT, an
+// $ARCA_AUDIT pointing at the path arca would have used anyway, and the same through a symlink and
+// through a hard link — and pass on both sides on purpose, because they are what stops the fix
+// overshooting.
+//
+// Applying this file to the baseline needs one scaffolding function, and the earlier version of
+// this comment said the opposite ("using only symbols that exist there"), which cost a reviewer a
+// `go vet` failure. The missing symbol is defaultAuditPath, introduced by the fix; the shim is
+//
+//	func defaultAuditPath() string { return filepath.Join(stateDir(), "audit.db") }
+//
+// which is what the baseline's own auditPath() falls back to (main.go:212 @ f984ce5). Add it, do
+// not remove the three tests that reference it — subtracting tests to make the file compile is an
+// edit to the artifact under test, and "no other change" stops being true the moment it happens.
+// One consequence to expect: TestArcaAuditDefaultThroughAHardLinkIsNotARedirect fails at the
+// baseline for an environmental reason (the shim's flat path has no D4 layout to link against),
+// not a behavioural one.
 
 import (
 	"os"

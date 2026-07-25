@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/arenzana/arca/internal/atomicfile"
 )
 
 // A Handle is an opaque capability token for an AI agent: it lets the agent *use* a secret through
@@ -52,18 +54,11 @@ func loadHandles() (map[string]Handle, error) {
 }
 
 func saveHandles(h map[string]Handle) error {
-	if err := os.MkdirAll(filepath.Dir(handlesPath()), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(handleFile{Handles: h}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := handlesPath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil { //#nosec G304 -- operator state dir
-		return err
-	}
-	return os.Rename(tmp, handlesPath())
+	return atomicfile.Write(handlesPath(), b, 0o600)
 }
 
 func newHandleID() (string, error) {

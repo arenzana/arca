@@ -37,6 +37,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
@@ -360,12 +361,10 @@ func recordStoreGeneration(gen int) (regressed bool, prev int) {
 		return true, hwm
 	}
 	if gen > hwm {
-		if err := os.MkdirAll(filepath.Dir(storeGenPath()), 0o700); err == nil {
-			tmp := storeGenPath() + ".tmp"
-			if os.WriteFile(tmp, []byte(strconv.Itoa(gen)), 0o600) == nil { //#nosec G304 -- our own state-dir path
-				_ = os.Rename(tmp, storeGenPath())
-			}
-		}
+		// Deliberately best-effort, including the parent-dir fsync inside the helper: this is a
+		// warning heuristic, and losing the high-water mark to a crash costs a missed warning,
+		// never a command. Every other state writer treats the same error as fatal.
+		_ = atomicfile.Write(storeGenPath(), []byte(strconv.Itoa(gen)), 0o600)
 	}
 	return false, hwm
 }

@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
@@ -67,19 +68,12 @@ func saveEscrowState(st escrowState) error {
 	if err != nil {
 		return err
 	}
-	// Create our own parent, as every other state-dir writer does (saveGrants, saveHandles,
-	// saveCanaries, recordStoreGeneration, audit.Open). Before D4 this rode on machineID()
-	// having already created the flat state dir; once the cursor moved into the per-store dir
-	// that stopped being true, and a failed cursor write means escrow re-uploads the same
-	// segment and the create-only backend refuses it.
-	if err := os.MkdirAll(filepath.Dir(escrowStatePath()), 0o700); err != nil {
-		return err
-	}
-	tmp := escrowStatePath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, escrowStatePath())
+	// atomicfile.Write creates the parent, which this function needs and used to do itself.
+	// Before D4 the cursor rode on machineID() having already created the flat state dir; once it
+	// moved into the per-store dir that stopped being true, and a failed cursor write means escrow
+	// re-uploads the same segment and the create-only backend refuses it. That requirement is now
+	// the helper's step 1 rather than one writer remembering it.
+	return atomicfile.Write(escrowStatePath(), b, 0o600)
 }
 
 var machineIDRe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
