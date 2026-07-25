@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,4 +117,53 @@ func TestLockHeartbeat(t *testing.T) {
 	if age := time.Since(fi.ModTime()); age > staleLockAge {
 		t.Fatalf("heartbeat did not keep the lock fresh: mtime age %v > staleLockAge %v", age, staleLockAge)
 	}
+}
+
+// TestLockStoreForNonBlocking pins the wait budget added for opportunistic auto-sync: a
+// timeout <= 0 makes exactly one attempt and reports errStoreLocked, so background work can
+// tell "someone else is holding it" apart from a real failure and skip. Without this,
+// auto-sync would sit for lockTimeout behind an `arca edit` session an operator left open.
+func TestLockStoreForNonBlocking(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+
+	unlock, err := lockStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	release, err := lockStoreFor(0)
+	elapsed := time.Since(start)
+	if err == nil {
+		release()
+		unlock()
+		t.Fatal("lockStoreFor(0) acquired a lock that was already held")
+	}
+	if !errors.Is(err, errStoreLocked) {
+		t.Fatalf("lockStoreFor(0) = %v, want errStoreLocked so a caller can skip on contention", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("lockStoreFor(0) waited %v; it must not block", elapsed)
+	}
+	// The message still names the lock file, which is the operator's escape hatch.
+	if !strings.Contains(err.Error(), storePath()+".lock") {
+		t.Fatalf("contention error lost the lock path: %v", err)
+	}
+
+	// Once the holder releases, the same non-blocking call succeeds.
+	unlock()
+	release, err = lockStoreFor(0)
+	if err != nil {
+		t.Fatalf("lockStoreFor(0) on a free lock = %v, want success", err)
+	}
+	release()
+
+	// A blocking caller still waits and still succeeds — lockStore's 16 existing call sites
+	// keep their behaviour.
+	release, err = lockStoreFor(lockTimeout)
+	if err != nil {
+		t.Fatalf("lockStoreFor(lockTimeout) on a free lock = %v", err)
+	}
+	release()
 }
