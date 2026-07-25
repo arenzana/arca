@@ -63,11 +63,12 @@ becomes the ceiling. This is deliberate and follows the same reasoning as `ARCA_
 when the agent is the one launching `arca mcp`, the agent owns the environment, so a knob that
 could be set to "unlimited" would be a documented way to remove the bound rather than tune it.
 
-The server also drops its core-dump limit (`RLIMIT_CORE`) to 0 at startup on Unix. The process
-holds injected secret values in cleartext for its lifetime, and a crash dump on a host that
-collects them would contain every one. Windows has no equivalent per-process control — suppressing
-a Windows Error Reporting dump is machine-wide policy (the WER `LocalDumps` keys), so on Windows
-this is an operator/deployment step rather than something arca can do for you.
+arca drops its core-dump limit (`RLIMIT_CORE`) to 0 at startup on Unix — for every command, not
+just this server. The MCP server is the sharpest case, since it holds injected secret values in
+cleartext for its whole lifetime and the agent picks the command that can crash it, but any
+command that touches a value has the same exposure. Windows has no equivalent per-process control
+— suppressing a Windows Error Reporting dump is machine-wide policy (the WER `LocalDumps` keys),
+so on Windows this is an operator/deployment step rather than something arca can do for you.
 
 ## Deny-by-default agent exposure (`--strict`)
 

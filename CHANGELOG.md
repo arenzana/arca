@@ -18,9 +18,13 @@ All notable changes to arca are documented here. The format follows
   must not be able to spell "unlimited". `arca exec` is unaffected: it streams to stdout and was
   never unbounded. The cap deliberately sits *downstream* of redaction, so truncation can only
   ever discard bytes that already passed the redact writer's split-value hold-back.
-- **`arca mcp` disables core dumps at startup** (`RLIMIT_CORE` → 0, Unix). The server holds
-  injected secret values in cleartext for its whole lifetime, so a crash — including one an agent
-  can drive — would otherwise leave those values in a dump on any host that collects them.
+- **arca disables core dumps at startup** (`RLIMIT_CORE` → 0, Unix), for every command rather
+  than just `arca mcp`. Any command that touches a value holds it in cleartext on the heap:
+  `get`/`inject` decrypt to stdout, `exec` and the MCP tools additionally hold it in the redact
+  patterns and the child's environment, and `reencrypt` holds the whole store at once. A crash
+  dump on a host that collects them would contain all of it, defeating the disclosure controls
+  applied above. The MCP server is the sharpest case — it holds injected values for its whole
+  lifetime and the agent picks the command that can crash it — but it is not a special case.
   Windows has no per-process equivalent; that remains machine-wide WER policy.
 
 ### Added

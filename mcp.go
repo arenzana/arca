@@ -35,13 +35,9 @@ func newMCP() *cobra.Command {
 		Short: "Run an MCP server exposing arca to AI agents over stdio",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			// This process holds injected secret values in cleartext for its whole lifetime, and
-			// the agent chooses commands that can crash it. Don't leave those values in a core
-			// dump. Best-effort: a host that refuses the call is not a reason to refuse service,
-			// but the operator should know the exposure is still open.
-			if err := disableCoreDumps(); err != nil {
-				fmt.Fprintf(os.Stderr, "arca mcp: warning: could not disable core dumps (%v) — a crash dump could contain secret values\n", err)
-			}
+			// Core dumps are already disabled for the whole binary in main(); the MCP server is
+			// the sharpest case (it holds injected values for its entire lifetime and the agent
+			// picks the command that can crash it), but it is not a special case.
 			warnAgentExposure()
 			s := server.NewMCPServer("arca", appVersion())
 			registerMCPTools(s)

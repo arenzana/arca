@@ -134,6 +134,20 @@ func newVersion() *cobra.Command {
 }
 
 func main() {
+	// Every command that touches a value holds it in cleartext on the heap for the life of the
+	// process: `get` and `inject` decrypt to stdout, `exec` and the MCP tools additionally keep
+	// the value in redactPattern and in the child's environment, and `reencrypt` holds every
+	// secret in the store at once. A core dump on a host that collects them would contain all of
+	// it, defeating every disclosure control arca applies above. Do this before the command runs,
+	// once, for the whole binary rather than per-command — there is no command for which leaving
+	// core dumps enabled is the better default, and a per-command allow-list is a branch to get
+	// wrong later.
+	//
+	// Best-effort: a host that refuses is not a reason to refuse service, but the operator should
+	// know the exposure is still open.
+	if err := disableCoreDumps(); err != nil {
+		fmt.Fprintf(os.Stderr, "arca: warning: could not disable core dumps (%v) — a crash dump could contain secret values\n", err)
+	}
 	// Cobra prints the error itself (SilenceErrors=false); we just set the exit code.
 	if err := newRoot().Execute(); err != nil {
 		os.Exit(1)
