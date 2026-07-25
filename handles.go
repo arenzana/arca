@@ -138,6 +138,13 @@ func newHandleCreate() *cobra.Command {
 			if sec == nil {
 				return fmt.Errorf("no such secret: %s", name)
 			}
+			// A disabled secret is refused on every use path, so a handle minted for one is dead on
+			// arrival. Say so here rather than handing the operator a capability that silently does
+			// nothing. This is the convenience, not the control — the control is the use-time check
+			// in run_with_handle, because `disable` normally happens *after* the handle exists.
+			if sec.Disabled {
+				return fmt.Errorf("%s is disabled; `arca enable %s` first (a handle for a disabled secret is refused at use)", name, name)
+			}
 			// run_with_handle bypasses grant/approval, so minting a handle for such a secret converts
 			// "authorize/approve each use" into "approve once, use freely for the TTL". Make that an
 			// explicit, audited operator decision rather than a silent laundering of the policy.

@@ -33,7 +33,7 @@
 | `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window | `--command`, `--uses`, `--ttl`, `--agent` |
 | `grants` | List active grants and their remaining uses | — |
 | `revoke SECRET` | Remove the active grant for a secret | — |
-| `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value — operator-only (refused for a detected agent) | `--ttl`, `--command`, `--as`, `--override` |
+| `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value — operator-only (refused for a detected agent), and refused for a disabled secret | `--ttl`, `--command`, `--as`, `--override` |
 | `handle ls` / `handle revoke ID` | List or revoke handles | — |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) — see [MCP](MCP.md) | `--strict` (deny-by-default agent exposure) |
 | `agent allow/deny/ls NAME` | Manage which secrets a `--strict` MCP server exposes to agents | — |
@@ -61,7 +61,9 @@ The per-secret policy flags (`--no-print`, `--require-approval`, `--canary`, `--
 
 `disable NAME` is the quickest way to take a secret out of service without losing it: the value and
 all metadata stay in the store, but every access path — `get`, `exec`, `inject`, `env`, and the MCP
-tools — refuses it until you `enable` it again. It's a dedicated flag, independent of expiry, so a
+tools, **including a capability handle minted before you disabled it** — refuses it until you
+`enable` it again. Handles are made inert rather than revoked, so undoing a false alarm restores the
+pre-incident state exactly instead of forcing you to re-issue every handle you had handed out. It's a dedicated flag, independent of expiry, so a
 disabled secret shows as `DISABLED` in `show` / `[disabled]` in `ls`, the audit log records the
 `disable`/`enable` intent, and — unlike before 0.6.3 — enabling it **keeps any real expiry** the
 secret was carrying (disable/enable no longer touch `expires_at`).
