@@ -127,6 +127,16 @@ With that framing, the controls are:
 - **Vulnerability scanning:** `govulncheck` runs in CI; dependency updates via Dependabot.
 - **Module integrity:** `go mod verify` runs in CI and before each release.
 
+*Scope:* every control above establishes the **integrity of the pipeline** — that the artifact
+you downloaded is the artifact built from the tagged source, unmodified. None of them establishes
+the **authority of the release decision**: that the tagged source was meant to ship. cosign signs,
+and the provenance attests, whatever was tagged. The release job is therefore gated on a protected
+GitHub environment with a required reviewer, so publishing takes a human approval that is an API
+action rather than a git transport action — a credential that can create a tag cannot approve the
+run it starts. That gate is a repository setting, not a line in the workflow; the workflow key
+naming the environment does not by itself gate anything. See T7 and T14 in
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
 ### Verifying a release
 
 ```sh

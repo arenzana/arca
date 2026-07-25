@@ -7,6 +7,25 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **The release job is gated on a protected environment (T7/T14).** `release.yml` fires on
+  `push: tags: ['v*']`, and that job holds `contents: write`, cosign's OIDC signing rights, and the
+  Homebrew/Scoop tokens — so the credential that publishes arca to every install channel was any
+  credential that could create a `v*` tag. Branch protection on `main` never applied: a tag push
+  consults no branch rule, so the tagged commit need not have been reviewed or merged. Nor did the
+  in-workflow checks, because a `push` event runs the workflow *from the pushed ref* — the `verify
+  before release` step, `harden-runner` and the cask-checksum guard all delete with the tree that
+  carries them. Everything the supply-chain section documents (reproducible builds, cosign, SLSA
+  provenance, SBOM) establishes the **integrity of the pipeline** and none of it establishes the
+  **authority of the release decision**; cosign signs whatever was tagged, just as faithfully.
+  The job now requires a reviewer on the `release` environment, which is structurally different from
+  the checks above: the rule lives in repository settings rather than in the tree, so a hostile tag
+  cannot carry an edited copy of it, and approving a deployment is an API action rather than a git
+  transport action — a credential that can create a tag cannot approve the run it starts.
+  **This is half a control on its own:** the workflow key only *names* an environment, and a missing
+  environment is created implicitly with no protection rules, reading as gated while running
+  unguarded. The `release` environment must exist with a required reviewer, and the tap/scoop tokens
+  must be environment secrets on it, before this has any effect. Recorded as T14 in
+  `docs/THREAT-MODEL.md`, which also moves T7 to partially addressed.
 - **`recipients add` is now audited (SEC-44).** Adding an age recipient grants permanent decryption
   rights to every secret in the store, on every machine the store reaches — the widest-blast-radius
   mutation arca supports — and it previously wrote no audit event at all. The log could show a

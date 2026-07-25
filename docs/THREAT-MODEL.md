@@ -287,13 +287,71 @@ defends the *exfiltration* boundary; a same-UID local user who can read the stat
 dir is out of scope by design (they own the machine). Trade-off: because the
 registry is local, a canary is armed per-machine.
 
-### T7 — Supply-chain compromise of a release
+### T7 — Supply-chain compromise of a release — ◐ PARTIALLY ADDRESSED
 A tampered binary, a malicious dependency, or a poisoned build. *Addressed:*
 reproducible builds (`CGO_ENABLED=0`, `-trimpath`, stripped); keyless **cosign**
 signatures over `checksums.txt`; SLSA build-provenance attestation; CycloneDX
 SBOM; `govulncheck` and `go mod verify` in CI and before release; SHA-pinned,
 least-privilege GitHub Actions with `harden-runner`. Dependencies are kept
 minimal (see [CONTRIBUTING.md](../CONTRIBUTING.md#dependencies)).
+
+*Residual:* every control listed above is **downstream of the trigger**. They
+establish the *integrity of the pipeline* — that the published artifact is the
+artifact built from the tagged source. None of them establishes the *authority of
+the release decision* — that the tagged source was ever meant to ship. cosign
+signs, and the provenance attests, whatever was tagged, just as faithfully. Who
+may start a release is T14.
+
+### T14 — Anyone who can push a tag can publish a signed release — ◐ PARTIALLY ADDRESSED
+`release.yml` fires on `push: tags: ['v*']`, and the release job holds
+`contents: write`, `id-token: write` (cosign keyless signing), `attestations:
+write`, and the `HOMEBREW_TAP_TOKEN` / `SCOOP_GITHUB_TOKEN` used to update the
+Homebrew tap and Scoop bucket. So the credential that publishes arca to every
+install channel is *any* credential that can create a `v*` tag.
+
+**Branch protection does not bound this.** `main` requires status checks, but a
+tag push consults no branch rule, so the tagged commit need never have been on
+`main`, reviewed, or merged. The two are orthogonal: the branch gate is real and
+it is simply not on this path.
+
+**Nor do the in-workflow checks.** A `push` event runs the workflow *from the
+pushed ref*, so a hostile tag carries its own copy of `release.yml`: the `verify
+before release` step (`go vet` / `go test` / `govulncheck`), `harden-runner`, and
+the cask-checksum guard all delete with the tree that carries them. `harden-runner`
+is on `egress-policy: audit`, which records exfiltration rather than blocking it.
+This is the shape T11 rejected for env vars and config files, one layer out: a
+control the constrained party can edit is not a control.
+
+*Addressed:* the release job is gated on a protected GitHub **environment**
+(`environment: release`) whose protection rule requires a reviewer. That gate is
+structurally different from the ones above — it lives in repository settings,
+outside any tree, so a hostile tag cannot carry an edited copy of it, and
+approving a deployment is an **API action rather than a git transport action**, so
+a credential that can create a tag cannot approve the run it starts. The tap and
+scoop tokens are environment secrets on that environment, so they are not injected
+until the approval happens and a rewritten workflow cannot reach them either.
+
+*Residual — the protection rule lives in repository settings; the workflow key
+alone gates nothing.* `environment: release` in `release.yml` only *names* an
+environment. If that environment does not exist, GitHub creates it implicitly with
+no protection rules, and the job runs unguarded while the workflow file reads as
+gated — strictly worse than no key at all, because it invites the reader to stop
+checking. This document cannot assert the gate is in place; only the repository
+settings can. Verify with:
+
+```sh
+gh api repos/arenzana/arca/environments/release \
+  --jq '{name, rules: [.protection_rules[].type]}'   # expect "required_reviewers"
+```
+
+*Also not addressed.* Tag creation itself is unrestricted — no ruleset covers
+`refs/tags/*`, so a hostile tag can still be created and the environment gate is
+what stops it publishing. Restricting tag creation needs a bypass list, and a
+bypass list cannot distinguish the operator at a terminal from an agent holding a
+copy of the operator's key; it becomes effective only once agent pushes use a
+separate credential. Until then the environment approval is the whole control, and
+a tag appearing without a corresponding approved deployment is the signal to look
+for.
 
 ## Residual risks (accepted)
 
@@ -318,6 +376,7 @@ describes intended behaviour rather than current behaviour is worse than none.
 
 | ID | Summary | Severity |
 |----|---------|----------|
+| T14 (residual) | The release gate is a required-reviewer rule on the `release` environment, which lives in repository settings — `environment: release` in the workflow only names it, and a missing environment is created implicitly with no protection rules, reading as gated while running unguarded. Separately, tag creation is unrestricted: no ruleset covers `refs/tags/*`, and a bypass list cannot distinguish the operator from an agent holding a copy of the operator's key until agent pushes use a separate credential | High |
 | T12 (residual) | The recipient set is not pinned in local state, so a recipient added on another machine and synced in is not surfaced on load; `doctor` reports blast radius as a static count with no baseline | Medium |
 | T13 (residual) | `set` / `generate` can clear a policy bit (`--require-approval=false`, `--no-print=false`, `--require-grant=false`, `--rate ""`) without the T11 anchor. Bounded to destroy-and-downgrade — the value write is unconditional and comes first, so the clear costs the secret and is audited — rather than the silent escalation T11 closes | Low-Medium |
 | — | `sync` performs no store locking, so a concurrent pull can silently revert a mutation — including a `rotate` or `recipients rm` performed as incident remediation. It also forks the `generation` counter that T9's rollback detection and the signed audit events depend on | High |
