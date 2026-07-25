@@ -22,6 +22,23 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Anyone who can push a `v*` tag can start this job, and this job holds `contents: write`,
+    # OIDC signing and the tap/scoop tokens. Everything else guarding the release — the
+    # `verify before release` step, harden-runner, the cask check below — lives in this file, and
+    # a `push` event runs the workflow *from the pushed ref*, so a hostile tag carries its own
+    # edited copy of all of it. An in-tree check cannot constrain the tree that carries it.
+    #
+    # This gate is different in kind: the required-reviewer rule lives in repository settings,
+    # outside any tree, and approving a deployment is an API action rather than a git transport
+    # action — so a credential that can create a tag still cannot approve the run it started.
+    #
+    # THIS KEY ALONE GATES NOTHING. It names an environment; the protection rule is what gates.
+    # An environment that does not exist is created implicitly with no protection rules, which
+    # looks gated and is not. The `release` environment must exist with a required reviewer, and
+    # HOMEBREW_TAP_TOKEN / SCOOP_GITHUB_TOKEN must be environment secrets on it — as environment
+    # secrets they are not injected until a human approves, so a rewritten workflow cannot reach
+    # them either. Verify with: gh api repos/:owner/:repo/environments/release
+    environment: release
     permissions:
       contents: write      # publish the GitHub release
       id-token: write      # cosign keyless signing + provenance (OIDC)
