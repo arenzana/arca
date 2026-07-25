@@ -322,14 +322,17 @@ is on `egress-policy: audit`, which records exfiltration rather than blocking it
 This is the shape T11 rejected for env vars and config files, one layer out: a
 control the constrained party can edit is not a control.
 
-*Addressed:* the release job is gated on a protected GitHub **environment**
-(`environment: release`) whose protection rule requires a reviewer. That gate is
-structurally different from the ones above — it lives in repository settings,
-outside any tree, so a hostile tag cannot carry an edited copy of it, and
-approving a deployment is an **API action rather than a git transport action**, so
-a credential that can create a tag cannot approve the run it starts. The tap and
-scoop tokens are environment secrets on that environment, so they are not injected
-until the approval happens and a rewritten workflow cannot reach them either.
+*Addressed, in part:* the release job is gated on a protected GitHub **environment**
+(`environment: release`) whose protection rule requires a reviewer, and the tap and
+scoop tokens are environment secrets on it. Two different mechanisms are at work
+there and they fail in different ways, so they are worth separating:
+
+- The **required-reviewer rule** lives in repository settings, outside any tree, so
+  a hostile tag cannot carry an edited copy of *the rule*. Subject to *Condition on
+  the gate* below, it means publishing takes a human approval.
+- The **secret scoping**: a job that does not declare the environment never receives
+  that environment's secrets. This is the half that holds even when the workflow file
+  itself has been rewritten, and per the residual below it is the load-bearing half.
 
 *Residual — the protection rule lives in repository settings; the workflow key
 alone gates nothing.* `environment: release` in `release.yml` only *names* an
@@ -344,6 +347,33 @@ gh api repos/arenzana/arca/environments/release \
   --jq '{name, rules: [.protection_rules[].type]}'   # expect "required_reviewers"
 ```
 
+*Residual — the rule is out of tree, but the opt-in is not.* `environment: release`
+is a job-level key in `release.yml`, and a `push` event runs the workflow from the
+pushed ref. So the attacker's cheapest move is not to defeat the approval rule; it
+is to **delete the key that opts into it**, which costs them nothing they wanted:
+
+| | keeps `environment:` | deletes it |
+|---|---|---|
+| approval | required; a git-transport credential cannot approve → blocked | not required |
+| `GITHUB_TOKEN` | as declared here | their own `permissions:` block takes `contents: write` |
+| tap / scoop tokens | withheld until approval | **unreachable — environment-scoped** |
+| outcome | blocked | **signed, attested Release of their code; no tap push** |
+
+The repository's default-permissions setting does not bound the middle row. GitHub
+documents that "anyone with write access to a repository can modify the permissions
+granted to the `GITHUB_TOKEN`, adding or removing access as required, by editing the
+`permissions` key in the workflow file" — the repository default is a starting point
+the workflow may raise, not a ceiling. (The documented case where the `permissions`
+key *cannot* grant write is a workflow triggered from a **forked** repository, which
+a tag push in this repository is not.)
+
+So the honest statement is that **the secret scoping, not the approval rule, is what
+survives a hostile tag.** The gate closes the automated Homebrew/Scoop push; it
+leaves a cosign-signed, SLSA-attested GitHub Release of attacker-controlled code
+standing. Someone running `brew upgrade` is protected because the tap does not move;
+someone downloading from the Releases page — or any tooling resolving "latest
+release" — is not. Closing that path means restricting the tag itself, below.
+
 *Condition on the gate.* "A credential that can create a tag cannot approve the
 run it starts" is a property of the *credential*, not of the environment. It
 holds for a git-transport credential — an SSH key or a deploy key speaks git and
@@ -355,14 +385,28 @@ the credential. `can_admins_bypass` also defaults to true on a new environment.
 So any credential used for automated pushes must be checked against the approval
 endpoint and the bypass setting, not only against `contents`.
 
-*Also not addressed.* Tag creation itself is unrestricted — no ruleset covers
-`refs/tags/*`, so a hostile tag can still be created and the environment gate is
-what stops it publishing. Restricting tag creation needs a bypass list, and a
-bypass list cannot distinguish the operator at a terminal from an agent holding a
-copy of the operator's key; it becomes effective only once agent pushes use a
-separate credential. Until then the environment approval is the whole control, and
-a tag appearing without a corresponding approved deployment is the signal to look
-for.
+*Also not addressed — tag creation is unrestricted.* No ruleset covers
+`refs/tags/*`, so the hostile tag can still be created, and per the residual above
+the environment gate does not stop it producing a signed Release. Restricting the
+tag is the only proposed control that stops that tag *existing*, and it comes in two
+shapes with very different costs:
+
+- **Restrict creations on `refs/tags/v*` with an empty bypass list — available
+  today.** Cutting a release then becomes: disable the rule, push the tag, re-enable
+  it. That is a UI/API action, on a channel a git credential does not have, so it
+  holds even while every push uses the operator's own key. The cost is recurring
+  friction on every release, in a repository where releases are cut by hand.
+- **Restrict creations with the automation identity excluded from bypass.** Much
+  lower friction, but it needs an identity to exclude: a bypass list cannot
+  distinguish the operator at a terminal from an agent holding a copy of the
+  operator's key, so this shape only becomes available once agent pushes use a
+  separate credential.
+
+Choosing between them is a cost decision rather than a security one — the first is
+strictly stronger today and strictly more annoying. Until one is in place, **a tag
+with no corresponding approved deployment is the signal to look for**, and it is
+worth checking over any period the pushing credential was reachable by something
+other than the operator.
 
 ## Residual risks (accepted)
 
@@ -387,7 +431,7 @@ describes intended behaviour rather than current behaviour is worse than none.
 
 | ID | Summary | Severity |
 |----|---------|----------|
-| T14 (residual) | The release gate is a required-reviewer rule on the `release` environment, which lives in repository settings — `environment: release` in the workflow only names it, and a missing environment is created implicitly with no protection rules, reading as gated while running unguarded. Separately, tag creation is unrestricted: no ruleset covers `refs/tags/*`, and a bypass list cannot distinguish the operator from an agent holding a copy of the operator's key until agent pushes use a separate credential | High |
+| T14 (residual) | The required-reviewer rule lives in repository settings, but the `environment: release` key that opts into it lives in the tree a hostile tag controls — deleting that key drops the approval, so the **secret scoping** (environment secrets are invisible to a job declaring no environment) is the half that actually survives. It closes the automated Homebrew/Scoop push and leaves a signed, attested GitHub Release of attacker code standing. A missing `release` environment is also created implicitly with no protection rules, reading as gated while running unguarded. Separately, tag creation is unrestricted: no ruleset covers `refs/tags/*` | High |
 | T12 (residual) | The recipient set is not pinned in local state, so a recipient added on another machine and synced in is not surfaced on load; `doctor` reports blast radius as a static count with no baseline | Medium |
 | T13 (residual) | `set` / `generate` can clear a policy bit (`--require-approval=false`, `--no-print=false`, `--require-grant=false`, `--rate ""`) without the T11 anchor. Bounded to destroy-and-downgrade — the value write is unconditional and comes first, so the clear costs the secret and is audited — rather than the silent escalation T11 closes | Low-Medium |
 | — | `sync` performs no store locking, so a concurrent pull can silently revert a mutation — including a `rotate` or `recipients rm` performed as incident remediation. It also forks the `generation` counter that T9's rollback detection and the signed audit events depend on | High |

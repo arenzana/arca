@@ -17,15 +17,19 @@ All notable changes to arca are documented here. The format follows
   carries them. Everything the supply-chain section documents (reproducible builds, cosign, SLSA
   provenance, SBOM) establishes the **integrity of the pipeline** and none of it establishes the
   **authority of the release decision**; cosign signs whatever was tagged, just as faithfully.
-  The job now requires a reviewer on the `release` environment, which is structurally different from
-  the checks above: the rule lives in repository settings rather than in the tree, so a hostile tag
-  cannot carry an edited copy of it, and approving a deployment is an API action rather than a git
-  transport action — a credential that can create a tag cannot approve the run it starts.
-  **This is half a control on its own:** the workflow key only *names* an environment, and a missing
-  environment is created implicitly with no protection rules, reading as gated while running
-  unguarded. The `release` environment must exist with a required reviewer, and the tap/scoop tokens
-  must be environment secrets on it, before this has any effect. Recorded as T14 in
-  `docs/THREAT-MODEL.md`, which also moves T7 to partially addressed.
+  The job now requires a reviewer on the `release` environment, and the tap/scoop tokens are
+  environment secrets on it. Two mechanisms, and they survive different attacks: the reviewer rule
+  lives in repository settings rather than in the tree, so a hostile tag cannot carry an edited copy
+  of *the rule* — but the `environment:` key that opts into it **is** in that tree, so an attacker's
+  cheapest move is to delete it. What survives that is the secret scoping: a job declaring no
+  environment never sees environment secrets, so the tap and bucket cannot be pushed. **This does
+  not close the finding.** A hostile tag can still produce a signed, attested GitHub Release of its
+  own code; `brew upgrade` is protected because the tap does not move, downloading from the Releases
+  page is not. Restricting `refs/tags/v*` is what would close it. Note also that the workflow key
+  only *names* an environment — a missing one is created implicitly with no protection rules,
+  reading as gated while running unguarded, so the environment and its secrets must be configured
+  for any of this to take effect. Recorded as T14 in `docs/THREAT-MODEL.md`, which also moves T7 to
+  partially addressed and states the credential condition the reviewer rule depends on.
 - **`recipients add` is now audited (SEC-44).** Adding an age recipient grants permanent decryption
   rights to every secret in the store, on every machine the store reaches — the widest-blast-radius
   mutation arca supports — and it previously wrote no audit event at all. The log could show a
