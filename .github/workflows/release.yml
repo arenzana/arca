@@ -102,7 +102,12 @@ jobs:
             dist/*.zip
             dist/checksums.txt
       # Publish now that every asset is built and cosign-signed (provenance attested best-effort
-      # above). With immutable releases enabled, publishing locks the tag + assets, so this is last.
+      # above). With immutable releases enabled, publishing locks the tag + assets, so no step that
+      # produces or mutates an asset may run after this one. This is NOT the last step: the cask
+      # verification below is read-only and runs after publish deliberately, so that it checks what
+      # was actually published. Keep that order. A run that ends before this step leaves the tag
+      # carrying an unpublished release, and an unpublished release does not lock its tag — which is
+      # the whole reason the attest step above is continue-on-error.
       - name: publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
