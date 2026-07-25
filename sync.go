@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -206,7 +207,15 @@ func maybeAutoSync(invokedSync bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), autoSyncTimeout)
 	defer cancel()
-	if err := runSyncCtx(ctx, b, false, false, false, true); err != nil {
+	// skipIfLocked: opportunistic sync gives up rather than waiting for another arca process.
+	// `arca edit` keeps the store lock for as long as an operator keeps $EDITOR open, and
+	// best-effort background work must never stall the next command behind that. Contention is
+	// not a problem worth reporting — the next command retries. (A push that has already landed
+	// still waits to record its cursor; see pushStore.)
+	if err := runSyncCtx(ctx, b, syncOpts{quiet: true, skipIfLocked: true}); err != nil {
+		if errors.Is(err, errStoreLocked) {
+			return
+		}
 		fmt.Fprintf(syncLog, "arca: auto-sync: %v\n", err)
 	}
 }
@@ -324,21 +333,184 @@ func writeLocalStore(payload []byte) error {
 	return os.Rename(tmp.Name(), storePath())
 }
 
+// ----------------------------------------------------------------------------
+// Concurrency (R1 / design D1).
+//
+// A sync is split into two phases so that neither a slow backend nor a concurrent local
+// command can corrupt the other:
+//
+//	Phase A — unlocked, and performs NO local writes. Snapshot the local state, do all the
+//	          network work, decide push-vs-pull, and apply every tamper/rollback refusal.
+//	Phase B — locked, and performs NO network calls. Re-read the local state, compare-and-swap
+//	          against the snapshot, and commit.
+//
+// Two invariants hold the design together, and both are enforced by tests rather than by comment
+// alone (TestSyncNeverCallsBackendUnderLock, TestSyncCASRefusesToResurrectRemovedSecret):
+//
+//	I1  No remote.Backend method is ever called while the store lock is held. A network round
+//	    trip must never sit in front of the emergency `rotate` / `recipients rm` an operator
+//	    runs during an incident.
+//	I2  Every write to store.json, sync-state.json and store.gen happens under lockStore().
+//
+// One asymmetry follows from I1 and is easy to get backwards: whether a run may give up on lock
+// contention depends on WHERE it is, not on who called it. Before the push, nothing has changed
+// anywhere, so an opportunistic run abandons freely (syncOpts.abandonable, plus a pre-flight
+// probe in syncOnce that skips before spending a round trip). After the push, the remote already
+// holds the new generation, so the cursor write must complete or the next sync reads L > S && R > S
+// as divergence and reports a conflict that does not exist — see pushStore and
+// TestUnrecordedPushCursorLooksLikeAConflict.
+//
+// Deliberately outside I2, both documented where they live: sync.json (written only by
+// `sync init`/`sync auto`, which run before a store need exist — locking them would break
+// bootstrap, since the lock file is created next to the store) and escrow-state.json (whose
+// writer interleaves backend calls, so locking it would violate I1; it is a monotonic
+// per-machine cursor arbitrated by the backend's create-only PutIfAbsent, not part of the
+// store's read-modify-write cycle).
+// ----------------------------------------------------------------------------
+
+// syncAttempts bounds the Phase-A → Phase-B retry loop. A store that keeps moving underneath
+// the sync is reported rather than retried forever.
+const syncAttempts = 3
+
+// errSyncRestart is returned by the Phase-B compare-and-swap when the local store or the sync
+// cursor changed after the Phase-A snapshot was taken. It is never surfaced to the operator:
+// runSyncCtx catches it and restarts from a fresh snapshot.
+var errSyncRestart = errors.New("local store changed during sync")
+
+// syncOpts is the per-invocation policy for a sync run.
+type syncOpts struct {
+	pullOnly, pushOnly, force bool
+	// quiet suppresses the informational success lines ("in sync: nothing to do",
+	// "pushed/pulled generation N"); warnings and errors are always emitted. It is set for
+	// opportunistic auto-sync so its chatter never trails another command's output.
+	quiet bool
+	// skipIfLocked makes the run give up on lock contention instead of waiting. It is set for
+	// opportunistic auto-sync: `arca edit` legitimately holds the store lock across an
+	// interactive $EDITOR session, and best-effort background work must not stall a human's next
+	// command behind it. Explicit `arca sync` leaves it false and waits.
+	//
+	// It governs only the abandonable part of a run — see abandonable() for why a push's cursor
+	// write is not abandonable and always waits.
+	skipIfLocked bool
+}
+
+// abandonable reports the lock budget for a commit that can still be walked away from safely,
+// because nothing has been changed anywhere yet: a pull's commit, and the pre-flight probe.
+// Giving up there costs only the network round trip, and the next sync redoes it.
+//
+// A push's cursor write is the exception and deliberately does NOT use this: by the time it runs
+// the remote already holds the new generation, so failing to record it locally is not a
+// no-op — it leaves L > S with R > S, which the next sync reads as divergence. See pushStore.
+func (o syncOpts) abandonable() time.Duration {
+	if o.skipIfLocked {
+		return 0 // non-blocking
+	}
+	return lockTimeout
+}
+
+// localSnapshot is the Phase-A view of this machine: the store file's exact bytes, the store
+// parsed FROM THOSE BYTES, and the sync cursor read alongside them.
+type localSnapshot struct {
+	s   *store.Store // nil when this machine has no store yet (a pull bootstraps it)
+	raw []byte       // the exact bytes s was decoded from; nil when s is nil
+	st  syncState
+}
+
+// readLocalSnapshot takes the Phase-A snapshot. It reads store.json ONCE and parses those same
+// bytes, because sync needs both: the raw bytes are sealed into the pushed envelope while the
+// parsed generation decides push-vs-pull. The previous code read the file and then called
+// openStore(), which read it a second time — so the bytes that got pushed and the generation
+// they were labelled with could already come from two different writes.
+//
+// It performs no writes at all, which is what lets it run outside the lock (I2). That is also
+// why it does not call openStore: warnIfStoreRolledBack advances store.gen as a side effect.
+// The warning is preserved here read-only; the mark advances in the commit path.
+//
+// A missing store is not an error — it is reported as a nil store so a fresh machine can
+// bootstrap with a pull.
+func readLocalSnapshot() (localSnapshot, error) {
+	snap := localSnapshot{st: loadSyncState()}
+	raw, err := os.ReadFile(storePath()) //#nosec G304 -- operator-controlled store path
+	if os.IsNotExist(err) {
+		return snap, nil
+	}
+	if err != nil {
+		return snap, err
+	}
+	s, err := store.Decode(storePath(), raw)
+	if err != nil {
+		return snap, err
+	}
+	migrateLegacyCanaries(s)
+	if hwm := storeGenHWM(); s.Generation < hwm {
+		warnStoreRolledBack(s.Generation, hwm)
+	}
+	// Mirror openStore's bookkeeping so a sync-push/sync-pull audit event still binds the store
+	// generation it observed (SEC-14). Guarding loadedGeneration keeps auto-sync's "did this
+	// command mutate the store" test reading the pre-command generation, not sync's own read.
+	if loadedGeneration < 0 {
+		loadedGeneration = s.Generation
+	}
+	curStore = s
+	snap.s, snap.raw = s, raw
+	return snap, nil
+}
+
 // localStoreForSync loads the local store plus its raw bytes; a missing store is
 // reported as (nil, nil, nil) so a fresh machine can bootstrap with a pull.
 func localStoreForSync() (*store.Store, []byte, error) {
+	snap, err := readLocalSnapshot()
+	if err != nil {
+		return nil, nil, err
+	}
+	return snap.s, snap.raw, nil
+}
+
+// underLock runs commit with the store lock held and releases it before returning, so no backend
+// call can be made from inside it (I1). wait is the acquisition budget; <= 0 is non-blocking.
+func underLock(wait time.Duration, commit func() error) error {
+	unlock, err := lockStoreFor(wait)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return commit()
+}
+
+// casLocalUnchanged is the Phase-B compare-and-swap. It re-reads the local state under the lock
+// and reports errSyncRestart unless everything the Phase-A decision rested on is still exactly
+// as it was.
+//
+// The store is compared by BYTES rather than by generation. Comparing generations would let a
+// same-generation rewrite through, and any stat-based change token (size/mtime/inode) inherits
+// its filesystem's timestamp granularity. The bytes are already in hand from Phase A and the
+// re-read is required anyway, so the exact comparison is free.
+//
+// Pinning the store and the cursor pins the whole L/S decision: R was fixed by Phase A's Head,
+// so a sync whose CAS passes cannot have had its push-vs-pull verdict change underneath it.
+// That is why there is no separate re-evaluation step here.
+func casLocalUnchanged(snap localSnapshot) error {
 	raw, err := os.ReadFile(storePath()) //#nosec G304 -- operator-controlled store path
-	if os.IsNotExist(err) {
-		return nil, nil, nil
+	switch {
+	case os.IsNotExist(err):
+		if snap.s != nil {
+			return errSyncRestart // the store was removed under us
+		}
+	case err != nil:
+		return err
+	case snap.s == nil:
+		return errSyncRestart // a store appeared where Phase A saw none (a concurrent `arca init`)
+	case !bytes.Equal(raw, snap.raw):
+		return errSyncRestart
 	}
-	if err != nil {
-		return nil, nil, err
+	// Compare the cursor field by field: syncState holds a time.Time, and two independent
+	// unmarshals of the same non-UTC timestamp produce distinct *time.Location values, so `==`
+	// on the struct would report a spurious change.
+	st := loadSyncState()
+	if st.LastGeneration != snap.st.LastGeneration || st.LastTag != snap.st.LastTag || !st.LastSync.Equal(snap.st.LastSync) {
+		return errSyncRestart
 	}
-	s, err := openStore()
-	if err != nil {
-		return nil, nil, err
-	}
-	return s, raw, nil
+	return nil
 }
 
 func newSync() *cobra.Command {
@@ -522,18 +694,50 @@ func newSyncStatus() *cobra.Command {
 //	L > S  && R > S      → conflict: both sides advanced — report, never merge
 //	L < S                → the LOCAL store rolled back → refuse push; pull repairs it
 func runSync(b remote.Backend, pullOnly, pushOnly, force bool) error {
-	return runSyncCtx(context.Background(), b, pullOnly, pushOnly, force, false)
+	return runSyncCtx(context.Background(), b, syncOpts{
+		pullOnly: pullOnly, pushOnly: pushOnly, force: force,
+	})
 }
 
-// quiet suppresses the informational success lines ("in sync: nothing to do",
-// "pushed/pulled generation N"); warnings and errors are always emitted. It is set for
-// opportunistic auto-sync so its chatter never trails another command's output.
-func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force, quiet bool) error {
-	s, raw, err := localStoreForSync()
+// runSyncCtx runs syncOnce, restarting from a fresh snapshot when the Phase-B compare-and-swap
+// finds the store moved underneath it. Sustained concurrent mutation is reported rather than
+// retried forever — explicit `arca sync` tells the operator to run it again, and auto-sync's
+// caller turns the same error into a warning, which is its best-effort contract.
+func runSyncCtx(ctx context.Context, b remote.Backend, opts syncOpts) error {
+	for attempt := 1; ; attempt++ {
+		err := syncOnce(ctx, b, opts)
+		if !errors.Is(err, errSyncRestart) {
+			return err
+		}
+		if attempt >= syncAttempts {
+			return fmt.Errorf("the store changed underneath this sync %d times; run it again", syncAttempts)
+		}
+	}
+}
+
+// syncOnce is one Phase-A/Phase-B pass: snapshot, decide, commit.
+func syncOnce(ctx context.Context, b remote.Backend, opts syncOpts) error {
+	// Pre-flight probe for a run that would rather skip than wait. Taking the lock and releasing
+	// it immediately is not the commit — it only answers "is anyone else mid-write right now",
+	// and it answers it BEFORE the network round trip. That matters for the push path: a push
+	// whose cursor write cannot be recorded is not a no-op (see pushStore), so the cheapest way
+	// to keep opportunistic sync harmless is to not start one against a contended store.
+	//
+	// It is a probe, not a reservation: the lock can still be taken during the network window.
+	// Each commit path handles that case on its own terms — a pull abandons, a push waits.
+	if opts.skipIfLocked {
+		unlock, err := lockStoreFor(0)
+		if err != nil {
+			return err
+		}
+		unlock()
+	}
+	snap, err := readLocalSnapshot()
 	if err != nil {
 		return err
 	}
-	st := loadSyncState()
+	s, st := snap.s, snap.st
+	pullOnly, pushOnly, force, quiet := opts.pullOnly, opts.pushOnly, opts.force, opts.quiet
 
 	head, err := b.Head(ctx)
 	remoteEmpty := errors.Is(err, remote.ErrNotFound)
@@ -549,13 +753,13 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pullOnly {
 			return errors.New("--pull requested but the remote is empty")
 		}
-		return pushStore(ctx, b, s, raw, remote.Rev{}, st, quiet)
+		return pushStore(ctx, b, snap, remote.Rev{}, opts)
 
 	case s == nil:
 		if pushOnly {
 			return errors.New("--push requested but there is no local store (run `arca sync --pull` to bootstrap)")
 		}
-		return pullStore(ctx, b, st, nil, force, quiet)
+		return pullStore(ctx, b, snap, opts)
 	}
 
 	L, S, R := s.Generation, st.LastGeneration, head.Generation
@@ -567,7 +771,7 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pushOnly {
 			return fmt.Errorf("local store looks rolled back (generation %d < last synced %d) — refusing to push it; `arca sync --pull` restores the newest synced state", L, S)
 		}
-		return pullStore(ctx, b, st, s, force, quiet)
+		return pullStore(ctx, b, snap, opts)
 	}
 
 	switch {
@@ -581,44 +785,66 @@ func runSyncCtx(ctx context.Context, b remote.Backend, pullOnly, pushOnly, force
 		if pushOnly {
 			return fmt.Errorf("remote is ahead (generation %d > %d) and --push was requested; run without --push to pull first", R, L)
 		}
-		return pullStore(ctx, b, st, s, force, quiet)
+		return pullStore(ctx, b, snap, opts)
 	case L > S && (R == S || force):
 		if pullOnly {
 			return fmt.Errorf("local has unpushed changes (generation %d > last synced %d) and --pull was requested; run without --pull to push", L, S)
 		}
-		return pushStore(ctx, b, s, raw, head, st, quiet)
+		return pushStore(ctx, b, snap, head, opts)
 	default: // L > S && R > S — divergence
 		if pullOnly {
 			// The operator explicitly chose the documented resolution: adopt the
 			// remote and discard local divergence.
-			return pullStore(ctx, b, st, s, force, quiet)
+			return pullStore(ctx, b, snap, opts)
 		}
 		return fmt.Errorf("sync CONFLICT: both sides advanced since the last sync (local generation %d, remote %d, last synced %d). No auto-merge for a secrets store: pull with `arca sync --pull` (discards local divergence) or re-apply the remote's changes locally and push", L, R, S)
 	}
 }
 
-func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte, prev remote.Rev, st syncState, quiet bool) error {
-	env, err := sealEnvelope(raw, s.Recipients)
+// pushStore uploads the Phase-A snapshot and records the cursor.
+//
+// The envelope is sealed from snap.raw — the exact bytes the generation was read from — and
+// pushed unlocked: the backend's own compare-and-swap (prev) is the arbitration between
+// concurrent writers, so holding the store lock across the round trip would buy nothing and
+// would violate I1.
+//
+// Only the cursor write is locked, and it needs no compare-and-swap against the local store: the
+// push has already succeeded and rev describes what the remote now holds, so the cursor is true
+// no matter what a concurrent command did locally in the meantime. Such a write simply leaves
+// L > S again, and the next sync pushes it.
+//
+// That write is the one commit in a sync that always WAITS for the lock, even for an
+// opportunistic run that would rather skip (opts.skipIfLocked, honoured by the probe in syncOnce
+// and by the pull path). Once the push has landed, giving up is no longer free: the remote holds
+// generation R while the cursor still says S, and the next sync reads L > S && R > S as
+// divergence and refuses with a CONFLICT that isn't one. Waiting up to lockTimeout is not an I1
+// violation — the network work is already done and no backend call is made while holding the
+// lock. If the wait genuinely expires, the error names the state and the repair rather than
+// leaving the operator to decode a spurious conflict later.
+func pushStore(ctx context.Context, b remote.Backend, snap localSnapshot, prev remote.Rev, opts syncOpts) error {
+	env, err := sealEnvelope(snap.raw, snap.s.Recipients)
 	if err != nil {
 		return err
 	}
-	rev, err := b.Push(ctx, env, s.Generation, prev)
+	rev, err := b.Push(ctx, env, snap.s.Generation, prev)
 	if err != nil {
 		if errors.Is(err, remote.ErrCASMismatch) {
 			return fmt.Errorf("%w — run `arca sync` again to reconcile", err)
 		}
 		return err
 	}
-	if err := saveSyncState(syncState{LastGeneration: rev.Generation, LastTag: rev.Tag, LastSync: time.Now()}); err != nil {
-		return err
+	if err := underLock(lockTimeout, func() error {
+		return saveSyncState(syncState{LastGeneration: rev.Generation, LastTag: rev.Tag, LastSync: time.Now()})
+	}); err != nil {
+		return fmt.Errorf("pushed generation %d but could not record it locally: %w; the next sync will report a conflict that is not one until this is recorded — `arca sync --pull` adopts the (identical) remote and repairs the cursor", rev.Generation, err)
 	}
 	if err := logAudit("sync-push", "-", ""); err != nil {
 		return err
 	}
-	if !quiet {
+	if !opts.quiet {
 		fmt.Fprintf(syncLog, "pushed generation %d\n", rev.Generation)
 	}
-	escrowBestEffort(ctx, b, s.Recipients)
+	escrowBestEffort(ctx, b, snap.s.Recipients)
 	return nil
 }
 
@@ -632,7 +858,10 @@ func pushStore(ctx context.Context, b remote.Backend, s *store.Store, raw []byte
 // recipient keys AND serves a strictly-newer forged envelope can still substitute content. The
 // complete fix is an operator signature over the store (tracked separately). What this closes is
 // the whole replay/rollback/recipient-resurrection class against an established machine.
-func pullStore(ctx context.Context, b remote.Backend, st syncState, local *store.Store, force, quiet bool) error {
+func pullStore(ctx context.Context, b remote.Backend, snap localSnapshot, opts syncOpts) error {
+	st, local, force, quiet := snap.st, snap.s, opts.force, opts.quiet
+
+	// ---- Phase A: network and refusals, no local writes ----
 	env, rev, err := b.Fetch(ctx)
 	if err != nil {
 		return err
@@ -675,12 +904,26 @@ func pullStore(ctx context.Context, b remote.Backend, st syncState, local *store
 		}
 	}
 
-	if err := writeLocalStore(payload); err != nil {
-		return err
-	}
-	// Advance the SEC-14 local high-water mark through the normal path.
-	warnIfStoreRolledBack(rs.Generation)
-	if err := saveSyncState(syncState{LastGeneration: rev.Generation, LastTag: rev.Tag, LastSync: time.Now()}); err != nil {
+	// ---- Phase B: commit under the lock, no network ----
+	// Every refusal above ran against the Phase-A snapshot, so the commit is conditional on that
+	// snapshot still being current. If a concurrent command wrote the store while we were on the
+	// network, the CAS restarts the whole sync rather than overwriting that write with a decision
+	// made before it existed — this is the lost update R1 describes.
+	//
+	// Unlike a push, this commit is abandonable: nothing has been changed anywhere yet, so an
+	// opportunistic run that loses the lock race here simply skips and the next sync redoes the
+	// round trip.
+	if err := underLock(opts.abandonable(), func() error {
+		if err := casLocalUnchanged(snap); err != nil {
+			return err
+		}
+		if err := writeLocalStore(payload); err != nil {
+			return err
+		}
+		// Advance the SEC-14 local high-water mark through the normal path.
+		warnIfStoreRolledBack(rs.Generation)
+		return saveSyncState(syncState{LastGeneration: rev.Generation, LastTag: rev.Tag, LastSync: time.Now()})
+	}); err != nil {
 		return err
 	}
 	if err := logAudit("sync-pull", "-", ""); err != nil {

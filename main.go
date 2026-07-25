@@ -273,8 +273,16 @@ func storeGenHWM() int {
 
 func warnIfStoreRolledBack(gen int) {
 	if regressed, prev := recordStoreGeneration(gen); regressed {
-		fmt.Fprintf(os.Stderr, "arca: warning: the store looks rolled back (generation %d < last seen %d) — a rotated or deleted secret may have been resurrected; check the store's git history\n", gen, prev)
+		warnStoreRolledBack(gen, prev)
 	}
+}
+
+// warnStoreRolledBack emits the SEC-14 rollback notice. It is split out of
+// warnIfStoreRolledBack so a caller that must not write can still warn: the sync snapshot is
+// taken outside the store lock (D1 invariant I2), and recordStoreGeneration writes store.gen.
+// The high-water mark advances later, in sync's commit path, under the lock.
+func warnStoreRolledBack(gen, prev int) {
+	fmt.Fprintf(os.Stderr, "arca: warning: the store looks rolled back (generation %d < last seen %d) — a rotated or deleted secret may have been resurrected; check the store's git history\n", gen, prev)
 }
 
 // recordStoreGeneration compares gen against the local high-water mark, advances the mark when gen
