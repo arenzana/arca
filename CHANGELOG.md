@@ -11,6 +11,36 @@ All notable changes to arca are documented here. The format follows
   same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
   the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
   a hosted dnf/apt repo remains a possible follow-up.
+- **`--allow-empty` on `set`, `rotate` and `import`.** Storing an empty value is now refused by
+  default, because the overwhelmingly common cause is a failing producer in a pipeline
+  (`vault read … | arca set PRODKEY`) rather than an intent to store nothing. Pass
+  `--allow-empty` when the empty value is deliberate. Whitespace is a value, not an absence: a
+  single space still stores.
+
+### Fixed
+- **A sync can no longer lose a concurrent local write.** `arca sync` did its network work while
+  holding no lock and then committed a decision computed *before* that network round trip, so a
+  `rm` or `rotate` landing in that window was silently overwritten by the pulled payload — a
+  removed secret came back and the store looked healthy afterwards. The sync is now split in two:
+  an unlocked phase that writes nothing and does all the network work and refusals, and a locked
+  phase that re-reads the local store and cursor, compares them byte-for-byte against the
+  snapshot the decision rests on, and only then commits. A change in that window restarts the
+  sync; sustained contention reports "run it again" after three attempts rather than committing
+  anything. No backend call is made while the store lock is held, so a slow backend can never
+  delay an incident-response command. Opportunistic auto-sync never waits for the lock: it
+  checks for a concurrent writer before going to the network and skips silently, so an open
+  `arca edit` session costs the next command nothing — the one exception being a push that has
+  already reached the remote, which always records its cursor because failing to would surface
+  later as a conflict that isn't one.
+- **`arca disable` now also stops MCP handles minted before it ran.** The handle path skips
+  `gate()` (a handle *replaces* grant and approval) and had lost the `Disabled` check with it, so
+  the kill switch closed six access paths and not the one an agent was already holding. The check
+  is at *use* time, which is the load-bearing part — a handle is minted before an incident and
+  `disable` is thrown during one. Handles go inert rather than being revoked, so `enable` restores
+  the pre-incident state instead of forcing a re-issue.
+- **An empty stdin no longer destroys a stored secret.** `arca set NAME` with a producer that
+  failed stored an empty value over the real one and exited 0, with no undo — the store keeps only
+  the current value. See `--allow-empty` above.
 
 ## [0.7.0] - 2026-07-09
 
