@@ -28,16 +28,30 @@ jobs:
     # a `push` event runs the workflow *from the pushed ref*, so a hostile tag carries its own
     # edited copy of all of it. An in-tree check cannot constrain the tree that carries it.
     #
-    # This gate is different in kind: the required-reviewer rule lives in repository settings,
-    # outside any tree, and approving a deployment is an API action rather than a git transport
-    # action — so a credential that can create a tag still cannot approve the run it started.
+    # The required-reviewer *rule* is different in kind: it lives in repository settings, outside
+    # any tree, so a hostile tag cannot carry an edited copy of it. The opt-in, however, is this
+    # line. So the attacker's cheapest move is not to defeat the gate — it is to delete this key.
+    # A tag whose tree has no `environment:` needs no approval, and its own `permissions:` block
+    # still takes `contents: write` (the repository default-permissions setting is a default the
+    # workflow may raise, not a ceiling).
+    #
+    # What survives that deletion is NOT this gate. It is the *scope of the secrets*: a job that
+    # declares no environment never sees environment secrets, so HOMEBREW_TAP_TOKEN and
+    # SCOOP_GITHUB_TOKEN stay unreachable and the automated tap/bucket push dies. A cosign-signed,
+    # SLSA-attested GitHub Release of the attacker's code does not. Do not read this key as
+    # closing that path — see T14 in docs/THREAT-MODEL.md, which ranks what is left.
+    #
+    # Whether approval binds at all is a property of the credential, not of the environment:
+    # approving a deployment is a REST action, so an SSH or deploy key (git transport only) cannot
+    # approve the run it started, while a classic PAT with `repo` scope can do both. See T14,
+    # "Condition on the gate", before issuing any credential that pushes tags.
     #
     # THIS KEY ALONE GATES NOTHING. It names an environment; the protection rule is what gates.
     # An environment that does not exist is created implicitly with no protection rules, which
     # looks gated and is not. The `release` environment must exist with a required reviewer, and
-    # HOMEBREW_TAP_TOKEN / SCOOP_GITHUB_TOKEN must be environment secrets on it — as environment
-    # secrets they are not injected until a human approves, so a rewritten workflow cannot reach
-    # them either. Verify with: gh api repos/:owner/:repo/environments/release
+    # HOMEBREW_TAP_TOKEN / SCOOP_GITHUB_TOKEN must be environment secrets on it — that scoping is
+    # the half that survives a rewritten workflow, so it is not optional hardening.
+    # Verify with: gh api repos/:owner/:repo/environments/release
     environment: release
     permissions:
       contents: write      # publish the GitHub release
