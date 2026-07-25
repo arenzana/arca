@@ -344,6 +344,17 @@ gh api repos/arenzana/arca/environments/release \
   --jq '{name, rules: [.protection_rules[].type]}'   # expect "required_reviewers"
 ```
 
+*Condition on the gate.* "A credential that can create a tag cannot approve the
+run it starts" is a property of the *credential*, not of the environment. It
+holds for a git-transport credential — an SSH key or a deploy key speaks git and
+cannot call the REST API at all. It does not hold for an API credential: GitHub
+documents *Review pending deployments for a workflow run* as reachable by a
+classic personal access token with `repo` scope, so a `repo`-scoped PAT could
+create the tag and approve its own deployment, collapsing this control back into
+the credential. `can_admins_bypass` also defaults to true on a new environment.
+So any credential used for automated pushes must be checked against the approval
+endpoint and the bypass setting, not only against `contents`.
+
 *Also not addressed.* Tag creation itself is unrestricted — no ruleset covers
 `refs/tags/*`, so a hostile tag can still be created and the environment gate is
 what stops it publishing. Restricting tag creation needs a bypass list, and a
