@@ -50,6 +50,10 @@ func newAgent() *cobra.Command {
 }
 
 // setAgentExposed flips the flag on one secret and persists + audits it.
+//
+// The control-plane anchor deliberately does NOT live here: this helper is shared by `agent allow`
+// and `agent deny`, and only the allow direction loosens. Anchoring the shared helper would put a
+// prompt on `agent deny`, which only ever restricts. The anchor sits in newAgentAllow instead.
 func setAgentExposed(name string, exposed bool, op string) error {
 	unlock, err := lockStore()
 	if err != nil {
@@ -77,6 +81,13 @@ func newAgentAllow() *cobra.Command {
 		Short: "Expose a secret to AI agents (visible/usable via the MCP server under --strict)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			// Loosening: this is what makes a secret reachable through `mcp --strict`, so an agent
+			// that could run it would simply un-hide itself (T11). Human-confirmed. `agent deny`
+			// stays headless — it only restricts.
+			if err := requireOperator("agent allow",
+				fmt.Sprintf("Expose %s to AI agents via the MCP server?", args[0])); err != nil {
+				return err
+			}
 			if err := setAgentExposed(args[0], true, "agent-allow"); err != nil {
 				return err
 			}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -107,6 +108,17 @@ func newRecipientsAdd() *cobra.Command {
 			// applied unambiguously to a batch, so require exactly one recipient when --label is given.
 			if label != "" && len(args) != 1 {
 				return fmt.Errorf("--label applies to a single recipient; add them one at a time")
+			}
+			// The widest mutation arca supports: a new recipient decrypts every secret, permanently,
+			// on every machine the store reaches, without ever entering an access path (T12). Anchored
+			// to a human. `recipients rm` is not — removal only restricts.
+			//
+			// The prompt shows the key, because "add a recipient" is not the decision — *which* key is.
+			// It is the only chance to notice an unfamiliar one before the reencrypt makes it total.
+			if err := requireOperator("recipients add", fmt.Sprintf(
+				"Add %s as a recipient? It will be able to decrypt every secret in the store after `reencrypt`.",
+				strings.Join(args, ", "))); err != nil {
+				return err
 			}
 			unlock, err := lockStore()
 			if err != nil {
@@ -248,6 +260,13 @@ func newReencrypt() *cobra.Command {
 		Short: "Re-encrypt every secret to the current recipient set",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			// The second half of T12: `recipients add` stages a key, `reencrypt` is what actually
+			// re-wraps every value to it. Anchoring only the add would leave the payload step open to
+			// an agent racing a legitimate pending change.
+			if err := requireOperator("reencrypt",
+				"Re-encrypt every secret to the store's current recipient set?"); err != nil {
+				return err
+			}
 			unlock, err := lockStore()
 			if err != nil {
 				return err

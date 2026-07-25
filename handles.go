@@ -130,6 +130,27 @@ func newHandleCreate() *cobra.Command {
 			if id := detectIdentity(); id.Agent != "" {
 				return fmt.Errorf("refusing to mint a handle: %s looks like an AI agent, and handles are operator-issued capabilities", id.Agent)
 			}
+			// ...but that check is agent detection alone, which arca's own threat model calls
+			// advisory — it is exactly the mechanism the terminal anchor exists to backstop. A handle
+			// is the *widest* self-serve path in the tool: run_with_handle deliberately skips the
+			// whole gate() ladder (see mcp.go), so a handle bypasses --require-approval and
+			// --require-grant outright, where a grant only satisfies one rung of it. Anchoring the
+			// five narrower control-plane commands and leaving this one behind env-marker detection
+			// would leave the widest path behind the weakest guard (T11/R27).
+			//
+			// Deliberately placed *after* the check above rather than at the head of RunE: the
+			// message above names the detected agent and explains handles, which is more useful than
+			// the generic refusal, so the specific one should win when both would fire. Still before
+			// any store load or lock. `handle revoke` stays unanchored — revoking only tightens.
+			gate := ""
+			if override {
+				gate = ", overriding its per-use approval/grant gate"
+			}
+			if err := requireOperator("handle create", fmt.Sprintf(
+				"Mint a handle for %s (ttl %s%s)? The holder can use the value without approval.",
+				name, ttl, gate)); err != nil {
+				return err
+			}
 			s, err := openStore()
 			if err != nil {
 				return err
