@@ -81,29 +81,47 @@ headless caller stays fail-closed and always leaves a read record. *Residual:*
 on Windows, a console-attached agent process does have `CONIN$`; the terminal
 anchor there is weaker than on Unix (same trade-off as approval).
 
-### T11 — An agent edits the policy instead of defeating it — ⚠ OPEN
-T2's terminal anchor is applied to the commands that *release* a value. It is not
-applied to the commands that *change the rules*. `arca grant`, `arca agent allow`,
-`arca enable`, `arca recipients add`, and `arca reencrypt` all succeed today for a
-detected agent with no controlling terminal.
+### T11 — An agent edits the policy instead of defeating it — ✅ ADDRESSED
+T2's terminal anchor is applied to the commands that *release* a value. It was not
+applied to the commands that *change the rules*, so `arca grant`, `arca agent allow`,
+`arca enable`, `arca recipients add`, `arca reencrypt` and `arca handle create` all
+succeeded for a detected agent with no controlling terminal.
 
-The consequence is that the strongest per-secret controls are self-servable in one
+The consequence was that the strongest per-secret controls were self-servable in one
 extra step. An agent refused by `--require-grant` runs `arca grant NAME --ttl 1h
 --uses 99` and retries successfully. An agent invisible under a `--strict` MCP
 server runs `arca agent allow NAME` and becomes visible. The documented workflow
 in T2 — "for unattended-but-authorized use, the operator issues a scoped `grant`
-or `handle`" — assumes the operator issues it; nothing enforces that.
+or `handle`" — assumes the operator issues it; nothing enforced that.
 
-*Not addressed.* The intended fix is to route control-plane mutations through the
-same anchor `approve()` already uses (detected agent or no controlling terminal →
-refuse). The trade-off is real and unresolved: it breaks legitimate
-non-interactive use such as CI issuing a grant or a provisioning script adding a
-teammate's key. It must **not** be re-opened with an environment variable — that
-reproduces the `ARCA_APPROVAL=allow` mistake T2 exists to record. The intended
-escape hatch is an operator-minted admin capability (the shape `handle` already
-uses): created interactively once, scoped, and expiring.
+*Addressed.* `requireOperator()` (`operator.go`) now anchors all six: a detected
+agent is refused outright, and every other caller must answer a yes/no question on
+`/dev/tty` (`CONIN$` on Windows) naming the scope being widened. It is deliberately
+an interactive **prompt**, not a `hasControllingTTY()` predicate — an agent launched
+from the operator's own shell inherits that terminal, so the predicate form returns
+true for the primary adversary and buys nothing.
 
-### T12 — Recipient injection: exfiltration that never enters an access path — ⚠ OPEN
+Anchored: the loosening direction only. `agent deny`, `disable`, `recipients rm` and
+`handle revoke` stay headless, because a caller that can only narrow its own access
+is not an escalation path, and `recipients rm` is emergency revocation — a prompt on
+the incident-response path costs speed exactly when speed matters.
+
+There is **no** environment bypass, deliberately: that would reproduce the
+`ARCA_APPROVAL=allow` mistake T2 exists to record, and an agent controls its own
+environment. `TestControlPlaneHasNoEnvBypass` enforces the absence. The cost is
+that genuinely non-interactive use (CI issuing a grant, a provisioning script adding
+a teammate's key) is now refused rather than silently allowed. If such a consumer
+appears, the fix is an operator-minted admin capability — created interactively,
+scoped, expiring, and never written to the state dir — not a variable.
+
+*Residuals:* on Windows a console-attached process has `CONIN$`, so the anchor is
+weaker there than on Unix (the same trade-off T2 documents). And an agent sharing
+the operator's controlling terminal can attempt to answer its own prompt — on macOS
+`TIOCSTI` is unprivileged for the controlling terminal. This converts a *silent*
+self-authorization into a *visible* one rather than making it impossible; the
+guarantee needs the age identity out of the agent's reach (AR-1).
+
+### T12 — Recipient injection: exfiltration that never enters an access path — ◐ PARTIALLY ADDRESSED
 The widest case of T11, called out separately because its blast radius and its
 audit behaviour are both different in kind.
 
@@ -116,23 +134,35 @@ rate limits are all irrelevant to it. No read event is recorded, and a canary in
 the same store is re-wrapped to the attacker's key **silently** — the decoy is
 exfiltrated without tripping.
 
-Auditing is also incomplete here: `recipients add` writes no audit event at all
-today. `reencrypt` writes one (`op=reencrypt`, `name=*`) which does not name the
-key that was added, so the log shows that a re-wrap happened but not that the
-recipient set grew or to whom. `arca log --verify` still reports a clean chain —
+Auditing was also incomplete here: `recipients add` wrote no audit event at all.
+`reencrypt` writes one (`op=reencrypt`, `name=*`) which does not name the
+key that was added, so the log showed that a re-wrap happened but not that the
+recipient set grew or to whom. `arca log --verify` still reported a clean chain —
 correctly, since the chain is honest about everything it was told, and it was
 never told.
 
-*Not addressed.* Three separable fixes: (1) audit `recipients add`, recording the
-added key — cheap and independent of the rest; (2) apply the T11 anchor to the
-recipient commands; (3) pin the recipient set in local state (the pattern
-`storeGenPath()` already uses for rollback) so a change is surfaced on load and
-raised by `doctor`, which currently reports decryption blast radius at LOW and as
-a static count with no baseline to compare against.
+*Partially addressed.* Three separable fixes were identified; two are done:
 
-*Detection in the meantime:* `arca who-can-read` / `arca exposure` show the
-current recipient set. Review it directly; the audit log will not show this
-change. See `GUIDES/` for the response runbook if an unrecognized key is found.
+1. ✅ **Audit `recipients add`** (SEC-44). Each added key is recorded individually as
+   `op=recipients-add` with the key in the `name` field, and a relabel as
+   `op=recipients-label` — labels are how an operator recognizes a key during review,
+   so renaming an unfamiliar key to something trusted-looking defeats that check.
+2. ✅ **Apply the T11 anchor to the recipient commands.** Both halves are anchored:
+   `recipients add` stages the key, `reencrypt` is what re-wraps every value to it, so
+   anchoring only the add would leave the payload step open to an agent racing a
+   legitimate pending change. The `recipients add` prompt shows the key itself, because
+   *which* key is the decision — it is the last chance to notice an unfamiliar one
+   before `reencrypt` makes it total.
+3. ⚠ **Pin the recipient set in local state** — still open. The pattern
+   `storeGenPath()` already uses for rollback would surface a change on load and let
+   `doctor` raise it; `doctor` currently reports decryption blast radius at LOW and as
+   a static count with no baseline to compare against. Without this, a recipient added
+   on *another* machine and synced in is still not flagged on load.
+
+*Detection for the remaining gap:* `arca who-can-read` / `arca exposure` show the
+current recipient set, and the audit log now names added keys on the machine where
+they were added. Review both. See `GUIDES/` for the response runbook if an
+unrecognized key is found.
 
 ### T3 — Shell / environment injection via crafted secret names
 A hand-edited or synced store containing a name like `x=...; rm -rf` could break
@@ -253,8 +283,7 @@ describes intended behaviour rather than current behaviour is worse than none.
 
 | ID | Summary | Severity |
 |----|---------|----------|
-| T11 | Control-plane mutations are not terminal-anchored; an agent can edit the policy that governs it | High |
-| T12 | Recipient injection exfiltrates every secret outside any access path; `recipients add` is unaudited | High |
+| T12 (residual) | The recipient set is not pinned in local state, so a recipient added on another machine and synced in is not surfaced on load; `doctor` reports blast radius as a static count with no baseline | Medium |
 | — | `sync` performs no store locking, so a concurrent pull can silently revert a mutation — including a `rotate` or `recipients rm` performed as incident remediation. It also forks the `generation` counter that T9's rollback detection and the signed audit events depend on | High |
 | — | The MCP `run_with_secrets` path buffers command output unbounded with no timeout. Beyond denial of service, the process heap holds injected values in cleartext, so an agent-driven OOM produces a core dump containing them where core dumps are enabled | High |
 

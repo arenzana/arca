@@ -17,9 +17,27 @@ All notable changes to arca are documented here. The format follows
   A **relabel is also recorded** (`op=recipients-label`): labels are how an operator recognizes a key
   during review (`who-can-read`, `exposure`, `doctor`), so renaming an unfamiliar key to something
   trusted-looking is a way to hide it from exactly that check.
-  This closes the audit half of the recipient-injection gap; the control-plane anchor (an agent can
-  still *run* `recipients add` without a terminal) is tracked separately as T11/T12 in
-  [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+  This closes the audit half of the recipient-injection gap; the control-plane anchor is the entry
+  below.
+- **The control plane is now terminal-anchored (T11/T12).** arca's strongest per-secret controls are
+  enforced on the paths that *release* a value, but the commands that *change those rules* carried no
+  anchor — so every control on the disclosure path could be edited away by the party it governs. An
+  agent refused by `--require-grant` could run `arca grant NAME --ttl 52w --uses 0` and retry (grants
+  are keyed by name with no merge, so a self-issued one silently *replaces* the operator's narrower
+  grant); an agent hidden by `mcp --strict` could run `arca agent allow NAME`; and widest of all,
+  `arca recipients add <own key>` + `arca reencrypt` re-wraps every value to a key the operator does
+  not hold, permanently and on every machine the store reaches, without ever entering an access path.
+  `arca grant`, `agent allow`, `enable`, `recipients add`, `reencrypt` and `handle create` now refuse
+  a detected agent outright and require every other caller to confirm on the controlling terminal,
+  with the prompt naming the scope being widened. Deliberately an interactive **prompt** rather than
+  a TTY-presence check: an agent launched from the operator's own shell inherits that terminal, so a
+  predicate would pass for the primary adversary. The commands that only *restrict* — `agent deny`,
+  `disable`, `recipients rm`, `handle revoke` — stay headless, so incident response is never gated on
+  a terminal. **There is no environment bypass**, deliberately; `ARCA_APPROVAL=allow` was removed for
+  the same reason, and a test enforces the absence. The cost is that non-interactive control-plane
+  use (CI issuing a grant, a provisioning script adding a key) is now refused rather than silently
+  allowed; the intended answer is an operator-minted, scoped, expiring capability, not a variable.
+  See T11/T12 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the residuals.
 
 ### Added
 - **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push

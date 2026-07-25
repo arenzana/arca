@@ -54,19 +54,22 @@ With that framing, the controls are:
   (`get --no-log`). These overrides are honored only for a non-agent caller **with a
   controlling terminal** — scrubbing agent-detection env vars is not enough, because a
   headless process can't open `/dev/tty` / `CONIN$`.
-- **That anchor covers disclosure, not policy. The control plane is currently unanchored.**
-  ⚠ *Known gap, not yet fixed.* The terminal anchor above is applied to the commands that
-  *release* a value. It is **not** applied to the commands that *change the rules*: `arca grant`,
-  `arca agent allow`, `arca enable`, `arca recipients add`, and `arca reencrypt` all succeed for a
-  detected agent with no controlling terminal. An agent that can run arca can therefore issue
-  itself the grant a `--require-grant` secret needs, expose a secret to itself under a `--strict`
-  MCP server, or — the widest case — add its own age key as a recipient and re-wrap the store,
-  after which it decrypts every secret directly and permanently, including `--no-print`,
-  `--require-approval`, and `--require-grant` ones. That last path never enters an access path, so
-  it produces no read record and trips no canary. Until this is closed, treat the per-secret policy
-  flags as protecting against an agent that *uses* arca as intended, not against one that edits its
-  own permissions first. `arca recipients add` additionally writes no audit event today, so review
-  the recipient set directly (`arca who-can-read`) rather than relying on the log to show a change.
+- **The control plane is terminal-anchored too, in the loosening direction.** The anchor above
+  covers the commands that *release* a value; the commands that *change the rules* carry the same
+  anchor. `arca grant`, `arca agent allow`, `arca enable`, `arca recipients add`, `arca reencrypt`
+  and `arca handle create` refuse a detected agent outright, and require every other caller to
+  confirm on the controlling terminal — so a headless agent cannot issue itself the grant a
+  `--require-grant` secret needs, expose a secret to itself under a `--strict` MCP server, or add
+  its own age key as a recipient and re-wrap the store. Each prompt names the scope being widened
+  (the grant's bounds, the recipient key itself), because *which* is the decision, not *whether*.
+  There is deliberately **no** environment bypass — that would reproduce the `ARCA_APPROVAL=allow`
+  mistake — so genuinely non-interactive control-plane use is refused rather than silently allowed.
+  The commands that only *restrict* — `agent deny`, `disable`, `recipients rm`, `handle revoke` —
+  stay usable headless, so incident response is never gated on a terminal.
+  *Residual:* an agent sharing the operator's controlling terminal can attempt to answer its own
+  prompt (on macOS `TIOCSTI` is unprivileged). That converts a silent self-authorization into a
+  visible one rather than making it impossible; containment still requires the age identity to be
+  out of the agent's reach, per the framing above.
 - **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
   pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
   log), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it
