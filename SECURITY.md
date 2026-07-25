@@ -28,7 +28,25 @@ and the full security assessment — assets, threats, and how each is addressed 
 [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 arca runs with the invoking user's privileges; it raises the bar for a *cooperating* AI agent,
-not a hostile local user (who could bypass arca entirely). Specifically:
+not a hostile local user (who could bypass arca entirely).
+
+**Read this part before you rely on any of the controls below.** The AI agents arca is built to
+constrain — a coding assistant with a shell tool — *are* local processes running as the invoking
+user. So the "hostile local user" exclusion is not a distant edge case; it is the same party, one
+step further along. Concretely:
+
+- arca constrains an agent that goes **through arca**. Every control below applies at the arca
+  interface.
+- arca does **not**, and cannot, constrain an agent with arbitrary filesystem read on the
+  operator's account. Such an agent reads the age identity (`$ARCA_IDENTITY` /
+  `$SOPS_AGE_KEY_FILE`) directly and decrypts the store itself, without invoking arca — no policy
+  is consulted, no audit event is written, no canary trips.
+- Deploy arca where the agent's file access is restricted (a sandboxed harness, or a deny rule on
+  the identity path), or accept that these controls are guardrails against mistakes and honest
+  agents rather than containment for a hostile one. Both are legitimate; choosing knowingly is the
+  point.
+
+With that framing, the controls are:
 
 - **Per-secret policy is agent-aware and terminal-anchored.** A detected agent cannot
   self-approve a `--require-approval` secret via `ARCA_APPROVAL=allow`, cannot disable
@@ -36,6 +54,19 @@ not a hostile local user (who could bypass arca entirely). Specifically:
   (`get --no-log`). These overrides are honored only for a non-agent caller **with a
   controlling terminal** — scrubbing agent-detection env vars is not enough, because a
   headless process can't open `/dev/tty` / `CONIN$`.
+- **That anchor covers disclosure, not policy. The control plane is currently unanchored.**
+  ⚠ *Known gap, not yet fixed.* The terminal anchor above is applied to the commands that
+  *release* a value. It is **not** applied to the commands that *change the rules*: `arca grant`,
+  `arca agent allow`, `arca enable`, `arca recipients add`, and `arca reencrypt` all succeed for a
+  detected agent with no controlling terminal. An agent that can run arca can therefore issue
+  itself the grant a `--require-grant` secret needs, expose a secret to itself under a `--strict`
+  MCP server, or — the widest case — add its own age key as a recipient and re-wrap the store,
+  after which it decrypts every secret directly and permanently, including `--no-print`,
+  `--require-approval`, and `--require-grant` ones. That last path never enters an access path, so
+  it produces no read record and trips no canary. Until this is closed, treat the per-secret policy
+  flags as protecting against an agent that *uses* arca as intended, not against one that edits its
+  own permissions first. `arca recipients add` additionally writes no audit event today, so review
+  the recipient set directly (`arca who-can-read`) rather than relying on the log to show a change.
 - **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
   pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
   log), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it
