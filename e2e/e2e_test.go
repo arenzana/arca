@@ -136,8 +136,14 @@ func (b box) must(t *testing.T, stdin string, args ...string) string {
 //     deterministic on every platform and independent of whether the test host has a terminal, and
 //     — the reason it is first here — it can never block on the prompt.
 //  2. Everyone else must answer a question on /dev/tty. No controlling terminal is a refusal, which
-//     is the condition every CI runner is in. Asserted only when this process has no terminal,
-//     because where one exists the child inherits it and would sit waiting for a human.
+//     is the condition every CI runner is in. Asserted when this process has no terminal, and on
+//     Windows even when it has one: a Unix terminal belongs to a human the prompt would
+//     unexpectedly render for, but a CI runner's console (CONIN$) has nobody watching it, and
+//     since W1 the prompt carries the operatorTimeout deadline — the child refuses instead of
+//     hanging, which is the only positive Windows evidence for this fix. Either refusal shape
+//     satisfies the check (the console may deliver EOF immediately — a decline — or stay silent —
+//     an expiry); both messages name the terminal, and the expiry-vs-declined discrimination is
+//     asserted in operator_test.go's injection test, where the terminal is a pipe this repo owns.
 //
 // There is deliberately no third case driving the *success* path. The prompt is an interactive
 // Fscanln on /dev/tty, so a test could only answer it by allocating a pty and making it the child's
@@ -149,10 +155,12 @@ func (b box) must(t *testing.T, stdin string, args ...string) string {
 //
 // One asymmetry to know before trusting a green run: check 1 is not evidence of *this* anchor for
 // every command. `handle create` already refused detected agents before T11 (handles.go's own
-// detection-alone refusal), so on a host that has a terminal — where check 2 is skipped —
+// detection-alone refusal), so on a Unix host that has a terminal — where check 2 is skipped —
 // TestHandleCreateIsOperatorOnly would pass against a tree with no anchor at all. Dropping these
 // files onto f984ce5 headless fails all four, and that is the run that establishes they mean
-// something; three fail on check 1 and `handle create` fails on check 2.
+// something; three fail on check 1 and `handle create` fails on check 2. On Windows check 2 now
+// runs unconditionally (the prompt refuses on a deadline instead of waiting for a human), so the
+// anchor carries positive evidence there on every command, `handle create` included.
 func assertControlPlaneRefused(t *testing.T, b box, args ...string) {
 	t.Helper()
 	if _, errOut, code := b.runEnv(t, []string{"AI_AGENT=claude-code"}, "", args...); code == 0 {
@@ -160,7 +168,9 @@ func assertControlPlaneRefused(t *testing.T, b box, args ...string) {
 	} else if !strings.Contains(errOut, "claude-code") {
 		t.Fatalf("arca %v refusal does not name the detected agent: %q", args, errOut)
 	}
-	if hasTerminal() {
+	// Check 2 asserts the no-answer refusal (see the doc comment for why Windows runs it even
+	// when a console is present, and why either refusal shape satisfies it).
+	if hasTerminal() && runtime.GOOS != "windows" {
 		return
 	}
 	if _, errOut, code := b.run(t, "", args...); code == 0 {

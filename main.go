@@ -968,6 +968,16 @@ func newSet() *cobra.Command {
 			if err := validName(name); err != nil {
 				return err
 			}
+			// Read the value BEFORE taking the store lock: at a terminal readValue blocks until a
+			// human types, and a terminal that opens but never answers (a console no human is
+			// watching, a pty held by a supervisor) would otherwise hold the lock forever — the
+			// lock heartbeat keeps the holder looking alive past staleLockAge, wedging the store
+			// for every other arca process (W1, lock-holding variant). The value does not depend on
+			// store state, so reading it first costs nothing but a retype if the lock is contended.
+			val, err := readValue("Value: ")
+			if err != nil {
+				return err
+			}
 			unlock, err := lockStore()
 			if err != nil {
 				return err
@@ -978,10 +988,6 @@ func newSet() *cobra.Command {
 				return err
 			}
 			recips, err := crypto.ParseRecipients(s.Recipients)
-			if err != nil {
-				return err
-			}
-			val, err := readValue("Value: ")
 			if err != nil {
 				return err
 			}

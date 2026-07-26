@@ -26,7 +26,23 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
+
+// operatorTimeout bounds how long requireOperator waits for a human answer on the controlling
+// terminal. Without it the prompt was an unbounded Fscanln: a terminal handle that *opens* but
+// never delivers input — a Windows console (CONIN$ opens for any console-attached process, human
+// or not), or a pty held by a supervisor that never relays keystrokes — blocked the process
+// forever (W1). That is an availability failure, not a bypass: the anchor failed *stuck*, and on
+// the paths that hold the store lock it wedged the store for every other arca process, because the
+// lock heartbeat (lock.go) keeps a hung holder looking alive past staleLockAge. Failing closed on
+// a deadline converts the hang into the same refusal a missing terminal already produces.
+//
+// The value is deliberately small: it bounds CI cost where the refusal is the asserted outcome
+// (e2e on Windows runs the anchor checks against a console no human is watching), and a real
+// operator who gets cut off can simply re-run — the refusal says so. It is a package var so tests
+// can shorten it, same convention as lockTimeout/staleLockAge (lock.go).
+var operatorTimeout = 5 * time.Second
 
 // requireOperator refuses a control-plane mutation unless a human confirms it on the controlling
 // terminal. `cmd` names the command for the refusal message; `question` is the yes/no question shown
@@ -50,7 +66,9 @@ import (
 //     and it means an agent cannot make an unexpected prompt appear on the operator's terminal.
 //  2. Everyone else must answer the question on /dev/tty (CONIN$/CONOUT$ on Windows). No terminal is
 //     a refusal, so a headless caller — CI, a daemon, an agent with scrubbed markers and no tty — is
-//     fail-closed regardless of what the environment claims.
+//     fail-closed regardless of what the environment claims. A terminal that opens but stays silent
+//     is the same refusal after operatorTimeout (see above), so a console no human is watching
+//     fails closed too instead of hanging.
 //
 // Residuals, stated rather than papered over:
 //
@@ -80,12 +98,28 @@ func requireOperator(cmd, question string) error {
 		defer out.Close()
 	}
 	fmt.Fprintf(out, "%s [y/N] ", question)
-	var resp string
-	_, _ = fmt.Fscanln(in, &resp)
-	if strings.EqualFold(strings.TrimSpace(resp), "y") {
-		return nil
+	// The read carries the operatorTimeout deadline described above. It runs in a goroutine
+	// because a blocked Fscanln cannot be interrupted; on expiry the goroutine stays parked on
+	// the dead handle until process exit, which for this CLI follows the refusal immediately.
+	// The channel is buffered so that parked goroutine never leaks on its send.
+	answered := make(chan string, 1)
+	go func() {
+		var resp string
+		_, _ = fmt.Fscanln(in, &resp)
+		answered <- resp
+	}()
+	select {
+	case resp := <-answered:
+		if strings.EqualFold(strings.TrimSpace(resp), "y") {
+			return nil
+		}
+		// Any non-yes answer — including EOF, which is what a console with no input queued
+		// delivers — is a decline. This message must NOT name the timeout: the two refusals
+		// mean different things (a human said no vs. nobody was there) and read differently.
+		return fmt.Errorf("`arca %s` declined at the terminal", cmd)
+	case <-time.After(operatorTimeout):
+		return fmt.Errorf("`arca %s` was not confirmed on the terminal within %s — no answer was received, so it was refused. Re-run it interactively to confirm", cmd, operatorTimeout)
 	}
-	return fmt.Errorf("`arca %s` declined at the terminal", cmd)
 }
 
 // There is deliberately NO environment bypass, and there must not be one. ARCA_APPROVAL=allow was

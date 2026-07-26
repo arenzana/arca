@@ -1,8 +1,10 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arenzana/arca/internal/crypto"
 )
@@ -177,4 +179,115 @@ func TestControlPlaneHasNoEnvBypass(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestControlPlaneRefusesWhenTerminalNeverAnswers is the W1 regression: a terminal handle that
+// opens but never delivers input (a Windows console no human is watching, or a pty held by a
+// supervisor that never relays keystrokes) must fail closed after operatorTimeout, not block the
+// process forever. It also owns the expiry-vs-declined discrimination that e2e deliberately does
+// not assert against runner behavior: an explicit answer and an EOF both read as "declined", while
+// the expiry names the terminal and the timeout and never says "declined".
+func TestControlPlaneRefusesWhenTerminalNeverAnswers(t *testing.T) {
+	sandbox(t) // clean agent markers; a detected agent is refused before any terminal is opened
+
+	oldTimeout := operatorTimeout
+	t.Cleanup(func() { operatorTimeout = oldTimeout })
+	operatorTimeout = 200 * time.Millisecond
+
+	injectTTY := func(t *testing.T, in *os.File) {
+		t.Helper()
+		old := openTTY
+		t.Cleanup(func() { openTTY = old })
+		openTTY = func() (_, out *os.File, err error) {
+			devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+			if err != nil {
+				return nil, nil, err
+			}
+			return in, devnull, nil
+		}
+	}
+
+	t.Run("a silent terminal expires and fails closed", func(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		defer w.Close() // held open, never written: the terminal that never answers
+		injectTTY(t, r)
+
+		done := make(chan error, 1)
+		go func() { done <- requireOperator("test-cmd", "Confirm the thing?") }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("a terminal that never answered was accepted as a confirmation")
+			}
+			if !strings.Contains(err.Error(), "terminal") {
+				t.Fatalf("expiry refusal does not name the terminal: %v", err)
+			}
+			if !strings.Contains(err.Error(), operatorTimeout.String()) {
+				t.Fatalf("expiry refusal does not name the timeout (%s): %v", operatorTimeout, err)
+			}
+			if strings.Contains(err.Error(), "declined") {
+				t.Fatalf("expiry reads as a decline; the two refusals must be distinguishable: %v", err)
+			}
+		case <-time.After(10 * operatorTimeout):
+			t.Fatal("requireOperator is still waiting on the dead terminal — the W1 hang is back")
+		}
+	})
+
+	t.Run("an explicit no is a decline, not an expiry", func(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		if _, err := w.WriteString("n\n"); err != nil {
+			t.Fatal(err)
+		}
+		w.Close()
+		injectTTY(t, r)
+
+		err = requireOperator("test-cmd", "Confirm the thing?")
+		if err == nil || !strings.Contains(err.Error(), "declined") {
+			t.Fatalf("explicit no = %v, want a decline", err)
+		}
+		if strings.Contains(err.Error(), operatorTimeout.String()) {
+			t.Fatalf("a decline must not name the timeout: %v", err)
+		}
+	})
+
+	t.Run("EOF is a decline, not an expiry", func(t *testing.T) {
+		// The shape a Windows CI console may produce: CONIN$ opens and reads EOF immediately.
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Close() // no writer: the read hits EOF at once
+		defer r.Close()
+		injectTTY(t, r)
+
+		err = requireOperator("test-cmd", "Confirm the thing?")
+		if err == nil || !strings.Contains(err.Error(), "declined") {
+			t.Fatalf("EOF = %v, want a decline", err)
+		}
+	})
+
+	t.Run("a yes still confirms", func(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		if _, err := w.WriteString("y\n"); err != nil {
+			t.Fatal(err)
+		}
+		w.Close()
+		injectTTY(t, r)
+
+		if err := requireOperator("test-cmd", "Confirm the thing?"); err != nil {
+			t.Fatalf("an explicit yes was refused: %v", err)
+		}
+	})
 }
