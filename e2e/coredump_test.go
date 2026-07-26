@@ -1,9 +1,18 @@
-//go:build e2e
+//go:build e2e && !windows
+
+// The `!windows` half of that constraint is load-bearing and was missing: syscall.Rlimit does not
+// exist on Windows, so a runtime `if runtime.GOOS == "windows" { t.Skip }` is the wrong layer — the
+// file still has to compile before any test can decide to skip. With only `e2e` on the tag, the
+// whole e2e package failed to build for windows/amd64 and the CI `e2e (windows)` leg ran zero
+// tests: not one skipped test, zero, with a red X that named this file and nothing else.
+//
+// Excluding the file is the right form rather than making the test portable. RLIMIT_CORE has no
+// Windows counterpart at all, so there is nothing here to assert on that platform; disableCoreDumps
+// is a documented no-op there for the same reason.
 
 package e2e
 
 import (
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -16,10 +25,6 @@ import (
 // it inherited from arca. That is the property that matters operationally: by the time arca holds
 // a decrypted value, neither it nor anything it spawns can be dumped.
 func TestCoreDumpsDisabledForChildren(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no RLIMIT_CORE on Windows; disableCoreDumps is a documented no-op there")
-	}
-
 	// Raise this process's soft limit first, so the arca child inherits a NON-zero one. Without
 	// this the assertion below would pass on any host that already defaults RLIMIT_CORE to 0
 	// (macOS and most Linux distros do) — i.e. it would pass whether or not arca did anything.
