@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -583,20 +584,52 @@ func readAllLimited(r io.Reader, max int64) ([]byte, error) {
 	return b, nil
 }
 
-func readValue(prompt string) ([]byte, error) {
+// errEmptyValue reports that the value read was empty and the caller did not opt into that.
+// Callers translate it into a message naming the secret, because "empty" means something very
+// different for a new secret than for one that already holds a value.
+var errEmptyValue = errors.New("empty value")
+
+// readValue reads a secret value from the terminal (hidden) or from stdin.
+//
+// An empty read is refused unless allowEmpty. The failure it guards is the one that costs a
+// secret: `producer | arca set PRODKEY` where the producer fails and prints nothing. Stdin
+// closes empty, arca reports success, and the previous ciphertext is gone — there is no undo,
+// because the store only keeps the current value. Refusing costs a flag; storing costs the
+// secret. allowEmpty is a required parameter rather than an option struct so a future caller
+// has to decide rather than inherit the unsafe default by omission.
+func readValue(prompt string, allowEmpty bool) ([]byte, error) {
+	var b []byte
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprint(os.Stderr, prompt)
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		p, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Fprintln(os.Stderr)
-		return b, err
+		if err != nil {
+			return nil, err
+		}
+		b = p
+	} else {
+		p, err := readAllLimited(os.Stdin, maxInputBytes)
+		if err != nil {
+			return nil, err
+		}
+		// Strip a single trailing newline (from `echo`/editors) but preserve internal newlines,
+		// so multi-line secrets like PEM keys round-trip intact.
+		b = []byte(strings.TrimRight(string(p), "\r\n"))
 	}
-	b, err := readAllLimited(os.Stdin, maxInputBytes)
-	if err != nil {
-		return nil, err
+	if len(b) == 0 && !allowEmpty {
+		return nil, errEmptyValue
 	}
-	// Strip a single trailing newline (from `echo`/editors) but preserve internal newlines,
-	// so multi-line secrets like PEM keys round-trip intact.
-	return []byte(strings.TrimRight(string(b), "\r\n")), nil
+	return b, nil
+}
+
+// emptyValueError explains a refused empty read in terms of what it would have done: replacing
+// a stored value is destructive and unrecoverable, creating an empty one is merely useless.
+func emptyValueError(name string, replacing bool) error {
+	if replacing {
+		return fmt.Errorf("refusing to store an empty value for %s: it would destroy the stored secret and there is no undo "+
+			"(a failed upstream command in a pipe reads as empty stdin); pass --allow-empty if you mean it", name)
+	}
+	return fmt.Errorf("refusing to store an empty value for %s: pass --allow-empty if you mean it", name)
 }
 
 func contains(ss []string, x string) bool {
@@ -957,7 +990,7 @@ func newSet() *cobra.Command {
 	var tags []string
 	var desc, rotate, ttl, expiresAt string
 	var meta map[string]string
-	var noPrint, requireApproval, canary, requireGrant bool
+	var noPrint, requireApproval, canary, requireGrant, allowEmpty bool
 	var rate string
 	c := &cobra.Command{
 		Use:   "set NAME",
@@ -981,8 +1014,14 @@ func newSet() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			val, err := readValue("Value: ")
+			// Whether this set replaces an existing value decides how bad an empty read is, so
+			// look it up before reading rather than after.
+			replacing := s.Secrets[name] != nil
+			val, err := readValue("Value: ", allowEmpty)
 			if err != nil {
+				if errors.Is(err, errEmptyValue) {
+					return emptyValueError(name, replacing)
+				}
 				return err
 			}
 			armored, err := crypto.Encrypt(val, recips)
@@ -1078,6 +1117,7 @@ func newSet() *cobra.Command {
 	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
 	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
 	c.Flags().StringVar(&rate, "rate", "", "rate limit as N/DURATION (e.g. 10/1h); empty clears it")
+	c.Flags().BoolVar(&allowEmpty, "allow-empty", false, "permit storing an empty value (refused by default: an empty read would destroy an existing secret)")
 	return c
 }
 
@@ -1331,10 +1371,14 @@ func newRm() *cobra.Command {
 	}
 }
 
-// newDisable suspends a secret without changing its value: it stamps expiry at "now" so every
-// access path (get/exec/inject/env + MCP) refuses it, while the value and the rest of the metadata
-// are preserved. Reverse it with `enable`. This is the fast, reversible kill switch for a leak —
-// the actual token must still be revoked at its issuer; this only stops arca from handing it out.
+// newDisable suspends a secret without changing its value: it sets a dedicated Disabled flag —
+// independent of any real expiry (SEC-13) — so every access path (get/exec/inject/env + MCP,
+// including an already-minted handle) refuses it, while the value and the rest of the metadata are
+// preserved. Reverse it with `enable`. This is the fast, reversible kill switch for a leak — the
+// actual token must still be revoked at its issuer; this only stops arca from handing it out.
+//
+// Handles are made inert rather than revoked: `enable` must restore the pre-incident state exactly,
+// and destroying capabilities on the way in would make the reversal a re-issue.
 func newDisable() *cobra.Command {
 	return &cobra.Command{
 		Use:   "disable NAME",
@@ -1492,7 +1536,7 @@ func jsonScalar(rv json.RawMessage) (string, bool) {
 }
 
 func newImport() *cobra.Command {
-	var asJSON, dryRun, overwrite bool
+	var asJSON, dryRun, overwrite, allowEmpty bool
 	var prefix string
 	var tags []string
 	c := &cobra.Command{
@@ -1551,6 +1595,16 @@ func newImport() *cobra.Command {
 					skipped++
 					continue
 				}
+				// The same guard `set` and `rotate` apply, narrowed to where it is destructive:
+				// replacing a stored value with an empty one loses it and the store keeps no
+				// previous version. Creating an empty secret is merely useless, and a bare `KEY=`
+				// is an ordinary line in a real .env file — refusing those would break the common
+				// import for no safety gain — so only the overwriting case is skipped.
+				if p.val == "" && existing != nil && !allowEmpty {
+					fmt.Fprintf(os.Stderr, "skip %q: empty value would destroy the stored secret (pass --allow-empty if you mean it)\n", p.key)
+					skipped++
+					continue
+				}
 				if dryRun {
 					if existing != nil {
 						overwritten++
@@ -1603,6 +1657,7 @@ func newImport() *cobra.Command {
 	c.Flags().BoolVar(&asJSON, "json", false, `read a JSON object {"KEY":"value"} from stdin instead of dotenv lines`)
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be imported without writing anything")
 	c.Flags().BoolVar(&overwrite, "overwrite", false, "replace secrets that already exist (default: skip them)")
+	c.Flags().BoolVar(&allowEmpty, "allow-empty", false, "permit an empty value to replace an existing secret (skipped by default: it would destroy the stored value)")
 	c.Flags().StringVar(&prefix, "prefix", "", "prepend this prefix to every imported name")
 	c.Flags().StringSliceVar(&tags, "tag", nil, "tags to apply to imported secrets (repeatable or comma-separated)")
 	return c
@@ -2035,6 +2090,7 @@ func verifyLog(a *audit.Log, requireSigned bool, anchor string, remoteCheck bool
 // rotation date.
 func newRotate() *cobra.Command {
 	var rotate, ttl, expiresAt string
+	var allowEmpty bool
 	c := &cobra.Command{
 		Use:   "rotate NAME",
 		Short: "Replace an existing secret's value (keeps created_at; logs a rotation)",
@@ -2058,8 +2114,12 @@ func newRotate() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			val, err := readValue("New value: ")
+			// `rotate` only ever replaces: it has already refused a missing secret above.
+			val, err := readValue("New value: ", allowEmpty)
 			if err != nil {
+				if errors.Is(err, errEmptyValue) {
+					return emptyValueError(name, true)
+				}
 				return err
 			}
 			armored, err := crypto.Encrypt(val, recips)
@@ -2091,6 +2151,7 @@ func newRotate() *cobra.Command {
 	c.Flags().StringVar(&rotate, "rotate-after", "", "set the next rotation date (YYYY-MM-DD)")
 	c.Flags().StringVar(&ttl, "ttl", "", "refresh expiry to a relative duration (e.g. 30m, 12h, 7d, 2w)")
 	c.Flags().StringVar(&expiresAt, "expires-at", "", "refresh expiry to an absolute time (RFC3339 or YYYY-MM-DD)")
+	c.Flags().BoolVar(&allowEmpty, "allow-empty", false, "permit storing an empty value (refused by default: it would destroy the stored secret)")
 	return c
 }
 
