@@ -55,6 +55,17 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
+      # Formatting. `go vet`, staticcheck and gosec don't look at formatting, so without this
+      # step unformatted code merges silently. `gofmt -l` exits 0 even when it lists files, so
+      # test the output, not the exit code; print the diff on failure so the fix is in the log.
+      - name: gofmt
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "::error::unformatted files: $files"
+            gofmt -d .
+            exit 1
+          fi
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
       - name: gosec (medium+)
