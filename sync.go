@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
 	"github.com/arenzana/arca/internal/store"
@@ -100,19 +101,18 @@ func loadSyncState() syncState {
 	return st
 }
 
+// saveSyncState persists the sync cursor. It used to write through a fixed `sync-state.json.tmp`
+// with os.WriteFile (R18), which had already been fixed one function down under SEC-37 and was
+// never brought back up: a WriteFile only applies its mode when it *creates* the file, so a
+// leftover temp from a crashed run at a looser mode was renamed over the destination mode and all,
+// and two concurrent syncs shared the one temp name. atomicfile.Write has no fixed name to
+// collide on and chmods before it writes.
 func saveSyncState(st syncState) error {
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
-		return err
-	}
-	tmp := syncStatePath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, syncStatePath())
+	return atomicfile.Write(syncStatePath(), b, 0o600)
 }
 
 // loadSyncConfig reads the state-dir sync.json (zero value when absent/invalid).
@@ -129,30 +129,14 @@ func saveSyncConfig(c syncConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
-		return err
-	}
 	// Atomic + mode-enforced write (SEC-37): sync.json can hold cleartext backend credentials, so
 	// it must never be left half-written by a crash, and the 0600 must be guaranteed even when the
-	// file already exists with a looser mode (a plain WriteFile only chmods on create). CreateTemp
-	// makes a fresh 0600 file; the rename is atomic. Matches saveSyncState / saveEscrowState.
-	tmp, err := os.CreateTemp(storeStateDir(), "sync-config-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), syncConfigPath())
+	// file already exists with a looser mode (a plain WriteFile only chmods on create). That is
+	// exactly atomicfile.Write's contract; SEC-37's hand-rolled version of it lived here, and the
+	// comment it carried claimed to match saveSyncState and saveEscrowState when in fact neither
+	// had been brought up to it (R18). Both go through the same helper now, so the claim is
+	// structural rather than a promise in a comment.
+	return atomicfile.Write(syncConfigPath(), b, 0o600)
 }
 
 // syncURL resolves the backend URL: ARCA_SYNC_URL first, then the state-dir sync.json.
@@ -308,29 +292,13 @@ func openEnvelope(envelope []byte) ([]byte, *store.Store, error) {
 	return plain, s, nil
 }
 
-// writeLocalStore atomically replaces the local store file with the pulled payload.
+// writeLocalStore atomically, durably, and at 0600 replaces the local store file with the pulled
+// payload. This is the one writer in the tree that replaces the whole store with bytes that came
+// off the network, so the parent-dir fsync atomicfile.Write adds (R17) matters most here: without
+// it a crash just after a pull could leave the directory entry on the pre-pull inode while sync
+// state had already been advanced to say the pull landed.
 func writeLocalStore(payload []byte) error {
-	dir := filepath.Dir(storePath())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".store-sync-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(payload); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), storePath())
+	return atomicfile.Write(storePath(), payload, 0o600)
 }
 
 // ----------------------------------------------------------------------------

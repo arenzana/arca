@@ -100,6 +100,32 @@ All notable changes to arca are documented here. The format follows
 - **An empty stdin no longer destroys a stored secret.** `arca set NAME` with a producer that
   failed stored an empty value over the real one and exited 0, with no undo — the store keeps only
   the current value. See `--allow-empty` above.
+- **A failed write no longer makes the store look rolled back.** The monotonic `generation`
+  counter — the rollback tripwire that `arca doctor` warns on and that `log --verify` binds into
+  every signed audit event — was bumped *before* the store was written, so any failure past that
+  point left the running process one generation ahead of the file. That command's audit event then
+  recorded a generation that had never existed on disk, and the next process, loading the real
+  lower one, produced exactly the pattern `log --verify` reports as evidence of a restored older
+  copy. The counter now advances only after the bytes have landed. A false alarm on a
+  tamper-evidence signal is worse than no alarm: it teaches you to discount the one thing that
+  should never be discounted.
+- **A power loss immediately after a successful write can no longer lose it.** Every one of arca's
+  state files — the store, a pulled store, the sync config and cursor, grants, handles, the canary
+  registry, the escrow cursor and the rollback high-water mark — was published by renaming a temp
+  file into place, and a rename is a change to the *directory*, which is not durable until the
+  directory itself is flushed. `arca set` could report a secret stored and lose it to a power cut a
+  moment later. All nine writers now go through one helper that fsyncs the parent directory after
+  the rename, and that reports a failure to do so rather than swallowing it (the write is
+  committed at that point; what the error means is that it may not survive a crash). On Windows
+  there is no way to ask for this — a directory handle cannot be opened for the write access
+  `FlushFileBuffers` requires — so the gap is named in the code rather than papered over.
+- **A leftover temp file from a crashed run can no longer widen a state file's permissions or
+  block a write.** Four state writers published through a fixed `<file>.tmp`, and `os.WriteFile`
+  applies its mode only when it *creates* a file — so a leftover sitting at `0644` was renamed on
+  top of a `0600` destination, mode and all, with nothing reporting anything wrong. The same fixed
+  name was also what two concurrent writers collided on. `sync.json` had been fixed for exactly
+  this and the fix was never carried back to the function directly above it. Temp files are now
+  uniquely named and chmod'd before a single byte is written, everywhere.
 
 ### Security
 - **An AI agent can no longer redirect its own audit log.** `$ARCA_AUDIT` was honoured

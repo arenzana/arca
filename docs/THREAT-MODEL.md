@@ -62,7 +62,7 @@ the identity path or accepts this knowingly.
 
 ### T1 — Secret value leaks through a side channel
 - **Value on the command line** → leaks via shell history and `ps`. *Addressed:* values are only read from a TTY (no echo) or piped stdin, never an argv argument.
-- **Value written to disk in cleartext** → recoverable later. *Addressed:* values are age-encrypted at rest; the store is written atomically (temp + fsync + rename); files are `0600`.
+- **Value written to disk in cleartext** → recoverable later. *Addressed:* values are age-encrypted at rest; the store is written atomically (unique temp file + chmod + fsync + rename + fsync of the parent directory, one helper shared by every state writer); files are `0600`. The chmod is explicit rather than inherited from the temp file's creation mode, because a write that reuses an existing file keeps that file's mode — which is how a `0600` store could quietly become `0644` after a crash left a temp file behind.
 - **Value echoed into an agent's context** → ends up in model logs/transcripts. *Addressed:* `exec` / `run_with_secrets` let a command *use* a secret while arca returns only the command's output; `arca exec` additionally **redacts injected values from the command's captured output** (replacing them with `«arca:NAME»` and auditing the catch), so an accidental `echo $SECRET` is intercepted rather than trusted not to happen. This is defense in depth, not a guarantee: it matches the literal value, so a command that encodes/splits/hashes the secret before printing can still emit it. `--no-print` refuses `get`/`env`/`inject` disclosure entirely.
 
 ### T2 — An AI agent weakens the controls that govern it
@@ -257,8 +257,9 @@ annotated where `gosec` flags them.
 ### T9 — Store rollback / replay
 The store is git-synced, so an attacker (or a sync conflict) could restore an
 older copy — resurrecting a rotated or deleted secret — with no signal.
-*Addressed:* every write bumps a monotonic `generation`. On load arca compares
-it to a local high-water mark and warns if it regressed (fast, per-operation).
+*Addressed:* every write that lands bumps a monotonic `generation`. On load arca
+compares it to a local high-water mark and warns if it regressed (fast,
+per-operation).
 Additionally, every audit event records the generation it observed, **bound
 into the event's hash and signature** — so `log --verify` detects a rollback
 from the tamper-evident log itself: it fails when the store's generation is
@@ -272,6 +273,14 @@ unless the log still extends that head. *Residual:* a rollback of exactly one
 write (to the copy current at the last audited operation) is below the
 generation check's resolution, and the anchor only protects history up to the
 moment it was minted — its value depends on minting and checking regularly.
+
+The counter advances only after the bytes have landed. Bumping it first — which
+arca did through 0.8.0 — meant a `set` that failed anywhere in the write still
+recorded the advanced generation into that command's signed audit event, and the
+next process, loading the real lower generation, produced exactly the
+"operations continuing against a restored older copy" pattern above with no
+attacker involved. A false positive is not a cheap bug on this control: its
+entire value is that the operator does not learn to discount it.
 
 ### T10 — Removing a recipient is mistaken for revocation
 `recipients rm` drops a key from the set, but the removed holder can still decrypt
