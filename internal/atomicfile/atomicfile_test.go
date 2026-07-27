@@ -56,8 +56,11 @@ func TestWriteLandsAtTheModeAskedForOverAnExistingLooserFile(t *testing.T) {
 	if err := Write(dst, []byte("new"), 0o600); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if got := modeOf(t, dst); got != 0o600 {
-		t.Errorf("mode = %o, want 600 — the destination kept the looser mode it already had", got)
+	// Unix mode bits only: Windows governs access by ACL and reports a writable file as 0666.
+	if runtime.GOOS != "windows" {
+		if got := modeOf(t, dst); got != 0o600 {
+			t.Errorf("mode = %o, want 600 — the destination kept the looser mode it already had", got)
+		}
 	}
 	b, err := os.ReadFile(dst)
 	if err != nil {
@@ -165,11 +168,15 @@ func TestWriteCreatesTheParentDirectory(t *testing.T) {
 	if err := Write(dst, []byte("new"), 0o600); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if got := modeOf(t, dir); got != 0o700 {
-		t.Errorf("directory mode = %o, want 700", got)
-	}
-	if got := modeOf(t, dst); got != 0o600 {
-		t.Errorf("file mode = %o, want 600", got)
+	// Unix mode bits only (see above); on Windows the property under test is that the parent
+	// directory was created, which the successful Write above already established.
+	if runtime.GOOS != "windows" {
+		if got := modeOf(t, dir); got != 0o700 {
+			t.Errorf("directory mode = %o, want 700", got)
+		}
+		if got := modeOf(t, dst); got != 0o600 {
+			t.Errorf("file mode = %o, want 600", got)
+		}
 	}
 }
 
@@ -319,6 +326,13 @@ func TestConcurrentWritersNeverPublishASplice(t *testing.T) {
 			}
 			b, err := os.ReadFile(dst)
 			if err != nil {
+				// On Windows the publish is MoveFileEx(REPLACE_EXISTING) and a concurrent opener
+				// can lose the race with a sharing violation. That is an availability artifact, not
+				// a splice — the integrity property here only constrains reads that SUCCEED (W3:
+				// document, do not retry). On Unix a read error is a real failure.
+				if runtime.GOOS == "windows" {
+					continue
+				}
 				bad <- fmt.Sprintf("read: %v", err)
 				return
 			}
@@ -338,6 +352,14 @@ func TestConcurrentWritersNeverPublishASplice(t *testing.T) {
 		go func(p string) {
 			defer writersWG.Done()
 			if err := Write(dst, []byte(p), 0o600); err != nil {
+				// Same Windows race, writer side: a concurrent open of the destination makes
+				// MoveFileEx(REPLACE_EXISTING) fail with Access denied. The write did not land, no
+				// splice was published, and Write's defer removes the temp — so on Windows this is
+				// availability, not integrity. Production serializes writers with the store lock;
+				// this test deliberately runs them lock-free to stress the rename itself.
+				if runtime.GOOS == "windows" {
+					return
+				}
 				bad <- fmt.Sprintf("Write: %v", err)
 			}
 		}(p)
@@ -352,8 +374,10 @@ func TestConcurrentWritersNeverPublishASplice(t *testing.T) {
 	default:
 	}
 
-	if got := modeOf(t, dst); got != 0o600 {
-		t.Errorf("mode = %o, want 600", got)
+	if runtime.GOOS != "windows" {
+		if got := modeOf(t, dst); got != 0o600 {
+			t.Errorf("mode = %o, want 600", got)
+		}
 	}
 	// No leftovers, whichever writer went last.
 	assertOnlyEntries(t, dir, "state.json")
