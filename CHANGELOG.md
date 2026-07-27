@@ -7,6 +7,23 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **`set` and `generate` can no longer relax the policy on an existing secret without an operator
+  terminal (T13).** The control-plane anchor covered the six commands that exist to widen access; it
+  did not cover the two whose job is to write a value and whose policy flags ride along. So
+  `arca set NAME --require-approval=false` — likewise `--no-print=false`, `--require-grant=false`,
+  `--rate ""` and `--canary=false` — moved a protection off a secret that already had it, headless.
+  Those five are now anchored, and the predicate is deliberately narrow: it fires only when the
+  secret already exists **and** the invocation leaves it less protected than it is now. Creating a
+  secret with a loose policy is unchanged, tightening never needs a terminal, and a plain
+  `arca set NAME` that passes no policy flag is untouched — an anchor that prompted on ordinary
+  traffic would be one operators learn to answer `y` to without reading.
+  Two specifics worth knowing. **`--rate` is compared, not matched:** a caller refused `--rate ""`
+  could otherwise write `--rate 1000000/1s` and keep the same capability, so clearing is treated as
+  the limiting case of raising, using the same window defaulting the rate limiter enforces.
+  And **`--canary=false` is included** — `set`/`generate` are the only path in the CLI that disarms a
+  decoy, so the off-switch for the tripwire was the least guarded of the five.
+  The refusal arrives *before* the value is read, so a refused downgrade leaves the secret and its
+  decoy registration exactly as they were.
 - **`recipients add` is now audited (SEC-44).** Adding an age recipient grants permanent decryption
   rights to every secret in the store, on every machine the store reaches — the widest-blast-radius
   mutation arca supports — and it previously wrote no audit event at all. The log could show a

@@ -27,6 +27,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/arenzana/arca/internal/store"
 )
 
 // operatorTimeout bounds how long requireOperator waits for a human answer on the controlling
@@ -137,3 +139,154 @@ func requireOperator(cmd, question string) error {
 // by the same UID this anchor exists to stop (handles.json is written 0600 to stateDir(), which is
 // the shape to avoid). Until such a consumer exists, no bypass is built at all.
 // TestControlPlaneHasNoEnvBypass enforces the absence.
+
+// ----------------------------------------------------------------------------
+// The write path (T13/R28): `set` and `generate` relaxing an existing policy.
+// ----------------------------------------------------------------------------
+//
+// The six commands above are anchored unconditionally, because every one of them exists only to
+// widen access. `set` and `generate` are different: their job is to write a value, and the policy
+// flags ride along. Anchoring them unconditionally would put a prompt on every first `set` — and a
+// prompt that fires when nothing is being given away is one the operator learns to answer `y` to
+// without reading, which costs the anchors above their meaning too.
+//
+// So the predicate is narrower than the six and has to be exact: fire only when (the secret already
+// exists) AND (this invocation leaves it less protected than it is now). Creating a secret with a
+// loose policy is a choice, not a downgrade. Tightening is always allowed headless, per the rule in
+// the file header.
+
+// policyDowngrade is one field that a `set`/`generate` invocation would relax on a secret that
+// already exists. The `from`/`to` strings are what the operator is shown, so they say what the
+// stored policy is now and what it would become — not what flag was typed.
+type policyDowngrade struct{ flag, from, to string }
+
+func (d policyDowngrade) String() string { return fmt.Sprintf("%s %s → %s", d.flag, d.from, d.to) }
+
+// policyDowngrades reports every way this invocation would leave `cur` less protected. It returns
+// nil (no anchor) when cur is nil — a secret that does not exist yet has no policy to downgrade.
+//
+// `changed` is cmd.Flags().Changed, threaded in rather than taking a *cobra.Command so the predicate
+// is testable without building a command. A field is only considered when its flag was actually
+// given: without that, the zero value of every bool flag reads as an explicit `false` and a plain
+// `arca set NAME` would look like it clears all three bits.
+//
+// The set of fields covered here is every policy field `set` and `generate` write under a
+// `Changed(...)` guard — the four R28 names plus `--canary`, which is written in the same block and
+// is the only path in the CLI that disarms a decoy. Checking that the list is complete is a matter
+// of reading those two blocks, not of trusting this comment; TestPolicyPredicateCoversEveryPolicyFlag
+// fails if either command grows a policy flag this predicate does not know about.
+func policyDowngrades(name string, changed func(string) bool, cur *store.Secret, noPrint, requireApproval, requireGrant, canary bool, rate string) ([]policyDowngrade, error) {
+	if cur == nil {
+		return nil, nil
+	}
+	var out []policyDowngrade
+	for _, b := range []struct {
+		flag string
+		now  bool
+		next bool
+	}{
+		{"--no-print", cur.NoPrint, noPrint},
+		{"--require-approval", cur.RequireApproval, requireApproval},
+		{"--require-grant", cur.RequireGrant, requireGrant},
+	} {
+		if changed(strings.TrimPrefix(b.flag, "--")) && b.now && !b.next {
+			out = append(out, policyDowngrade{b.flag, "true", "false"})
+		}
+	}
+	if changed("rate") {
+		d, err := rateDowngrade(cur, rate)
+		if err != nil {
+			return nil, err
+		}
+		if d != nil {
+			out = append(out, *d)
+		}
+	}
+	if changed("canary") && !canary {
+		was, err := canaryNow(name, cur)
+		if err != nil {
+			return nil, err
+		}
+		if was {
+			out = append(out, policyDowngrade{"--canary", "true", "false"})
+		}
+	}
+	return out, nil
+}
+
+// canaryNow reports whether name is a decoy right now, for the purpose of deciding whether this
+// invocation disarms one. It deliberately does *not* reuse isCanary().
+//
+// isCanary() swallows a registry read error and answers "not a canary", which is right where it is
+// used: canary alerting is best-effort and must never block an access. Here the same error would
+// mean the anchor silently does not fire on the one path that turns a tripwire off — a guard that
+// fails open. So the error is returned and `set`/`generate` refuse on it.
+//
+// The legacy pre-SEC-04 store flag counts, the same as in isCanary(): a store written before the
+// designation moved out of the synced file still carries it, and such a secret is still a live decoy.
+func canaryNow(name string, cur *store.Secret) (bool, error) {
+	if cur != nil && cur.Canary {
+		return true, nil
+	}
+	set, err := loadCanaries()
+	if err != nil {
+		return false, fmt.Errorf("cannot tell whether %s is a canary, so refusing to change it: %w", name, err)
+	}
+	return set[name], nil
+}
+
+// rateDowngrade compares the stored rate limit against the one this invocation would write and
+// reports the change only when it permits *more* uses per unit of time.
+//
+// T13 names `--rate ""` — clearing the limit. Anchoring only that spelling would be theatre: an
+// agent blocked from clearing the limit writes `--rate 1000000/1s` instead and holds the same
+// capability. So the comparison is on the rate itself, and clearing is simply the limiting case of
+// raising it. A tighter limit, and a limit newly applied to a secret that had none, stay headless.
+//
+// The window defaulting mirrors checkRateLimit() through the shared rateWindow() helper, so what is
+// compared here is what is enforced there. Two copies of that rule would be one refactor away from
+// an anchor that guards a policy nobody applies.
+func rateDowngrade(cur *store.Secret, rate string) (*policyDowngrade, error) {
+	if cur.RateLimit <= 0 {
+		return nil, nil // no limit today: anything this invocation writes is the same or tighter
+	}
+	_, curWin := rateWindow(cur.RateWindow)
+	curDesc := fmt.Sprintf("%d/%s", cur.RateLimit, curWin)
+	if strings.TrimSpace(rate) == "" {
+		return &policyDowngrade{"--rate", curDesc, "unlimited"}, nil
+	}
+	n, w, err := parseRate(rate)
+	if err != nil {
+		return nil, err // surface the bad flag before prompting, not after
+	}
+	if perSecond(n, w) <= perSecond(cur.RateLimit, cur.RateWindow) {
+		return nil, nil
+	}
+	return &policyDowngrade{"--rate", curDesc, fmt.Sprintf("%d/%s", n, w)}, nil
+}
+
+// perSecond normalizes "N per window" so limits with different windows are comparable.
+func perSecond(limit int, window string) float64 {
+	win, _ := rateWindow(window)
+	return float64(limit) / win.Seconds()
+}
+
+// requirePolicyOperator anchors a policy relaxation on an existing secret to the operator's
+// terminal. It is a no-op for a new secret and for any invocation that only tightens.
+//
+// It is called *before* the value is read and encrypted, on purpose. The write path overwrites the
+// value unconditionally and before the policy block, so a refusal that arrived after the write
+// would leave the caller having destroyed the secret it was refused permission to downgrade — the
+// anchor would then be a control that only adds damage.
+func requirePolicyOperator(cmdName, name string, changed func(string) bool, cur *store.Secret,
+	noPrint, requireApproval, requireGrant, canary bool, rate string) error {
+	downgrades, err := policyDowngrades(name, changed, cur, noPrint, requireApproval, requireGrant, canary, rate)
+	if err != nil || len(downgrades) == 0 {
+		return err
+	}
+	parts := make([]string, 0, len(downgrades))
+	for _, d := range downgrades {
+		parts = append(parts, d.String())
+	}
+	return requireOperator(cmdName, fmt.Sprintf("Relax the policy on %s (%s)?", name, strings.Join(parts, "; ")))
+}
