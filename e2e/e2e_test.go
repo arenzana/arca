@@ -8,6 +8,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // bin is the path to the freshly built arca binary, set by TestMain.
@@ -98,14 +100,30 @@ func dedupeEnv(pairs []string) []string {
 	return out
 }
 
+// childTimeout bounds a single arca invocation. Two orders of magnitude over any command this
+// suite runs, so it cannot flake on a slow runner. It exists so that one hung child cannot eat
+// the whole job and hide every test after it — which is what a Windows console hang did twice.
+const childTimeout = 60 * time.Second
+
 func (b box) runEnv(t *testing.T, extra []string, stdin string, args ...string) (out, errOut string, code int) {
 	t.Helper()
-	cmd := exec.Command(bin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = dedupeEnv(append(append(os.Environ(), b.env...), extra...))
 	cmd.Stdin = strings.NewReader(stdin)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
+	start := time.Now()
 	err := cmd.Run()
+	// This MUST precede the *exec.ExitError branch. A context-killed child returns
+	// *exec.ExitError, so the type switch alone reports the timeout as an ordinary nonzero
+	// exit, this t.Fatalf never runs, and a hang reads as a passing test.
+	if ctx.Err() != nil {
+		t.Fatalf("arca %v did not finish within %s (elapsed %s)\nstdout: %q\nstderr: %q",
+			args, childTimeout, time.Since(start).Round(time.Millisecond), o.String(), e.String())
+	}
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
 	} else if err != nil {
@@ -369,11 +387,17 @@ func TestConcurrentSet(t *testing.T) {
 	const n = 8
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
+	// One shared deadline for the whole fan-out, so the check after wg.Wait() has a ctx to read.
+	// These children bypass runEnv, so without it a hung `set` takes the job down with no
+	// diagnostic and every test after this one — including every anchored one — never runs.
+	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+	defer cancel()
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			cmd := exec.Command(bin, "set", fmt.Sprintf("K%d", i))
+			cmd := exec.CommandContext(ctx, bin, "set", fmt.Sprintf("K%d", i))
+			cmd.WaitDelay = 5 * time.Second
 			cmd.Env = append(os.Environ(), b.env...)
 			cmd.Stdin = strings.NewReader("v")
 			errs <- cmd.Run()
@@ -381,6 +405,12 @@ func TestConcurrentSet(t *testing.T) {
 	}
 	wg.Wait()
 	close(errs)
+	// Before the loop below: a killed child returns *exec.ExitError, so the existing message
+	// would blame the store lock for what is actually a hang. Lock contention fails on its own,
+	// earlier, with that message and never reaches this deadline.
+	if ctx.Err() != nil {
+		t.Fatalf("a concurrent set did not finish within %s — the child hung; this is not lock contention", childTimeout)
+	}
 	for e := range errs {
 		if e != nil {
 			t.Fatalf("a concurrent set failed (lock timeout too short?): %v", e)
@@ -493,14 +523,20 @@ func TestMCPMalformed(t *testing.T) {
 	b.must(t, "", "init")
 	b.must(t, "topsecret", "set", "API")
 
-	cmd := exec.Command(bin, "mcp")
+	// This child bypasses runEnv and its only exit condition is stdin EOF, so it carries the same
+	// deadline. stderr is captured and the Wait error kept for the diagnostic below — neither is
+	// asserted on: arca mcp's exit status on EOF is not a property this test has ever claimed.
+	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "mcp")
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(os.Environ(), b.env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
+	var out, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errBuf
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +550,11 @@ func TestMCPMalformed(t *testing.T) {
 		io.WriteString(stdin, m+"\n")
 	}
 	stdin.Close()
-	_ = cmd.Wait()
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		t.Fatalf("arca mcp did not exit within %s after stdin closed\nstdout: %q\nstderr: %q",
+			childTimeout, out.String(), errBuf.String())
+	}
 
 	var answered bool
 	for _, line := range strings.Split(out.String(), "\n") {
@@ -530,7 +570,8 @@ func TestMCPMalformed(t *testing.T) {
 		}
 	}
 	if !answered {
-		t.Fatalf("MCP server did not survive malformed input and answer a later valid request:\n%s", out.String())
+		t.Fatalf("MCP server did not survive malformed input and answer a later valid request (wait: %v)\nstdout:\n%s\nstderr:\n%s",
+			waitErr, out.String(), errBuf.String())
 	}
 }
 

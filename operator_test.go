@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -288,6 +289,48 @@ func TestControlPlaneRefusesWhenTerminalNeverAnswers(t *testing.T) {
 
 		if err := requireOperator("test-cmd", "Confirm the thing?"); err != nil {
 			t.Fatalf("an explicit yes was refused: %v", err)
+		}
+	})
+
+	// The pipe subtests above cannot exercise W1's second half. poll.FD.Close takes its
+	// CancelIoEx branch for kindPipe only (internal/poll/fd_windows.go:540), so a pipe unparks
+	// and Close returns whether or not requireOperator skips it. Only a real Windows console is
+	// kindConsole, where Close blocks on runtime_Semacquire(&fd.csema) (:548) until a read that
+	// never returns releases it.
+	//
+	// Skipped wholesale rather than assertion-guarded: the precondition is a real console, and
+	// without one the property cannot be exercised at all.
+	//
+	// Never yet observed to fail. Its non-vacuity rests on the control assertion below (a real
+	// console was obtained, and Close on it is prompt with no read pending) plus e2e (windows)
+	// in the same round driving anchored commands through CONIN$ — a separate runs-on of the
+	// same image, so a strong inference and not a proof.
+	t.Run("a silent console expires without wedging Close", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("only a Windows console is kindConsole; a Unix /dev/tty is poller-registered, so pd.evict unblocks the read and Close returns either way")
+		}
+		in, out, err := openTTY()
+		if err != nil {
+			t.Skip("no console attached to this test process")
+		}
+		start := time.Now() // control: Close with NO read pending must be prompt
+		in.Close()
+		if out != in {
+			out.Close()
+		}
+		if d := time.Since(start); d > operatorTimeout {
+			t.Fatalf("closing an idle console took %s; the control is not measuring what it claims", d)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- requireOperator("test-cmd", "Confirm the thing?") }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), operatorTimeout.String()) {
+				t.Fatalf("console expiry = %v", err)
+			}
+		case <-time.After(10 * operatorTimeout):
+			t.Fatal("requireOperator never returned on a silent console: Close is blocking on csema")
 		}
 	})
 }

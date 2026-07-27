@@ -93,9 +93,14 @@ func requireOperator(cmd, question string) error {
 			"`arca %s` changes the controls that govern agents, so it must be confirmed by a human "+
 				"on a terminal, and no controlling terminal is available. Re-run it interactively", cmd)
 	}
-	defer in.Close()
+	closeIn := true
+	defer func() {
+		if closeIn {
+			in.Close()
+		}
+	}()
 	if out != in {
-		defer out.Close()
+		defer out.Close() // no read is ever pending on out; safe unconditionally
 	}
 	fmt.Fprintf(out, "%s [y/N] ", question)
 	// The read carries the operatorTimeout deadline described above. It runs in a goroutine
@@ -118,6 +123,8 @@ func requireOperator(cmd, question string) error {
 		// mean different things (a human said no vs. nobody was there) and read differently.
 		return fmt.Errorf("`arca %s` declined at the terminal", cmd)
 	case <-time.After(operatorTimeout):
+		// Do NOT close `in`: a goroutine is parked in a synchronous read on it.
+		closeIn = false
 		return fmt.Errorf("`arca %s` was not confirmed on the terminal within %s — no answer was received, so it was refused. Re-run it interactively to confirm", cmd, operatorTimeout)
 	}
 }
