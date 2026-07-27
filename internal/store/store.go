@@ -16,9 +16,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/arenzana/arca/internal/atomicfile"
 )
 
 // Version is the on-disk schema version, bumped if the JSON shape ever changes incompatibly.
@@ -89,6 +90,21 @@ func Load(path string) (*Store, error) {
 		}
 		return nil, err
 	}
+	return Decode(path, b)
+}
+
+// Decode parses store bytes that the caller has already read, applying exactly the validation
+// and schema migration Load applies. path is used for error messages and to bind the returned
+// store to a file for Save; the file is never read here.
+//
+// It exists so a caller that needs BOTH the raw bytes and the parsed store gets them from one
+// read of one file. `sync` is that caller: it seals the raw bytes into the pushed envelope and
+// decides push-vs-pull from the parsed generation, and reading twice let those two come from
+// different generations if a concurrent command wrote in between.
+func Decode(path string, b []byte) (*Store, error) {
+	if int64(len(b)) > maxStoreBytes {
+		return nil, fmt.Errorf("store %s is %d bytes, exceeding the %d-byte limit", path, len(b), int64(maxStoreBytes))
+	}
 	var s Store
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("parse store %s: %w", path, err)
@@ -152,45 +168,39 @@ func applyMigrations(s *Store, target int, migs map[int]migration) error {
 	return nil
 }
 
-// Save writes the store atomically and with restrictive permissions:
-//   - serialize to a temp file in the same directory (so rename is atomic on the same fs),
-//   - chmod 0600 before writing any bytes,
-//   - fsync the temp file, then rename over the destination.
+// Save writes the store atomically, at 0600, and durably. The write sequence — unique temp file
+// in the destination's own directory, explicit chmod before any bytes, fsync, rename, then fsync
+// of the parent directory — lives in atomicfile.Write, which documents why each step is there.
+// This function used to open-code all of it except the last step (R17): the rename was never made
+// durable, so a power loss immediately after a successful `arca set` could leave the directory
+// entry pointing at the old inode. arca had already reported the secret stored.
 //
-// The temp file is removed on any early-return error path via the deferred Remove.
+// Generation is advanced only after the write has landed (R16). It used to be bumped as the very
+// first statement, which left the in-memory counter one ahead of the file on every failure past
+// that point. That is not cosmetic drift: recordAudit binds the store's Generation into the
+// hash-chained, signed audit event (SEC-14), so a failed Save recorded a generation that never
+// existed on disk. The next process loads the real, lower generation, records that, and
+// audit.Verify flags the pair as GenRegressed — which it reports as evidence the store was rolled
+// back. A false rollback alarm on a tamper-evidence signal is worse than no alarm, because it
+// teaches the operator to discount the one signal that must never be discounted.
+//
+// The bump is computed on a copy rather than applied and rolled back, so there is no error path
+// on which the counter can be left wrong: a caller holding an error from Save holds a store whose
+// Generation still matches the bytes on disk. Store has no reference-typed field that Save
+// mutates and no embedded lock, so the shallow copy is safe to marshal.
 func (s *Store) Save() error {
-	s.Generation++ // monotonic: every write advances it so a later rollback to an older copy is visible
-	b, err := json.MarshalIndent(s, "", "  ")
+	next := *s
+	next.Generation++ // monotonic: every write advances it so a later rollback to an older copy is visible
+	b, err := json.MarshalIndent(&next, "", "  ")
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := atomicfile.Write(s.path, b, 0o600); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".store-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename below succeeds
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil { // flush to disk before the rename so a crash can't leave a truncated store
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, s.path)
+	s.Generation = next.Generation
+	return nil
 }
 
 // Label returns the human label for a recipient pubkey, or "" if none is recorded.

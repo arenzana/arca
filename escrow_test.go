@@ -61,7 +61,7 @@ func TestEscrowOnSync(t *testing.T) {
 // the local audit DB is replaced with a shorter (but internally clean) history — the
 // off-machine witness a local tamperer can't retract.
 func TestVerifyRemoteExtendsEscrow(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	withFakeBackend(t)
 	runArca(t, "", "init")
 	runArca(t, "v1", "set", "A")
@@ -72,7 +72,7 @@ func TestVerifyRemoteExtendsEscrow(t *testing.T) {
 
 	// Nuke the audit DB and rebuild a fresh, internally-consistent one. A plain
 	// --verify is clean; --remote catches the retraction.
-	if err := os.Remove(dir + "/audit.db"); err != nil {
+	if err := os.Remove(auditPath()); err != nil {
 		t.Fatal(err)
 	}
 	runArca(t, "", "get", "A") // recreates a fresh log with one event
@@ -319,7 +319,7 @@ func TestEscrowSelfHealCursorOnly(t *testing.T) {
 // machine sharing this escrow identity (its segments don't extend the local log), the
 // self-heal must refuse to splice the chains and point the operator at reset-escrow.
 func TestEscrowReconcileRefusesForeignChain(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	fake := withFakeBackend(t)
 	runArca(t, "", "init")
 	runArca(t, "v1", "set", "A")
@@ -329,7 +329,7 @@ func TestEscrowReconcileRefusesForeignChain(t *testing.T) {
 
 	// Replace the local audit log with a fresh, unrelated chain (as if a second machine
 	// reused this machine-id). The escrowed anchors no longer describe the local log.
-	if err := os.Remove(dir + "/audit.db"); err != nil {
+	if err := os.Remove(auditPath()); err != nil {
 		t.Fatal(err)
 	}
 	runArca(t, "", "get", "A") // fresh 1-event log

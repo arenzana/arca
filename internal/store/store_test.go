@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -269,4 +270,91 @@ func TestRecipientLabels(t *testing.T) {
 		t.Fatalf("Label after clear = %q, want empty", got)
 	}
 	s.SetLabel("age1def", "") // clearing an absent key is a no-op, not a panic
+}
+
+// TestDecodeMatchesLoad pins Decode as a true peer of Load rather than a partial copy of it.
+// Decode exists so `sync` can get the raw bytes and the parsed store from ONE read of one
+// file; if it ever validated less than Load, sync would become the one caller that accepts a
+// store everything else rejects.
+func TestDecodeMatchesLoad(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string // "" = must parse
+	}{
+		{
+			name: "valid store",
+			body: `{"version":1,"recipients":["age1x"],"generation":3,"secrets":{}}`,
+		},
+		{
+			name:    "malformed json",
+			body:    `{"version":1,`,
+			wantErr: "parse store",
+		},
+		{
+			name:    "version from the future",
+			body:    fmt.Sprintf(`{"version":%d,"recipients":["age1x"],"secrets":{}}`, Version+1),
+			wantErr: "newer than this arca supports",
+		},
+		{
+			name:    "null secret entry",
+			body:    `{"version":1,"recipients":["age1x"],"secrets":{"FOO":null}}`,
+			wantErr: `secret "FOO" is null`,
+		},
+		{
+			name: "absent secrets map is tolerated",
+			body: `{"version":1,"recipients":["age1x"],"generation":1}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "store.json")
+			if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, loadErr := Load(p)
+			decoded, decErr := Decode(p, []byte(tc.body))
+
+			// Same verdict, same message: one implementation, reached two ways.
+			switch {
+			case (loadErr == nil) != (decErr == nil):
+				t.Fatalf("Load err = %v but Decode err = %v", loadErr, decErr)
+			case loadErr != nil && loadErr.Error() != decErr.Error():
+				t.Fatalf("Load err = %q, Decode err = %q", loadErr, decErr)
+			}
+			if tc.wantErr == "" {
+				if decErr != nil {
+					t.Fatalf("Decode = %v, want success", decErr)
+				}
+				if decoded.Generation != loaded.Generation || decoded.Version != loaded.Version {
+					t.Fatalf("Decode gave version %d gen %d, Load gave version %d gen %d",
+						decoded.Version, decoded.Generation, loaded.Version, loaded.Generation)
+				}
+				if len(decoded.Secrets) != len(loaded.Secrets) {
+					t.Fatalf("Decode gave %d secrets, Load gave %d", len(decoded.Secrets), len(loaded.Secrets))
+				}
+				// path must be bound so a decoded store can still Save.
+				if decoded.path != p {
+					t.Fatalf("Decode did not bind the path: %q", decoded.path)
+				}
+				return
+			}
+			if decErr == nil {
+				t.Fatalf("Decode accepted %s, want error containing %q", tc.name, tc.wantErr)
+			}
+			if !strings.Contains(decErr.Error(), tc.wantErr) {
+				t.Fatalf("Decode err = %q, want it to contain %q", decErr, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestDecodeSizeLimit: Load rejects an oversized store by stat before reading it; Decode gets
+// bytes the caller already holds, so it enforces the same ceiling on the slice.
+func TestDecodeSizeLimit(t *testing.T) {
+	if _, err := Decode("/tmp/store.json", make([]byte, maxStoreBytes+1)); err == nil {
+		t.Fatal("Decode accepted a store over the size limit")
+	} else if !strings.Contains(err.Error(), "exceeding the") {
+		t.Fatalf("Decode err = %q, want the size-limit message", err)
+	}
 }

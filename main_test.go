@@ -145,9 +145,14 @@ func sandbox(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("SOPS_AGE_KEY_FILE", "") // ignore any real sops key → init generates one
 	t.Setenv("ARCA_STORE", filepath.Join(dir, "store.json"))
-	t.Setenv("ARCA_AUDIT", filepath.Join(dir, "audit.db"))
 	t.Setenv("ARCA_IDENTITY", filepath.Join(dir, "id.txt"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state")) // keep session signing keys out of $HOME
+	// $ARCA_AUDIT is deliberately NOT set. Since D4 the audit DB lives under the per-store state
+	// dir, so XDG_STATE_HOME above already sandboxes it — and setting ARCA_AUDIT here would make
+	// every test that also sets an agent marker look exactly like the R4 exploit, which the command
+	// tree now refuses (checkAuditRedirect). Use auditPath() to find the DB; a test that genuinely
+	// needs a redirected log sets ARCA_AUDIT itself and does not pretend to be an agent.
+	t.Setenv("ARCA_AUDIT", "")
 	// Clear AI-agent detection so the suite is deterministic no matter what launched it (running
 	// inside Claude Code / Cursor / Gemini CLI / Codex, whose markers are set, must not make every
 	// caller look like an agent). Sourced from the detection table so new agents stay covered. Tests
@@ -161,6 +166,20 @@ func sandbox(t *testing.T) string {
 	// NB: ARCA_SYNC_ACCESS_KEY/SECRET_KEY are deliberately NOT cleared here — the sync e2e
 	// test (sandbox + real MinIO creds from the workflow env) depends on them surviving.
 	// A credential test that needs them absent clears them itself (t.Setenv, auto-restored).
+	//
+	// Default the terminal to "an operator is present and says yes", for the same reason the block
+	// above clears the agent markers: determinism. Since T11 the control-plane commands
+	// (`grant`, `agent allow`, `enable`, `recipients add`, `reencrypt`, `handle create`) prompt on
+	// the controlling terminal, and ~40 existing call sites across the suite use them as plain
+	// setup. Without a default they would each need editing, and on a developer machine they would
+	// block on the real /dev/tty. Tests that care about the anchor override this — `withNoTTY(t)`
+	// for the refusal path, `withTTYResponse(t, "n")` for a declined prompt — and cleanup restores
+	// LIFO, so the override wins.
+	//
+	// The cost is real and worth naming: this default would also make a *missing* anchor pass. That
+	// is why the refusal tests in operator_test.go are not optional — they assert the anchor
+	// positively, one per anchored command, against withNoTTY rather than against this default.
+	withTTYResponse(t, "y")
 	return dir
 }
 
@@ -239,7 +258,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// The audit log must show a rotation and the explicit actor.
-	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a, _ := audit.Open(auditPath())
 	defer a.Close()
 	evs, _ := a.Recent("API_TOKEN", 50)
 	var sawRotate, sawActor bool
@@ -319,7 +338,7 @@ func TestPsCommand(t *testing.T) {
 // that is both a canary and rate-limited trips the canary on *every* access attempt (even the one
 // the rate limiter then refuses), and the throttle is recorded.
 func TestPolicyInteraction(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "decoyvalue", "set", "BAIT", "--canary", "--rate", "1/1h")
 
@@ -328,7 +347,7 @@ func TestPolicyInteraction(t *testing.T) {
 		t.Fatal("the second use should be rate-limited")
 	}
 
-	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a, _ := audit.Open(auditPath())
 	_, canaryN, _ := a.LastOp("BAIT", "canary")
 	_, rlN, _ := a.LastOp("BAIT", "ratelimit")
 	a.Close()
@@ -426,7 +445,7 @@ func TestNoPrintAndInject(t *testing.T) {
 // value replaced (default = the secret's name; --reveal = a partial mask), the catch is audited,
 // and --redact off restores the raw value.
 func TestExecRedaction(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "hunter2secret", "set", "PASSWORD") // 13 chars, above the scan floor
 
@@ -440,7 +459,7 @@ func TestExecRedaction(t *testing.T) {
 	}
 
 	// The catch is recorded as a potential leak.
-	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a, _ := audit.Open(auditPath())
 	evs, _ := a.Recent("PASSWORD", 50)
 	a.Close()
 	var sawRedact bool
@@ -477,7 +496,7 @@ func TestExecRedaction(t *testing.T) {
 // TestLogVerify drives the integrity check through the CLI: after real operations the signed,
 // chained log verifies clean; tampering with the DB makes `log --verify` fail.
 func TestLogVerify(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v1", "set", "A")
 	runArca(t, "", "get", "A")
@@ -489,7 +508,7 @@ func TestLogVerify(t *testing.T) {
 	}
 
 	// Editing an event out of band must be detected.
-	db, err := sql.Open("sqlite", filepath.Join(dir, "audit.db"))
+	db, err := sql.Open("sqlite", auditPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +526,7 @@ func TestLogVerify(t *testing.T) {
 // log, fails once signatures are stripped (even though the chain stays valid), and is rejected
 // without --verify.
 func TestLogVerifyRequireSigned(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v1", "set", "A")
 	runArca(t, "", "get", "A")
@@ -523,7 +542,7 @@ func TestLogVerifyRequireSigned(t *testing.T) {
 
 	// Strip signatures out of band: the chain is still intact (plain --verify passes) but
 	// --require-signed must now fail.
-	db, err := sql.Open("sqlite", filepath.Join(dir, "audit.db"))
+	db, err := sql.Open("sqlite", auditPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +581,7 @@ func TestCanaryValue(t *testing.T) {
 // TestCanary covers the tripwire: planting a decoy, using it (via get and via exec) records a
 // distinct signed "canary" audit event, and `canary --list` reflects the trip.
 func TestCanary(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	// Run as a detected agent so a trip is attributed to the agent/session (the real case).
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-test")
@@ -582,7 +601,7 @@ func TestCanary(t *testing.T) {
 		t.Fatalf("decoy value = %q, want a ghp_ prefix", out)
 	}
 
-	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a, _ := audit.Open(auditPath())
 	evs, _ := a.Recent("TRAP", 50)
 	a.Close()
 	var sawCanary bool
@@ -606,7 +625,7 @@ func TestCanary(t *testing.T) {
 	// set --canary marks an ordinary secret; using it via exec trips too.
 	runArca(t, "plainvalue", "set", "TRAP2", "--canary")
 	runArca(t, "", "exec", "--only", "TRAP2", "--", "true")
-	a2, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a2, _ := audit.Open(auditPath())
 	_, n, _ := a2.LastOp("TRAP2", "canary")
 	a2.Close()
 	if n == 0 {
@@ -617,7 +636,7 @@ func TestCanary(t *testing.T) {
 // TestCanaryUnidentified trips a canary with no agent/actor in the environment, exercising the
 // "unidentified caller" attribution path.
 func TestCanaryUnidentified(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	for _, e := range []string{"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CURSOR_TRACE_ID", "AI_AGENT", "ARCA_ACTOR"} {
 		t.Setenv(e, "")
 	}
@@ -625,7 +644,7 @@ func TestCanaryUnidentified(t *testing.T) {
 	runArca(t, "decoyval", "set", "BAIT", "--canary")
 	runArca(t, "", "get", "BAIT")
 
-	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a, _ := audit.Open(auditPath())
 	_, n, _ := a.LastOp("BAIT", "canary")
 	a.Close()
 	if n == 0 {
@@ -665,7 +684,7 @@ func TestParseRate(t *testing.T) {
 // TestRateLimit covers the per-secret rate cap: N uses are allowed within the window, the next is
 // refused and recorded, and clearing the rate lifts the cap.
 func TestRateLimit(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "topsecret", "set", "API", "--rate", "2/1h")
 
@@ -679,7 +698,7 @@ func TestRateLimit(t *testing.T) {
 		t.Fatal("the third use in the window should be rate-limited")
 	}
 
-	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a, _ := audit.Open(auditPath())
 	_, n, _ := a.LastOp("API", "ratelimit")
 	a.Close()
 	if n == 0 {
@@ -841,7 +860,7 @@ func TestGrantValidation(t *testing.T) {
 // `export ` prefix and surrounding quotes are stripped, an invalid name is refused, and every
 // imported secret is recorded in the audit log (a bulk load must not be a blind spot).
 func TestImportDotenv(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
 
 	in := "# a comment\n\nexport TOKEN=\"abc123\"\nDB_URL='postgres://x'\nJUSTAWORD\nbad-name=nope\n"
@@ -857,7 +876,7 @@ func TestImportDotenv(t *testing.T) {
 		t.Fatal("an invalid name must not be imported")
 	}
 
-	a, _ := audit.Open(filepath.Join(dir, "audit.db"))
+	a, _ := audit.Open(auditPath())
 	defer a.Close()
 	evs, _ := a.Recent("TOKEN", 50)
 	var sawImport bool

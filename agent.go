@@ -15,8 +15,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// mcpStrictFlag is set by `arca mcp --strict`. agentStrict() also honours ARCA_AGENT_STRICT so the
-// mode can be enabled without editing the MCP launch command (e.g. from an agent-runner's env).
+// mcpStrictFlag is set by `arca mcp --strict`, which is the form to document and to use. strict is
+// deny-by-default, and a deny-by-default control must not depend on the environment to be ON: any
+// launch context that does not inherit the variable — a launchd/systemd unit, an editor-spawned MCP
+// server, a sudo invocation that scrubs the env, a runner started before the variable was exported —
+// silently comes up in the *permissive* mode, with only a stderr notice nobody reads. The flag lives
+// on the command line, so it either is there or the command visibly differs.
+//
+// agentStrict() also honours ARCA_AGENT_STRICT, and that is kept because the direction is safe: the
+// variable can only turn strict ON, never off (there is no "false" case below and mcpStrictFlag is
+// checked first), consistent with arca's rule that the environment may refuse but never grant. Treat
+// it as a way to tighten a launcher you cannot edit, not as the way to configure strict mode.
 var mcpStrictFlag bool
 
 func agentStrict() bool {
@@ -50,6 +59,10 @@ func newAgent() *cobra.Command {
 }
 
 // setAgentExposed flips the flag on one secret and persists + audits it.
+//
+// The control-plane anchor deliberately does NOT live here: this helper is shared by `agent allow`
+// and `agent deny`, and only the allow direction loosens. Anchoring the shared helper would put a
+// prompt on `agent deny`, which only ever restricts. The anchor sits in newAgentAllow instead.
 func setAgentExposed(name string, exposed bool, op string) error {
 	unlock, err := lockStore()
 	if err != nil {
@@ -77,6 +90,13 @@ func newAgentAllow() *cobra.Command {
 		Short: "Expose a secret to AI agents (visible/usable via the MCP server under --strict)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			// Loosening: this is what makes a secret reachable through `mcp --strict`, so an agent
+			// that could run it would simply un-hide itself (T11). Human-confirmed. `agent deny`
+			// stays headless — it only restricts.
+			if err := requireOperator("agent allow",
+				fmt.Sprintf("Expose %s to AI agents via the MCP server?", args[0])); err != nil {
+				return err
+			}
 			if err := setAgentExposed(args[0], true, "agent-allow"); err != nil {
 				return err
 			}

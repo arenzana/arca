@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
@@ -47,8 +48,12 @@ type escrowState struct {
 	PrevAnchor string `json:"prev_anchor,omitempty"`
 }
 
-func escrowStatePath() string { return filepath.Join(stateDir(), "escrow-state.json") }
-func machineIDPath() string   { return filepath.Join(stateDir(), "machine-id") }
+func escrowStatePath() string { return filepath.Join(storeStateDir(), "escrow-state.json") }
+
+// machineIDPath stays flat in stateDir(), NOT in the per-store dir (D4). It identifies this
+// machine to escrow; keying it per-store would fork one machine into several escrow identities,
+// each with its own segment sequence, and the truncation check compares sequences per machine.
+func machineIDPath() string { return filepath.Join(stateDir(), "machine-id") }
 
 func loadEscrowState() escrowState {
 	var st escrowState
@@ -63,11 +68,12 @@ func saveEscrowState(st escrowState) error {
 	if err != nil {
 		return err
 	}
-	tmp := escrowStatePath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, escrowStatePath())
+	// atomicfile.Write creates the parent, which this function needs and used to do itself.
+	// Before D4 the cursor rode on machineID() having already created the flat state dir; once it
+	// moved into the per-store dir that stopped being true, and a failed cursor write means escrow
+	// re-uploads the same segment and the create-only backend refuses it. That requirement is now
+	// the helper's step 1 rather than one writer remembering it.
+	return atomicfile.Write(escrowStatePath(), b, 0o600)
 }
 
 var machineIDRe = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)

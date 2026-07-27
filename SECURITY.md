@@ -28,7 +28,25 @@ and the full security assessment — assets, threats, and how each is addressed 
 [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
 arca runs with the invoking user's privileges; it raises the bar for a *cooperating* AI agent,
-not a hostile local user (who could bypass arca entirely). Specifically:
+not a hostile local user (who could bypass arca entirely).
+
+**Read this part before you rely on any of the controls below.** The AI agents arca is built to
+constrain — a coding assistant with a shell tool — *are* local processes running as the invoking
+user. So the "hostile local user" exclusion is not a distant edge case; it is the same party, one
+step further along. Concretely:
+
+- arca constrains an agent that goes **through arca**. Every control below applies at the arca
+  interface.
+- arca does **not**, and cannot, constrain an agent with arbitrary filesystem read on the
+  operator's account. Such an agent reads the age identity (`$ARCA_IDENTITY` /
+  `$SOPS_AGE_KEY_FILE`) directly and decrypts the store itself, without invoking arca — no policy
+  is consulted, no audit event is written, no canary trips.
+- Deploy arca where the agent's file access is restricted (a sandboxed harness, or a deny rule on
+  the identity path), or accept that these controls are guardrails against mistakes and honest
+  agents rather than containment for a hostile one. Both are legitimate; choosing knowingly is the
+  point.
+
+With that framing, the controls are:
 
 - **Per-secret policy is agent-aware and terminal-anchored.** A detected agent cannot
   self-approve a `--require-approval` secret via `ARCA_APPROVAL=allow`, cannot disable
@@ -36,6 +54,27 @@ not a hostile local user (who could bypass arca entirely). Specifically:
   (`get --no-log`). These overrides are honored only for a non-agent caller **with a
   controlling terminal** — scrubbing agent-detection env vars is not enough, because a
   headless process can't open `/dev/tty` / `CONIN$`.
+- **The control plane is terminal-anchored too, in the loosening direction.** The anchor above
+  covers the commands that *release* a value; the commands that *change the rules* carry the same
+  anchor. `arca grant`, `arca agent allow`, `arca enable`, `arca recipients add`, `arca reencrypt`
+  and `arca handle create` refuse a detected agent outright, and require every other caller to
+  confirm on the controlling terminal — so a headless agent cannot issue itself the grant a
+  `--require-grant` secret needs, expose a secret to itself under a `--strict` MCP server, or add
+  its own age key as a recipient and re-wrap the store. Each prompt names the scope being widened
+  (the grant's bounds, the recipient key itself), because *which* is the decision, not *whether*.
+  There is deliberately **no** environment bypass — that would reproduce the `ARCA_APPROVAL=allow`
+  mistake — so genuinely non-interactive control-plane use is refused rather than silently allowed.
+  The commands that only *restrict* — `agent deny`, `disable`, `recipients rm`, `handle revoke` —
+  stay usable headless, so incident response is never gated on a terminal.
+  *Residuals:* an agent sharing the operator's controlling terminal can attempt to answer its own
+  prompt (on macOS `TIOCSTI` is unprivileged). That converts a silent self-authorization into a
+  visible one rather than making it impossible; containment still requires the age identity to be
+  out of the agent's reach, per the framing above. Separately, the anchor covers the commands whose
+  only job is to widen access; it does **not** cover a policy bit cleared in passing by `arca set` /
+  `arca generate` (`--require-approval=false` and friends). That path is bounded to
+  destroy-and-downgrade — both commands overwrite the value first, so clearing the bit costs the
+  secret and is audited — rather than the silent escalation this anchor closes, but it is not
+  anchored. See T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 - **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
   pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
   log), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it

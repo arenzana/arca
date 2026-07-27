@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 )
 
@@ -35,7 +36,7 @@ type grantFile struct {
 	Grants map[string]Grant `json:"grants"` // keyed by secret name; one active grant per secret
 }
 
-func grantsPath() string { return filepath.Join(stateDir(), "grants.json") }
+func grantsPath() string { return filepath.Join(storeStateDir(), "grants.json") }
 
 func loadGrants() (map[string]Grant, error) {
 	b, err := os.ReadFile(grantsPath()) //#nosec G304 -- path derives from the operator's state dir, not untrusted input
@@ -56,18 +57,11 @@ func loadGrants() (map[string]Grant, error) {
 }
 
 func saveGrants(g map[string]Grant) error {
-	if err := os.MkdirAll(filepath.Dir(grantsPath()), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(grantFile{Grants: g}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := grantsPath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil { //#nosec G304 -- operator state dir
-		return err
-	}
-	return os.Rename(tmp, grantsPath())
+	return atomicfile.Write(grantsPath(), b, 0o600)
 }
 
 // globMatch reports whether s matches pattern, where '*' is a wildcard for any run of characters.
@@ -137,6 +131,28 @@ func grantUses(name string, since time.Time) (int, error) {
 	return a.CountOpSince(name, "exec", since)
 }
 
+// grantScope renders a grant's bounds for the operator prompt. Every bound is chosen by whoever runs
+// the command, so the confirmation has to show what was chosen — "unlimited uses" and a year-long
+// --ttl are what a self-issued grant looks like, and both are indistinguishable from a narrow grant
+// if the prompt only says "a grant".
+func grantScope(ttl string, uses int, command, agent string) string {
+	parts := []string{"ttl " + ttl}
+	if uses > 0 {
+		parts = append(parts, fmt.Sprintf("%d uses", uses))
+	} else {
+		parts = append(parts, "unlimited uses")
+	}
+	if command != "" {
+		parts = append(parts, "command "+command)
+	} else {
+		parts = append(parts, "any command")
+	}
+	if agent != "" {
+		parts = append(parts, "agent "+agent)
+	}
+	return strings.Join(parts, ", ")
+}
+
 func newGrant() *cobra.Command {
 	var command, ttl, agent string
 	var uses int
@@ -146,6 +162,19 @@ func newGrant() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
+			// Minting a grant is a human action — POLICIES.md says "the operator sets it up
+			// interactively ... and the agent then scripts against it", and skills/arca/SKILL.md
+			// already tells agents to ask a human. Until now nothing enforced it, so an agent
+			// refused for lack of a grant could issue itself one and retry (T11). Worse, grants are
+			// keyed by secret name with no merge (see the plain assignment below), so a self-issued
+			// grant silently *replaces* the operator's narrower one.
+			//
+			// The prompt names the scope, because that is the part being widened: an unbounded --ttl
+			// and --uses 0 both parse, so "a grant was issued" is not the interesting fact.
+			if err := requireOperator("grant", fmt.Sprintf("Issue a grant for %s (%s)?",
+				name, grantScope(ttl, uses, command, agent))); err != nil {
+				return err
+			}
 			if err := validName(name); err != nil {
 				return err
 			}

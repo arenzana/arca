@@ -6,6 +6,42 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **`recipients add` is now audited (SEC-44).** Adding an age recipient grants permanent decryption
+  rights to every secret in the store, on every machine the store reaches — the widest-blast-radius
+  mutation arca supports — and it previously wrote no audit event at all. The log could show a
+  `reencrypt` with no trace of the key it re-wrapped to, and `log --verify` still reported a clean
+  chain (correctly: the chain is honest about everything it is told, and it was never told). Each
+  added key is now recorded individually as `op=recipients-add` with the key in the `name` field, so
+  the log answers *which* key was added. Re-adding an existing key stays a no-op and logs nothing.
+  A **relabel is also recorded** (`op=recipients-label`): labels are how an operator recognizes a key
+  during review (`who-can-read`, `exposure`, `doctor`), so renaming an unfamiliar key to something
+  trusted-looking is a way to hide it from exactly that check.
+  This closes the audit half of the recipient-injection gap; the control-plane anchor is the entry
+  below.
+- **The control plane is now terminal-anchored (T11/T12).** arca's strongest per-secret controls are
+  enforced on the paths that *release* a value, but the commands that *change those rules* carried no
+  anchor — so every control on the disclosure path could be edited away by the party it governs. An
+  agent refused by `--require-grant` could run `arca grant NAME --ttl 52w --uses 0` and retry (grants
+  are keyed by name with no merge, so a self-issued one silently *replaces* the operator's narrower
+  grant); an agent hidden by `mcp --strict` could run `arca agent allow NAME`; and widest of all,
+  `arca recipients add <own key>` + `arca reencrypt` re-wraps every value to a key the operator does
+  not hold, permanently and on every machine the store reaches, without ever entering an access path.
+  `arca grant`, `agent allow`, `enable`, `recipients add`, `reencrypt` and `handle create` now refuse
+  a detected agent outright and require every other caller to confirm on the controlling terminal,
+  with the prompt naming the scope being widened. Deliberately an interactive **prompt** rather than
+  a TTY-presence check: an agent launched from the operator's own shell inherits that terminal, so a
+  predicate would pass for the primary adversary. The commands that only *restrict* — `agent deny`,
+  `disable`, `recipients rm`, `handle revoke` — stay headless, so incident response is never gated on
+  a terminal. **There is no environment bypass**, deliberately; `ARCA_APPROVAL=allow` was removed for
+  the same reason, and a test enforces the absence. The cost is that non-interactive control-plane
+  use (CI issuing a grant, a provisioning script adding a key) is now refused rather than silently
+  allowed; the intended answer is an operator-minted, scoped, expiring capability, not a variable.
+  Scope: this covers the commands whose job is to widen access. A policy bit cleared in passing by
+  `set` / `generate` (`--require-approval=false` and friends) is **not** anchored — both overwrite
+  the value first, so that path is destroy-and-downgrade and audited rather than silent escalation.
+  See T11/T12/T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the residuals.
+
 ### Fixed
 - **The MCP exec tools no longer let an agent exhaust arca's memory or wedge it indefinitely.**
   `run_with_secrets` and `run_with_handle` capture their child's output to return it in the tool
@@ -28,10 +64,111 @@ All notable changes to arca are documented here. The format follows
   Windows has no per-process equivalent; that remains machine-wide WER policy.
 
 ### Added
+- **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push
+  and PR. arca is a secrets manager: a test fixture, doc example, or recipe carrying a real
+  credential is a plausible mistake with outsized blast radius, and git history makes it permanent.
+  Invoked via `go run tool@version` like the other linters, so it is verified through the Go checksum
+  database and needs no marketplace action or license; `--redact` keeps a match out of the public CI
+  log.
 - **`.rpm` and `.deb` packages as release assets** (linux amd64/arm64), built by nfpm inside the
   same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
   the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
   a hosted dnf/apt repo remains a possible follow-up.
+- **`--allow-empty` on `set`, `rotate` and `import`.** Storing an empty value is now refused by
+  default, because the overwhelmingly common cause is a failing producer in a pipeline
+  (`vault read … | arca set PRODKEY`) rather than an intent to store nothing. Pass
+  `--allow-empty` when the empty value is deliberate. Whitespace is a value, not an absence: a
+  single space still stores.
+
+### Changed
+- **Local state is now kept per store, under `$XDG_STATE_HOME/arca/stores/<store-key>/`.** The
+  sync config and cursor, the rollback high-water mark, grants, handles, the canary registry, the
+  escrow cursor, the audit DB and the session signing keys were shared by every store on a machine.
+  Running two stores — the documented personal/work split, one `ARCA_STORE` away — meant a `sync`
+  against store B reconciled it against store A's backend and replaced its contents, and B's
+  legitimately lower generation tripped the rollback warning against A's high-water mark. The
+  directory name is derived from the store's absolute path; `machine-id` deliberately stays shared,
+  because it identifies the machine to escrow rather than the store.
+
+  The first command after upgrading moves the existing state into the per-store directory for the
+  store it is running against, once. Nothing is copied and nothing is deleted, and a failure warns
+  rather than taking the command down. A *second* store starts with empty state — that is the fix —
+  and `arca doctor` gains a `state-dir` check that names which store adopted the shared state, so
+  an unexpectedly empty grants list is explained rather than mysterious. `$ARCA_AUDIT` still wins
+  when set, which is how you point several stores at one audit log deliberately.
+
+### Fixed
+- **A sync can no longer lose a concurrent local write.** `arca sync` did its network work while
+  holding no lock and then committed a decision computed *before* that network round trip, so a
+  `rm` or `rotate` landing in that window was silently overwritten by the pulled payload — a
+  removed secret came back and the store looked healthy afterwards. The sync is now split in two:
+  an unlocked phase that writes nothing and does all the network work and refusals, and a locked
+  phase that re-reads the local store and cursor, compares them byte-for-byte against the
+  snapshot the decision rests on, and only then commits. A change in that window restarts the
+  sync; sustained contention reports "run it again" after three attempts rather than committing
+  anything. No backend call is made while the store lock is held, so a slow backend can never
+  delay an incident-response command. Opportunistic auto-sync never waits for the lock: it
+  checks for a concurrent writer before going to the network and skips silently, so an open
+  `arca edit` session costs the next command nothing — the one exception being a push that has
+  already reached the remote, which always records its cursor because failing to would surface
+  later as a conflict that isn't one.
+- **`arca disable` now also stops MCP handles minted before it ran.** The handle path skips
+  `gate()` (a handle *replaces* grant and approval) and had lost the `Disabled` check with it, so
+  the kill switch closed six access paths and not the one an agent was already holding. The check
+  is at *use* time, which is the load-bearing part — a handle is minted before an incident and
+  `disable` is thrown during one. Handles go inert rather than being revoked, so `enable` restores
+  the pre-incident state instead of forcing a re-issue.
+- **An empty stdin no longer destroys a stored secret.** `arca set NAME` with a producer that
+  failed stored an empty value over the real one and exited 0, with no undo — the store keeps only
+  the current value. See `--allow-empty` above.
+- **A failed write no longer makes the store look rolled back.** The monotonic `generation`
+  counter — the rollback tripwire that `arca doctor` warns on and that `log --verify` binds into
+  every signed audit event — was bumped *before* the store was written, so any failure past that
+  point left the running process one generation ahead of the file. That command's audit event then
+  recorded a generation that had never existed on disk, and the next process, loading the real
+  lower one, produced exactly the pattern `log --verify` reports as evidence of a restored older
+  copy. The counter now advances only after the bytes have landed. A false alarm on a
+  tamper-evidence signal is worse than no alarm: it teaches you to discount the one thing that
+  should never be discounted.
+- **A power loss immediately after a successful write can no longer lose it.** Every one of arca's
+  state files — the store, a pulled store, the sync config and cursor, grants, handles, the canary
+  registry, the escrow cursor and the rollback high-water mark — was published by renaming a temp
+  file into place, and a rename is a change to the *directory*, which is not durable until the
+  directory itself is flushed. `arca set` could report a secret stored and lose it to a power cut a
+  moment later. All nine writers now go through one helper that fsyncs the parent directory after
+  the rename, and that reports a failure to do so rather than swallowing it (the write is
+  committed at that point; what the error means is that it may not survive a crash). On Windows
+  there is no way to ask for this — a directory handle cannot be opened for the write access
+  `FlushFileBuffers` requires — so the gap is named in the code rather than papered over.
+- **A leftover temp file from a crashed run can no longer widen a state file's permissions or
+  block a write.** Four state writers published through a fixed `<file>.tmp`, and `os.WriteFile`
+  applies its mode only when it *creates* a file — so a leftover sitting at `0644` was renamed on
+  top of a `0600` destination, mode and all, with nothing reporting anything wrong. The same fixed
+  name was also what two concurrent writers collided on. `sync.json` had been fixed for exactly
+  this and the fix was never carried back to the function directly above it. Temp files are now
+  uniquely named and chmod'd before a single byte is written, everywhere.
+
+### Security
+- **An AI agent can no longer redirect its own audit log.** `$ARCA_AUDIT` was honoured
+  unconditionally, and an agent controls its own environment — so pointing it at a scratch file
+  bought the agent a log nobody reads, a *fresh rate-limit window on every secret* (the audit log
+  is the rate counter), and a canary registry whose trips land where the operator never looks,
+  while `arca log`, `arca canary --list` and `arca doctor` stayed clean against the real DB.
+  A command now **refuses to run** when an agent is detected and `$ARCA_AUDIT` resolves to
+  anything other than that store's own audit DB. It refuses rather than ignoring the variable:
+  falling back to the real log silently would leave the agent believing it is unaudited and the
+  operator holding a log that contradicts the environment they can see.
+
+  Unchanged for everyone else: `$ARCA_AUDIT` remains the documented way for an *operator* to point
+  several stores at one shared log, with or without a terminal, so scripts and CI are unaffected.
+  Setting it to the path arca would have used anyway is not a redirection and is not refused.
+- **A canary trip that cannot be recorded now blocks the access.** `tripCanary` discarded the
+  audit write's error, which made the tripwire the one event in arca that was not fail-closed: a
+  caller who had already broken the audit DB could take a decoy and leave no trace but a line on
+  the stderr it was reading itself. Tripping still does **not** block the access when the trip
+  records normally — the value is fake, and letting the caller take it is what keeps the trap
+  useful. Both access paths carry the rule, including MCP `run_with_handle`, which bypasses the
+  policy gate and so had to be fixed separately.
 
 ## [0.7.0] - 2026-07-09
 
