@@ -7,6 +7,15 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **The release-trigger threat is documented, and the tag path is closed (T14).** `release.yml`
+  fires on a `v*` tag push, and for a `push` event GitHub runs the workflow *from the pushed ref* —
+  so a hostile tag owns every in-tree check, and branch protection never applies (a tag consults no
+  branch rule). Reproducible builds, cosign, SLSA provenance and the SBOM all establish integrity of
+  the *pipeline*, not *authority of the release decision*. The primary control is a repository
+  ruleset restricting `refs/tags/v*` (creation, update, deletion; empty bypass), so creating or
+  moving a release tag is a settings action a git credential cannot perform; cutting a release is
+  disable-rule → push → re-enable. A complementary `environment: release` gate (scoping the
+  tap/scoop tokens) is designed but not yet deployed. See T14 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 - **`set` and `generate` can no longer relax the policy on an existing secret without an operator
   terminal (T13).** The control-plane anchor covered the six commands that exist to widen access; it
   did not cover the two whose job is to write a value and whose policy flags ride along. So
