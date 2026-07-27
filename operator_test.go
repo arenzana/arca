@@ -301,13 +301,19 @@ func TestControlPlaneRefusesWhenTerminalNeverAnswers(t *testing.T) {
 	// Skipped wholesale rather than assertion-guarded: the precondition is a real console, and
 	// without one the property cannot be exercised at all.
 	//
-	// Never yet observed to fail. Its non-vacuity rests on the control assertion below (a real
-	// console was obtained, and Close on it is prompt with no read pending) plus e2e (windows)
-	// in the same round driving anchored commands through CONIN$ — a separate runs-on of the
-	// same image, so a strong inference and not a proof.
+	// Its non-vacuity rests on the control assertion below (a real console was obtained, and Close
+	// on it is prompt with no read pending) plus e2e (windows) in the same round driving anchored
+	// commands through CONIN$ — a separate runs-on of the same image, so a strong inference and not
+	// a proof. It requires a genuinely INTERACTIVE console: GitHub's hosted Windows runner attaches
+	// a console (openTTY succeeds) whose read returns immediately rather than parking, so the
+	// silent-expiry precondition cannot be built there and the subtest skips — e2e (windows) is the
+	// load-bearing coverage on that image.
 	t.Run("a silent console expires without wedging Close", func(t *testing.T) {
 		if runtime.GOOS != "windows" {
 			t.Skip("only a Windows console is kindConsole; a Unix /dev/tty is poller-registered, so pd.evict unblocks the read and Close returns either way")
+		}
+		if os.Getenv("CI") != "" {
+			t.Skip("no interactive console on the CI Windows runner: openTTY succeeds but the read does not park, so the silent-expiry precondition cannot be built here — e2e (windows) exercises the real CONIN$ refusal path")
 		}
 		in, out, err := openTTY()
 		if err != nil {
