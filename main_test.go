@@ -166,6 +166,20 @@ func sandbox(t *testing.T) string {
 	// NB: ARCA_SYNC_ACCESS_KEY/SECRET_KEY are deliberately NOT cleared here — the sync e2e
 	// test (sandbox + real MinIO creds from the workflow env) depends on them surviving.
 	// A credential test that needs them absent clears them itself (t.Setenv, auto-restored).
+	//
+	// Default the terminal to "an operator is present and says yes", for the same reason the block
+	// above clears the agent markers: determinism. Since T11 the control-plane commands
+	// (`grant`, `agent allow`, `enable`, `recipients add`, `reencrypt`, `handle create`) prompt on
+	// the controlling terminal, and ~40 existing call sites across the suite use them as plain
+	// setup. Without a default they would each need editing, and on a developer machine they would
+	// block on the real /dev/tty. Tests that care about the anchor override this — `withNoTTY(t)`
+	// for the refusal path, `withTTYResponse(t, "n")` for a declined prompt — and cleanup restores
+	// LIFO, so the override wins.
+	//
+	// The cost is real and worth naming: this default would also make a *missing* anchor pass. That
+	// is why the refusal tests in operator_test.go are not optional — they assert the anchor
+	// positively, one per anchored command, against withNoTTY rather than against this default.
+	withTTYResponse(t, "y")
 	return dir
 }
 

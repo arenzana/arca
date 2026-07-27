@@ -137,6 +137,28 @@ func grantUses(name string, since time.Time) (int, error) {
 	return a.CountOpSince(name, "exec", since)
 }
 
+// grantScope renders a grant's bounds for the operator prompt. Every bound is chosen by whoever runs
+// the command, so the confirmation has to show what was chosen — "unlimited uses" and a year-long
+// --ttl are what a self-issued grant looks like, and both are indistinguishable from a narrow grant
+// if the prompt only says "a grant".
+func grantScope(ttl string, uses int, command, agent string) string {
+	parts := []string{"ttl " + ttl}
+	if uses > 0 {
+		parts = append(parts, fmt.Sprintf("%d uses", uses))
+	} else {
+		parts = append(parts, "unlimited uses")
+	}
+	if command != "" {
+		parts = append(parts, "command "+command)
+	} else {
+		parts = append(parts, "any command")
+	}
+	if agent != "" {
+		parts = append(parts, "agent "+agent)
+	}
+	return strings.Join(parts, ", ")
+}
+
 func newGrant() *cobra.Command {
 	var command, ttl, agent string
 	var uses int
@@ -146,6 +168,19 @@ func newGrant() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
+			// Minting a grant is a human action — POLICIES.md says "the operator sets it up
+			// interactively ... and the agent then scripts against it", and skills/arca/SKILL.md
+			// already tells agents to ask a human. Until now nothing enforced it, so an agent
+			// refused for lack of a grant could issue itself one and retry (T11). Worse, grants are
+			// keyed by secret name with no merge (see the plain assignment below), so a self-issued
+			// grant silently *replaces* the operator's narrower one.
+			//
+			// The prompt names the scope, because that is the part being widened: an unbounded --ttl
+			// and --uses 0 both parse, so "a grant was issued" is not the interesting fact.
+			if err := requireOperator("grant", fmt.Sprintf("Issue a grant for %s (%s)?",
+				name, grantScope(ttl, uses, command, agent))); err != nil {
+				return err
+			}
 			if err := validName(name); err != nil {
 				return err
 			}

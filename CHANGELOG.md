@@ -6,7 +6,49 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **`recipients add` is now audited (SEC-44).** Adding an age recipient grants permanent decryption
+  rights to every secret in the store, on every machine the store reaches — the widest-blast-radius
+  mutation arca supports — and it previously wrote no audit event at all. The log could show a
+  `reencrypt` with no trace of the key it re-wrapped to, and `log --verify` still reported a clean
+  chain (correctly: the chain is honest about everything it is told, and it was never told). Each
+  added key is now recorded individually as `op=recipients-add` with the key in the `name` field, so
+  the log answers *which* key was added. Re-adding an existing key stays a no-op and logs nothing.
+  A **relabel is also recorded** (`op=recipients-label`): labels are how an operator recognizes a key
+  during review (`who-can-read`, `exposure`, `doctor`), so renaming an unfamiliar key to something
+  trusted-looking is a way to hide it from exactly that check.
+  This closes the audit half of the recipient-injection gap; the control-plane anchor is the entry
+  below.
+- **The control plane is now terminal-anchored (T11/T12).** arca's strongest per-secret controls are
+  enforced on the paths that *release* a value, but the commands that *change those rules* carried no
+  anchor — so every control on the disclosure path could be edited away by the party it governs. An
+  agent refused by `--require-grant` could run `arca grant NAME --ttl 52w --uses 0` and retry (grants
+  are keyed by name with no merge, so a self-issued one silently *replaces* the operator's narrower
+  grant); an agent hidden by `mcp --strict` could run `arca agent allow NAME`; and widest of all,
+  `arca recipients add <own key>` + `arca reencrypt` re-wraps every value to a key the operator does
+  not hold, permanently and on every machine the store reaches, without ever entering an access path.
+  `arca grant`, `agent allow`, `enable`, `recipients add`, `reencrypt` and `handle create` now refuse
+  a detected agent outright and require every other caller to confirm on the controlling terminal,
+  with the prompt naming the scope being widened. Deliberately an interactive **prompt** rather than
+  a TTY-presence check: an agent launched from the operator's own shell inherits that terminal, so a
+  predicate would pass for the primary adversary. The commands that only *restrict* — `agent deny`,
+  `disable`, `recipients rm`, `handle revoke` — stay headless, so incident response is never gated on
+  a terminal. **There is no environment bypass**, deliberately; `ARCA_APPROVAL=allow` was removed for
+  the same reason, and a test enforces the absence. The cost is that non-interactive control-plane
+  use (CI issuing a grant, a provisioning script adding a key) is now refused rather than silently
+  allowed; the intended answer is an operator-minted, scoped, expiring capability, not a variable.
+  Scope: this covers the commands whose job is to widen access. A policy bit cleared in passing by
+  `set` / `generate` (`--require-approval=false` and friends) is **not** anchored — both overwrite
+  the value first, so that path is destroy-and-downgrade and audited rather than silent escalation.
+  See T11/T12/T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the residuals.
+
 ### Added
+- **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push
+  and PR. arca is a secrets manager: a test fixture, doc example, or recipe carrying a real
+  credential is a plausible mistake with outsized blast radius, and git history makes it permanent.
+  Invoked via `go run tool@version` like the other linters, so it is verified through the Go checksum
+  database and needs no marketplace action or license; `--redact` keeps a match out of the public CI
+  log.
 - **`.rpm` and `.deb` packages as release assets** (linux amd64/arm64), built by nfpm inside the
   same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
   the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
