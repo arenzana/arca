@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -715,6 +716,12 @@ func TestAdoptedAuditHistoryStillVerifies(t *testing.T) {
 func TestAdoptDegradesWhenTheStateDirIsUnwritable(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("running as root: mode bits do not deny access")
+	}
+	if runtime.GOOS == "windows" {
+		// os.Chmod on Windows only toggles FILE_ATTRIBUTE_READONLY, which does not deny file
+		// creation inside a directory — so the state dir stays writable, adoption succeeds, and
+		// the "unwritable state dir" precondition simply cannot be built here. (W4a.)
+		t.Skip("Windows os.Chmod cannot make a directory reject file creation; the precondition can't be built")
 	}
 	sandbox(t)
 	plantLegacyState(t)
