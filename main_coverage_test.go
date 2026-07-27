@@ -166,9 +166,15 @@ func TestDetectIdentityCursorAndNone(t *testing.T) {
 // audit db, operations abort by default (and a read won't disclose); opting out via
 // ARCA_STRICT_AUDIT=0 lets them proceed despite the broken log.
 func TestAuditFailureModes(t *testing.T) {
-	dir := sandbox(t)
+	sandbox(t)
 	runArca(t, "", "init")
-	if err := os.WriteFile(filepath.Join(dir, "audit.db"), []byte("not a database"), 0o600); err != nil {
+	// `init` does not record an audit event, so the per-store state dir may not exist yet — it is
+	// created by audit.Open on the first recorded access. Corrupting the DB before that means
+	// creating the directory ourselves.
+	if err := os.MkdirAll(filepath.Dir(auditPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(auditPath(), []byte("not a database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// Default: fail-closed — abort when the access can't be audited.
@@ -290,8 +296,18 @@ func TestPathResolution(t *testing.T) {
 	if configDir() != "/x/cfg/arca" || stateDir() != "/x/state/arca" {
 		t.Fatalf("xdg dirs: %s %s", configDir(), stateDir())
 	}
-	if storePath() != "/x/cfg/arca/store.json" || auditPath() != "/x/state/arca/audit.db" || identityPath() != "/x/cfg/arca/identity.txt" {
+	// The audit DB moved into the per-store state dir (D4), so its default is keyed to the store
+	// rather than shared. Asserted as a property, not a literal: hard-coding the hash would make
+	// this test a restatement of storeStateKey rather than a check on it.
+	if storePath() != "/x/cfg/arca/store.json" || identityPath() != "/x/cfg/arca/identity.txt" {
 		t.Fatal("default paths")
+	}
+	wantAudit := filepath.Join(storeStateDir(), "audit.db")
+	if auditPath() != wantAudit {
+		t.Fatalf("default audit path = %s, want %s", auditPath(), wantAudit)
+	}
+	if !strings.HasPrefix(storeStateDir(), "/x/state/arca/stores/") {
+		t.Fatalf("per-store state dir = %s, want it under the XDG state dir", storeStateDir())
 	}
 
 	t.Setenv("SOPS_AGE_KEY_FILE", "/sops/key")

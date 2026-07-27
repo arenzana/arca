@@ -90,6 +90,12 @@ func newGenerate() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// T13/R28, same anchor as `set`. `generate` on an existing name replaces the value
+			// with a fresh random one, so a refusal here also has to arrive before that write.
+			if err := requirePolicyOperator("generate", name, cmd.Flags().Changed, s.Secrets[name],
+				noPrint, requireApproval, requireGrant, canary, rate); err != nil {
+				return err
+			}
 			armored, err := crypto.Encrypt([]byte(val), recips)
 			if err != nil {
 				return err

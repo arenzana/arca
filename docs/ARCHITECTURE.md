@@ -33,7 +33,8 @@ could bypass arca entirely (see the trust model).
 |-----------|--------|----------------|
 | **CLI** | `main.go`, `manage.go`, `recipients.go`, `generate.go`, `completion.go` | Command tree (cobra), identity detection, policy enforcement, value I/O over TTY/stdin/stdout. |
 | **MCP server** | `mcp` command | Exposes `list_secrets`, `show_secret`, `read_secret`, `run_with_secrets`, `audit_log` over stdio JSON-RPC for agents. |
-| **Store** | `internal/store` | The age-encrypted JSON secret store: load (with size/version/validity checks and migrations), atomic save (fsync + rename), per-secret metadata and expiry. |
+| **Store** | `internal/store` | The age-encrypted JSON secret store: load (with size/version/validity checks and migrations), atomic save, per-secret metadata and expiry. The monotonic `generation` counter advances only after a save has landed, so a failed write cannot make the store look rolled back ([THREAT-MODEL.md](THREAT-MODEL.md), T9). |
+| **Atomic writes** | `internal/atomicfile` | The one way arca replaces a file of local state: unique temp file in the destination's own directory → chmod → write → fsync → rename → fsync of the parent directory. Every state writer goes through it (the store, the pulled store, sync config and cursor, grants, handles, canaries, the escrow cursor, the rollback high-water mark), so none of them can drop a step the others keep. |
 | **Crypto** | `internal/crypto` | age (X25519) encrypt/decrypt of secret values; recipient management. |
 | **Audit** | `internal/audit` | Append-only SQLite log (WAL) of access metadata — never values. |
 | **Lock** | `lock.go` | Cross-process `O_EXCL` lockfile guarding store mutations. |

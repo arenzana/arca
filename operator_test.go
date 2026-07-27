@@ -1,8 +1,11 @@
 package main
 
 import (
+	"os"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arenzana/arca/internal/crypto"
 )
@@ -177,4 +180,163 @@ func TestControlPlaneHasNoEnvBypass(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestControlPlaneRefusesWhenTerminalNeverAnswers is the W1 regression: a terminal handle that
+// opens but never delivers input (a Windows console no human is watching, or a pty held by a
+// supervisor that never relays keystrokes) must fail closed after operatorTimeout, not block the
+// process forever. It also owns the expiry-vs-declined discrimination that e2e deliberately does
+// not assert against runner behavior: an explicit answer and an EOF both read as "declined", while
+// the expiry names the terminal and the timeout and never says "declined".
+func TestControlPlaneRefusesWhenTerminalNeverAnswers(t *testing.T) {
+	sandbox(t) // clean agent markers; a detected agent is refused before any terminal is opened
+
+	oldTimeout := operatorTimeout
+	t.Cleanup(func() { operatorTimeout = oldTimeout })
+	operatorTimeout = 200 * time.Millisecond
+
+	injectTTY := func(t *testing.T, in *os.File) {
+		t.Helper()
+		old := openTTY
+		t.Cleanup(func() { openTTY = old })
+		openTTY = func() (_, out *os.File, err error) {
+			devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+			if err != nil {
+				return nil, nil, err
+			}
+			return in, devnull, nil
+		}
+	}
+
+	t.Run("a silent terminal expires and fails closed", func(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		defer w.Close() // held open, never written: the terminal that never answers
+		injectTTY(t, r)
+
+		done := make(chan error, 1)
+		go func() { done <- requireOperator("test-cmd", "Confirm the thing?") }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("a terminal that never answered was accepted as a confirmation")
+			}
+			if !strings.Contains(err.Error(), "terminal") {
+				t.Fatalf("expiry refusal does not name the terminal: %v", err)
+			}
+			if !strings.Contains(err.Error(), operatorTimeout.String()) {
+				t.Fatalf("expiry refusal does not name the timeout (%s): %v", operatorTimeout, err)
+			}
+			if strings.Contains(err.Error(), "declined") {
+				t.Fatalf("expiry reads as a decline; the two refusals must be distinguishable: %v", err)
+			}
+		case <-time.After(10 * operatorTimeout):
+			t.Fatal("requireOperator is still waiting on the dead terminal — the W1 hang is back")
+		}
+	})
+
+	t.Run("an explicit no is a decline, not an expiry", func(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		if _, err := w.WriteString("n\n"); err != nil {
+			t.Fatal(err)
+		}
+		w.Close()
+		injectTTY(t, r)
+
+		err = requireOperator("test-cmd", "Confirm the thing?")
+		if err == nil || !strings.Contains(err.Error(), "declined") {
+			t.Fatalf("explicit no = %v, want a decline", err)
+		}
+		if strings.Contains(err.Error(), operatorTimeout.String()) {
+			t.Fatalf("a decline must not name the timeout: %v", err)
+		}
+	})
+
+	t.Run("EOF is a decline, not an expiry", func(t *testing.T) {
+		// The shape a Windows CI console may produce: CONIN$ opens and reads EOF immediately.
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Close() // no writer: the read hits EOF at once
+		defer r.Close()
+		injectTTY(t, r)
+
+		err = requireOperator("test-cmd", "Confirm the thing?")
+		if err == nil || !strings.Contains(err.Error(), "declined") {
+			t.Fatalf("EOF = %v, want a decline", err)
+		}
+	})
+
+	t.Run("a yes still confirms", func(t *testing.T) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		if _, err := w.WriteString("y\n"); err != nil {
+			t.Fatal(err)
+		}
+		w.Close()
+		injectTTY(t, r)
+
+		if err := requireOperator("test-cmd", "Confirm the thing?"); err != nil {
+			t.Fatalf("an explicit yes was refused: %v", err)
+		}
+	})
+
+	// The pipe subtests above cannot exercise W1's second half. poll.FD.Close takes its
+	// CancelIoEx branch for kindPipe only (internal/poll/fd_windows.go:540), so a pipe unparks
+	// and Close returns whether or not requireOperator skips it. Only a real Windows console is
+	// kindConsole, where Close blocks on runtime_Semacquire(&fd.csema) (:548) until a read that
+	// never returns releases it.
+	//
+	// Skipped wholesale rather than assertion-guarded: the precondition is a real console, and
+	// without one the property cannot be exercised at all.
+	//
+	// Its non-vacuity rests on the control assertion below (a real console was obtained, and Close
+	// on it is prompt with no read pending) plus e2e (windows) in the same round driving anchored
+	// commands through CONIN$ — a separate runs-on of the same image, so a strong inference and not
+	// a proof. It requires a genuinely INTERACTIVE console: GitHub's hosted Windows runner attaches
+	// a console (openTTY succeeds) whose read returns immediately rather than parking, so the
+	// silent-expiry precondition cannot be built there and the subtest skips — e2e (windows) is the
+	// load-bearing coverage on that image.
+	t.Run("a silent console expires without wedging Close", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("only a Windows console is kindConsole; a Unix /dev/tty is poller-registered, so pd.evict unblocks the read and Close returns either way")
+		}
+		if os.Getenv("CI") != "" {
+			t.Skip("no interactive console on the CI Windows runner: openTTY succeeds but the read does not park, so the silent-expiry precondition cannot be built here — e2e (windows) exercises the real CONIN$ refusal path")
+		}
+		in, out, err := openTTY()
+		if err != nil {
+			t.Skip("no console attached to this test process")
+		}
+		start := time.Now() // control: Close with NO read pending must be prompt
+		in.Close()
+		if out != in {
+			out.Close()
+		}
+		if d := time.Since(start); d > operatorTimeout {
+			t.Fatalf("closing an idle console took %s; the control is not measuring what it claims", d)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- requireOperator("test-cmd", "Confirm the thing?") }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), operatorTimeout.String()) {
+				t.Fatalf("console expiry = %v", err)
+			}
+		case <-time.After(10 * operatorTimeout):
+			t.Fatal("requireOperator never returned on a silent console: Close is blocking on csema")
+		}
+	})
 }

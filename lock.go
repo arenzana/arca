@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -28,15 +29,32 @@ var (
 	staleLockAge = 30 * time.Second
 )
 
+// errStoreLocked reports that the lock is held by another live process. It is a sentinel so a
+// caller that can reasonably give up — opportunistic auto-sync — can tell contention apart from
+// a real failure (a permission error, an unwritable directory) it must not swallow.
+var errStoreLocked = errors.New("store is locked by another arca process")
+
 // lockStore acquires the store lock and returns a release func. Call it at the top of a mutating
-// command and `defer` the result so the whole load→save sequence is serialized.
-func lockStore() (release func(), err error) {
+// command and `defer` the result so the whole load→save sequence is serialized. It waits up to
+// lockTimeout for a concurrent holder, which is the right behaviour for a command a human ran.
+func lockStore() (release func(), err error) { return lockStoreFor(lockTimeout) }
+
+// lockStoreFor is lockStore with an explicit wait budget. A timeout <= 0 makes the attempt
+// non-blocking: one acquisition attempt (plus the stale-lock reclaim, which only fires on a lock
+// nobody is heartbeating) and then errStoreLocked.
+//
+// Background work uses the non-blocking form. Opportunistic auto-sync runs after every command
+// when it is enabled, and `arca edit` legitimately holds the lock for as long as an operator
+// keeps $EDITOR open — so a blocking auto-sync would stall the next command for lockTimeout
+// behind a human who is simply reading. Skipping is free: auto-sync is best-effort by contract
+// and the next command retries.
+func lockStoreFor(timeout time.Duration) (release func(), err error) {
 	lock := storePath() + ".lock"
 	token, err := lockToken()
 	if err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(lockTimeout)
+	deadline := time.Now().Add(timeout)
 	for {
 		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //#nosec G304 -- lock path derives from the operator-controlled store path, not untrusted input
 		if err == nil {
@@ -66,8 +84,11 @@ func lockStore() (release func(), err error) {
 				continue
 			}
 		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("store is locked by another arca process (remove %s if it is stale)", lock)
+		// timeout <= 0 short-circuits explicitly rather than relying on the deadline having
+		// already passed by a few nanoseconds — a non-blocking caller must be non-blocking by
+		// construction, not by clock granularity.
+		if timeout <= 0 || time.Now().After(deadline) {
+			return nil, fmt.Errorf("%w (remove %s if it is stale)", errStoreLocked, lock)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

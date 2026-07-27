@@ -303,6 +303,18 @@ signs, and the provenance attests, whatever was tagged, just as faithfully. Who
 may start a release is T14.
 
 ### T14 — Anyone who can push a tag can publish a signed release — ◐ PARTIALLY ADDRESSED
+
+> **Current status (2026-07-27).** The primary control is **in place**: a
+> `refs/tags/v*` ruleset (creation + update + deletion, **empty bypass list**) makes
+> creating or moving a release tag a repository-settings action on a channel a git
+> credential does not have — closing the hostile-tag path this entry is about.
+> Cutting a release is now *disable the rule → push → re-enable* (the "empty bypass
+> list" shape analysed below). The complementary **environment gate is NOT yet in
+> place**: the `environment: release` change lives on the unmerged
+> `fix/release-environment-gate` branch and the `release` environment has not been
+> created, so the defence-in-depth described immediately below is a design, not a
+> deployed control. The rest of this section is the analysis behind both decisions.
+
 `release.yml` fires on `push: tags: ['v*']`, and the release job holds
 `contents: write`, `id-token: write` (cosign keyless signing), `attestations:
 write`, and the `HOMEBREW_TAP_TOKEN` / `SCOOP_GITHUB_TOKEN` used to update the
@@ -322,10 +334,11 @@ is on `egress-policy: audit`, which records exfiltration rather than blocking it
 This is the shape T11 rejected for env vars and config files, one layer out: a
 control the constrained party can edit is not a control.
 
-*Addressed, in part:* the release job is gated on a protected GitHub **environment**
-(`environment: release`) whose protection rule requires a reviewer, and the tap and
-scoop tokens are environment secrets on it. Two different mechanisms are at work
-there and they fail in different ways, so they are worth separating:
+*Designed, not yet deployed (see status above):* the intended complement is to gate
+the release job on a protected GitHub **environment** (`environment: release`) whose
+protection rule requires a reviewer, with the tap and scoop tokens moved to
+environment secrets on it. Two different mechanisms are at work there and they fail
+in different ways, so they are worth separating:
 
 - The **required-reviewer rule** lives in repository settings, outside any tree, so
   a hostile tag cannot carry an edited copy of *the rule*. Subject to *Condition on
@@ -385,12 +398,14 @@ the credential. `can_admins_bypass` also defaults to true on a new environment.
 So any credential used for automated pushes must be checked against the approval
 endpoint and the bypass setting, not only against `contents`.
 
-*Also not addressed — the tag ref is unrestricted, for creation and for movement.*
-No ruleset covers `refs/tags/*`, so the hostile tag can still be created — or an
-existing one re-pointed — and per the residual above the environment gate does not
-stop either producing a signed Release. Restricting the tag ref is the only proposed
-control that stops that tag *existing*, and it comes in two shapes with very
-different costs. Both need the same three rules:
+*Addressed — the tag ref is now restricted, for creation and for movement.* A
+hostile tag was the one path the environment gate cannot close (per the residual
+above it does not stop a signed Release), so restricting the tag ref is what stops
+that tag *existing*. That control is now live: a ruleset covers `refs/tags/v*` with
+all three rules and an empty bypass list, so neither creating a `v*` tag nor
+re-pointing one is reachable by a git credential. The ruleset comes in two shapes
+with very different costs; the deployed one is the first ("empty bypass list")
+below. Both need the same three rules:
 
     target: tag    pattern: refs/tags/v*    enforcement: active
     rules: restrict creations + restrict updates + restrict deletions
@@ -471,11 +486,6 @@ describes intended behaviour rather than current behaviour is worse than none.
 
 | ID | Summary | Severity |
 |----|---------|----------|
-| T14 (residual) | The required-reviewer rule lives in repository settings, but the `environment: release` key that opts into it lives in the tree a hostile tag controls — deleting that key drops the approval, so the **secret scoping** (environment secrets are invisible to a job declaring no environment) is the half that actually survives. It closes the automated Homebrew/Scoop push and leaves a signed, attested GitHub Release of attacker code standing. A missing `release` environment is also created implicitly with no protection rules, reading as gated while running unguarded. Separately, tag creation is unrestricted: no ruleset covers `refs/tags/*` | High |
+| T14 (residual) | The primary control is in place — the `refs/tags/v*` ruleset (empty bypass) blocks tag creation and movement by any git credential. The complementary defence-in-depth is not yet deployed: the `environment: release` gate — scoping the tap/scoop tokens so a workflow that drops the environment key cannot reach them — lives on an unmerged branch, and the `release` environment is not created (a named-but-uncreated environment is auto-created *unprotected*, so the workflow key must not merge before the environment exists). Until then a release is protected by the ruleset alone, not additionally by token scoping | Medium |
 | T12 (residual) | The recipient set is not pinned in local state, so a recipient added on another machine and synced in is not surfaced on load; `doctor` reports blast radius as a static count with no baseline | Medium |
-| T13 (residual) | `set` / `generate` can clear a policy bit (`--require-approval=false`, `--no-print=false`, `--require-grant=false`, `--rate ""`) without the T11 anchor. Bounded to destroy-and-downgrade — the value write is unconditional and comes first, so the clear costs the secret and is audited — rather than the silent escalation T11 closes | Low-Medium |
-| — | `sync` performs no store locking, so a concurrent pull can silently revert a mutation — including a `rotate` or `recipients rm` performed as incident remediation. It also forks the `generation` counter that T9's rollback detection and the signed audit events depend on | High |
-| — | The MCP `run_with_secrets` path buffers command output unbounded with no timeout. Beyond denial of service, the process heap holds injected values in cleartext, so an agent-driven OOM produces a core dump containing them where core dumps are enabled | High |
-
-The last two were identified during backend review; they are recorded here
-because their consequences land on trust boundaries this document owns.
+| T13 (residual) | `set` / `generate` extend an expiry (`--ttl`, `--expires-at`) on an existing secret with no anchor: `applyExpiry()` overwrites `ExpiresAt` unconditionally and has no clearing path. Not folded into the policy predicate that closed T13's five relaxation flags — the helper is shared with a third command and "extend versus shorten" needs its own rule across a relative TTL and an absolute date. Neither reveals a value nor widens who may read one, and the expiry is visible in `arca show` | Low |

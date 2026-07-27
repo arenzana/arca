@@ -83,7 +83,9 @@ arca canary AWS_PROD_KEY --template aws     # stripe | github | aws | slack | ge
 arca canary --list                          # which canaries exist, and which were tripped
 ```
 
-The "this is a decoy" designation is kept in a **local registry** (`$XDG_STATE_HOME/arca/canaries.json`),
+The "this is a decoy" designation is kept in a **local registry**
+(`$XDG_STATE_HOME/arca/stores/<store-key>/canaries.json`, per store — see
+[Configuration](CONFIGURATION.md#local-state-is-per-store)),
 never in the git-synced store — so someone who obtains the store file, the exact exfiltration a canary
 exists to catch, can't tell the decoys from the real secrets. The decoy's value is an ordinary-looking
 store entry. (Canaries planted before 0.6.2 kept the flag in the store; those are still honored, and

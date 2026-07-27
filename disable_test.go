@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/arenzana/arca/internal/store"
 )
 
@@ -171,4 +173,82 @@ func TestMCPDisable(t *testing.T) {
 	if !call(t, mcpRunWithSecrets, map[string]any{"command": "true", "secrets": []any{"API"}}).IsError {
 		t.Fatal("expected run_with_secrets to refuse a disabled secret")
 	}
+}
+
+// runHandle drives run_with_handle for a handle minted with `--command 'sh *'`.
+func runHandle(t *testing.T, id string) *mcp.CallToolResult {
+	t.Helper()
+	return call(t, mcpRunWithHandle, map[string]any{"handle": id, "command": "sh", "args": []any{"-c", "true"}})
+}
+
+// TestDisableKillsExistingHandle covers R8, the hole in the kill switch: `arca disable LEAKED_KEY`
+// stopped get, exec, inject, env, read_secret and run_with_secrets, and did not stop a handle
+// minted five minutes earlier.
+//
+// mcpRunWithHandle deliberately bypasses gate() — a handle IS the authorization to use the secret,
+// so grant and approval are the checks it is meant to replace — and lost the disabled check on the
+// way out. The check has to be at use time, not mint time: a handle is minted before an incident
+// and `disable` is thrown during one, so the capability an operator is racing to contain is always
+// one that already exists.
+func TestDisableKillsExistingHandle(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "topsecret", "set", "API")
+	id := strings.TrimSpace(runArca(t, "", "handle", "create", "API", "--command", "sh *", "--ttl", "1h"))
+
+	// Baseline: the handle works before the incident, so a refusal below is the kill switch and
+	// not some unrelated breakage in the handle path.
+	if res := runHandle(t, id); res.IsError {
+		t.Fatalf("handle should work before disable: %s", text(t, res))
+	}
+
+	runArca(t, "", "disable", "API")
+
+	res := runHandle(t, id)
+	if !res.IsError {
+		t.Fatal("run_with_handle must refuse a handle whose secret has been disabled: a pre-existing handle is exactly what the kill switch has to stop")
+	}
+	if msg := text(t, res); !strings.Contains(msg, "disabled") {
+		t.Errorf("the refusal should say the secret is disabled, got %q", msg)
+	}
+
+	// enable restores the pre-incident state exactly. Handles are made inert while the secret is
+	// disabled rather than revoked, so undoing a false alarm does not force the operator to
+	// re-issue every capability they had handed out.
+	runArca(t, "", "enable", "API")
+	if res := runHandle(t, id); res.IsError {
+		t.Fatalf("enable must restore an inert handle rather than force a re-issue: %s", text(t, res))
+	}
+}
+
+// TestHandleCreateRefusesDisabledSecret covers the mint-time half. This is the convenience, not
+// the control — the control is the use-time check above — but minting a handle for a disabled
+// secret silently produces a dead capability, and the operator finds out only when the agent
+// holding it fails.
+func TestHandleCreateRefusesDisabledSecret(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "topsecret", "set", "API")
+	runArca(t, "", "disable", "API")
+
+	err := runArcaErr("", "handle", "create", "API", "--ttl", "1h")
+	if err == nil {
+		t.Fatal("handle create on a disabled secret must be refused: the handle would be dead on arrival")
+	}
+	if !strings.Contains(err.Error(), "disabled") || !strings.Contains(err.Error(), "enable") {
+		t.Errorf("the refusal should name the state and the way out, got %q", err)
+	}
+
+	// Nothing was minted: a refused create must not leave a handle in the store.
+	handles, err := loadHandles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 0 {
+		t.Fatalf("a refused handle create left %d handle(s) behind", len(handles))
+	}
+
+	// And it is only the disabled state that refuses — enable, and the mint works.
+	runArca(t, "", "enable", "API")
+	runArca(t, "", "handle", "create", "API", "--ttl", "1h")
 }
