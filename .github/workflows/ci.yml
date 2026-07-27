@@ -175,3 +175,23 @@ jobs:
           egress-policy: audit
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
+
+  # Secret scanning. arca is a secrets manager: a test fixture, doc example, or recipe that carries a
+  # real credential is a plausible mistake with outsized blast radius, and git history makes it
+  # permanent. Run via `go run tool@version` like the other linters above, so the tool is verified
+  # through the Go checksum database and needs no marketplace action or license.
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0 # scan history, not just the tip commit
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      # --redact so a hit is reported without printing the matched credential into a public CI log.
+      - run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --redact --verbose --exit-code 1

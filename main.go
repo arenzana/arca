@@ -1423,6 +1423,13 @@ func newEnable() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
+			// Re-enabling lifts the kill switch, so it is anchored to a human (T11). `disable` is
+			// not: it only ever restricts, and quarantining a secret should never need a terminal —
+			// least of all mid-incident.
+			if err := requireOperator("enable",
+				fmt.Sprintf("Re-enable %s, lifting the kill switch on it?", name)); err != nil {
+				return err
+			}
 			unlock, err := lockStore()
 			if err != nil {
 				return err

@@ -8,6 +8,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // bin is the path to the freshly built arca binary, set by TestMain.
@@ -98,14 +100,30 @@ func dedupeEnv(pairs []string) []string {
 	return out
 }
 
+// childTimeout bounds a single arca invocation. Two orders of magnitude over any command this
+// suite runs, so it cannot flake on a slow runner. It exists so that one hung child cannot eat
+// the whole job and hide every test after it — which is what a Windows console hang did twice.
+const childTimeout = 60 * time.Second
+
 func (b box) runEnv(t *testing.T, extra []string, stdin string, args ...string) (out, errOut string, code int) {
 	t.Helper()
-	cmd := exec.Command(bin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = dedupeEnv(append(append(os.Environ(), b.env...), extra...))
 	cmd.Stdin = strings.NewReader(stdin)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
+	start := time.Now()
 	err := cmd.Run()
+	// This MUST precede the *exec.ExitError branch. A context-killed child returns
+	// *exec.ExitError, so the type switch alone reports the timeout as an ordinary nonzero
+	// exit, this t.Fatalf never runs, and a hang reads as a passing test.
+	if ctx.Err() != nil {
+		t.Fatalf("arca %v did not finish within %s (elapsed %s)\nstdout: %q\nstderr: %q",
+			args, childTimeout, time.Since(start).Round(time.Millisecond), o.String(), e.String())
+	}
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
 	} else if err != nil {
@@ -125,6 +143,59 @@ func (b box) must(t *testing.T, stdin string, args ...string) string {
 		t.Fatalf("arca %v exited %d\nstderr: %s", args, code, errOut)
 	}
 	return out
+}
+
+// assertControlPlaneRefused asserts that one of the six T11/T12-anchored commands is refused, in
+// the two ways a black-box caller can actually be refused.
+//
+// requireOperator() runs two checks in order and they fail for different reasons:
+//
+//  1. A *detected agent* is refused before any terminal is opened. That makes this half
+//     deterministic on every platform and independent of whether the test host has a terminal, and
+//     — the reason it is first here — it can never block on the prompt.
+//  2. Everyone else must answer a question on /dev/tty. No controlling terminal is a refusal, which
+//     is the condition every CI runner is in. Asserted when this process has no terminal, and on
+//     Windows even when it has one: a Unix terminal belongs to a human the prompt would
+//     unexpectedly render for, but a CI runner's console (CONIN$) has nobody watching it, and
+//     since W1 the prompt carries the operatorTimeout deadline — the child refuses instead of
+//     hanging, which is the only positive Windows evidence for this fix. Either refusal shape
+//     satisfies the check (the console may deliver EOF immediately — a decline — or stay silent —
+//     an expiry); both messages name the terminal, and the expiry-vs-declined discrimination is
+//     asserted in operator_test.go's injection test, where the terminal is a pipe this repo owns.
+//
+// There is deliberately no third case driving the *success* path. The prompt is an interactive
+// Fscanln on /dev/tty, so a test could only answer it by allocating a pty and making it the child's
+// controlling terminal. That is not built, on purpose. operator.go's argument is that the prompt
+// survives scrubbed markers plus a shared terminal precisely *because a human has to answer it*,
+// and a harness in this repo that answers it automatically is the recipe for the bypass that file
+// says must never exist ("no bypass is built at all"). The coverage this costs is real and is named
+// at each call site rather than left for a reader to notice.
+//
+// One asymmetry to know before trusting a green run: check 1 is not evidence of *this* anchor for
+// every command. `handle create` already refused detected agents before T11 (handles.go's own
+// detection-alone refusal), so on a Unix host that has a terminal — where check 2 is skipped —
+// TestHandleCreateIsOperatorOnly would pass against a tree with no anchor at all. Dropping these
+// files onto f984ce5 headless fails all four, and that is the run that establishes they mean
+// something; three fail on check 1 and `handle create` fails on check 2. On Windows check 2 now
+// runs unconditionally (the prompt refuses on a deadline instead of waiting for a human), so the
+// anchor carries positive evidence there on every command, `handle create` included.
+func assertControlPlaneRefused(t *testing.T, b box, args ...string) {
+	t.Helper()
+	if _, errOut, code := b.runEnv(t, []string{"AI_AGENT=claude-code"}, "", args...); code == 0 {
+		t.Fatalf("arca %v succeeded for a detected agent; the control plane is not anchored", args)
+	} else if !strings.Contains(errOut, "claude-code") {
+		t.Fatalf("arca %v refusal does not name the detected agent: %q", args, errOut)
+	}
+	// Check 2 asserts the no-answer refusal (see the doc comment for why Windows runs it even
+	// when a console is present, and why either refusal shape satisfies it).
+	if hasTerminal() && runtime.GOOS != "windows" {
+		return
+	}
+	if _, errOut, code := b.run(t, "", args...); code == 0 {
+		t.Fatalf("arca %v succeeded with no controlling terminal", args)
+	} else if !strings.Contains(errOut, "terminal") {
+		t.Fatalf("arca %v refusal does not explain the terminal requirement: %q", args, errOut)
+	}
 }
 
 func needsSh(t *testing.T) {
@@ -316,11 +387,17 @@ func TestConcurrentSet(t *testing.T) {
 	const n = 8
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
+	// One shared deadline for the whole fan-out, so the check after wg.Wait() has a ctx to read.
+	// These children bypass runEnv, so without it a hung `set` takes the job down with no
+	// diagnostic and every test after this one — including every anchored one — never runs.
+	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+	defer cancel()
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			cmd := exec.Command(bin, "set", fmt.Sprintf("K%d", i))
+			cmd := exec.CommandContext(ctx, bin, "set", fmt.Sprintf("K%d", i))
+			cmd.WaitDelay = 5 * time.Second
 			cmd.Env = append(os.Environ(), b.env...)
 			cmd.Stdin = strings.NewReader("v")
 			errs <- cmd.Run()
@@ -328,6 +405,12 @@ func TestConcurrentSet(t *testing.T) {
 	}
 	wg.Wait()
 	close(errs)
+	// Before the loop below: a killed child returns *exec.ExitError, so the existing message
+	// would blame the store lock for what is actually a hang. Lock contention fails on its own,
+	// earlier, with that message and never reaches this deadline.
+	if ctx.Err() != nil {
+		t.Fatalf("a concurrent set did not finish within %s — the child hung; this is not lock contention", childTimeout)
+	}
 	for e := range errs {
 		if e != nil {
 			t.Fatalf("a concurrent set failed (lock timeout too short?): %v", e)
@@ -404,60 +487,32 @@ func TestMCPServer(t *testing.T) {
 	}
 }
 
-// TestHandles drives the opaque-handle flow through the real binary: a handle is minted for a
-// secret, then an agent runs a command via run_with_handle over MCP using only the handle — never
-// the secret's name or value.
-func TestHandles(t *testing.T) {
-	needsSh(t)
+// TestHandleCreateIsOperatorOnly replaces the former TestHandles, and the swap is a real loss that
+// should be visible rather than quiet.
+//
+// What it used to do: mint a handle for a secret, then run a command via run_with_handle over MCP
+// using only the handle, asserting the child saw a 9-character value and that "topsecret" appeared
+// nowhere in the response. That was the strongest end-to-end statement in this suite — the
+// no-leak property proved through the real binary and the real MCP server.
+//
+// `handle create` is now anchored (T11/T12), and every later step needed the handle it mints, so
+// none of it can run from a headless black-box test. What is left is the anchor itself. The minting
+// and no-leak flow keeps in-process coverage in the root package — handles_test.go TestHandles
+// (mint → run_with_handle → value not in the response) and TestHandleCreateAgentRefused — where the
+// operator prompt is stubbed rather than answered through a terminal.
+//
+// So: the flow is still tested, and it is no longer tested *through the shipped binary*. That is the
+// price of the anchor and it is the right trade, but it is a price.
+func TestHandleCreateIsOperatorOnly(t *testing.T) {
 	b := sandbox(t)
 	b.must(t, "", "init")
-	b.must(t, "topsecret", "set", "API") // 9 chars
+	b.must(t, "topsecret", "set", "API")
 
-	id := strings.TrimSpace(b.must(t, "", "handle", "create", "API", "--as", "TOK", "--command", "sh *", "--ttl", "1h"))
-	if !strings.HasPrefix(id, "hdl_") {
-		t.Fatalf("handle id = %q", id)
-	}
-	if out := b.must(t, "", "handle", "ls"); !strings.Contains(out, id) {
-		t.Fatalf("handle ls = %q", out)
-	}
+	assertControlPlaneRefused(t, b, "handle", "create", "API", "--as", "TOK", "--command", "sh *", "--ttl", "1h")
 
-	cmd := exec.Command(bin, "mcp")
-	cmd.Env = append(os.Environ(), b.env...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range []string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}`,
-		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_with_handle","arguments":{"handle":"` + id + `","command":"sh","args":["-c","echo len=${#TOK}"]}}}`,
-	} {
-		io.WriteString(stdin, m+"\n")
-	}
-	stdin.Close()
-	_ = cmd.Wait()
-
-	var sawRun bool
-	for _, line := range strings.Split(out.String(), "\n") {
-		var resp struct {
-			ID     int             `json:"id"`
-			Result json.RawMessage `json:"result"`
-		}
-		if strings.TrimSpace(line) == "" || json.Unmarshal([]byte(line), &resp) != nil {
-			continue
-		}
-		if resp.ID == 2 {
-			s := string(resp.Result)
-			sawRun = strings.Contains(s, "len=9") && !strings.Contains(s, "topsecret")
-		}
-	}
-	if !sawRun {
-		t.Fatalf("run_with_handle over MCP failed or leaked: %s", out.String())
+	// Nothing was minted on the way to being refused: the refusal is not a partial success.
+	if out := b.must(t, "", "handle", "ls"); strings.Contains(out, "hdl_") {
+		t.Fatalf("a refused `handle create` still minted a handle: %q", out)
 	}
 }
 
@@ -468,14 +523,20 @@ func TestMCPMalformed(t *testing.T) {
 	b.must(t, "", "init")
 	b.must(t, "topsecret", "set", "API")
 
-	cmd := exec.Command(bin, "mcp")
+	// This child bypasses runEnv and its only exit condition is stdin EOF, so it carries the same
+	// deadline. stderr is captured and the Wait error kept for the diagnostic below — neither is
+	// asserted on: arca mcp's exit status on EOF is not a property this test has ever claimed.
+	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "mcp")
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(os.Environ(), b.env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
+	var out, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errBuf
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +550,11 @@ func TestMCPMalformed(t *testing.T) {
 		io.WriteString(stdin, m+"\n")
 	}
 	stdin.Close()
-	_ = cmd.Wait()
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		t.Fatalf("arca mcp did not exit within %s after stdin closed\nstdout: %q\nstderr: %q",
+			childTimeout, out.String(), errBuf.String())
+	}
 
 	var answered bool
 	for _, line := range strings.Split(out.String(), "\n") {
@@ -505,7 +570,8 @@ func TestMCPMalformed(t *testing.T) {
 		}
 	}
 	if !answered {
-		t.Fatalf("MCP server did not survive malformed input and answer a later valid request:\n%s", out.String())
+		t.Fatalf("MCP server did not survive malformed input and answer a later valid request (wait: %v)\nstdout:\n%s\nstderr:\n%s",
+			waitErr, out.String(), errBuf.String())
 	}
 }
 
@@ -522,16 +588,21 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
-// TestGrants drives the just-in-time grant flow through the real binary: a require-grant secret is
-// unusable until a matching, command-scoped, bounded grant is issued, and the grant-authorized
-// uses land in the signed audit log (which still verifies).
+// TestGrants keeps the half of the just-in-time grant flow a headless black-box caller can still
+// reach: a require-grant secret is unusable with no grant, and issuing one is operator-only.
+//
+// Lost to the T11/T12 anchor on `grant`: the pattern match (a non-matching command refused), the use
+// counter (two uses allowed, the third refused), `grants` listing the live grant, `log --verify`
+// over the grant-authorized exec events, and `revoke`. That flow keeps in-process coverage in
+// main_test.go, which drives the same `--command true* --uses 2 --ttl 15m` shape and asserts the
+// third use is refused. What it no longer proves is that the *shipped binary* does it.
 func TestGrants(t *testing.T) {
 	needsSh(t)
 	b := sandbox(t)
 	b.must(t, "", "init")
 	b.must(t, "deployval", "set", "DEPLOY", "--require-grant")
 
-	// No grant: exec and get both fail.
+	// No grant: exec and get both fail. This is the gate itself and it needs no terminal.
 	if _, _, code := b.run(t, "", "exec", "--only", "DEPLOY", "--", "true"); code == 0 {
 		t.Fatal("exec without a grant should fail")
 	}
@@ -539,28 +610,14 @@ func TestGrants(t *testing.T) {
 		t.Fatal("get of a require-grant secret should fail")
 	}
 
-	// Grant 'true*' for two uses; a non-matching command is refused, matching is allowed twice.
-	b.must(t, "", "grant", "DEPLOY", "--command", "true*", "--uses", "2", "--ttl", "15m")
-	if _, _, code := b.run(t, "", "exec", "--only", "DEPLOY", "--", "sh", "-c", "echo x"); code == 0 {
-		t.Fatal("a command not matching the grant pattern should fail")
+	assertControlPlaneRefused(t, b, "grant", "DEPLOY", "--command", "true*", "--uses", "2", "--ttl", "15m")
+
+	// The refusal left no grant behind, so the secret is still gated — a partial write here would be
+	// worse than the refusal failing outright, because it would open access nobody approved.
+	if out := b.must(t, "", "grants"); strings.Contains(out, "DEPLOY") {
+		t.Fatalf("a refused `grant` still issued one: %q", out)
 	}
-	b.must(t, "", "exec", "--only", "DEPLOY", "--", "true")
-	b.must(t, "", "exec", "--only", "DEPLOY", "--", "true")
 	if _, _, code := b.run(t, "", "exec", "--only", "DEPLOY", "--", "true"); code == 0 {
-		t.Fatal("the third use should be refused (grant exhausted)")
-	}
-
-	if out := b.must(t, "", "grants"); !strings.Contains(out, "DEPLOY") {
-		t.Fatalf("grants list = %q, want DEPLOY", out)
-	}
-
-	// The grant-authorized exec events are in the tamper-evident log, which still verifies.
-	if _, errOut, code := b.run(t, "", "log", "--verify"); code != 0 || !strings.Contains(errOut, "OK") {
-		t.Fatalf("log --verify: code=%d stderr=%q", code, errOut)
-	}
-
-	b.must(t, "", "revoke", "DEPLOY")
-	if _, _, code := b.run(t, "", "revoke", "DEPLOY"); code == 0 {
-		t.Fatal("revoking a non-existent grant should fail")
+		t.Fatal("exec succeeded after a refused grant")
 	}
 }
