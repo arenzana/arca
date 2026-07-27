@@ -334,9 +334,18 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError("handle target no longer exists"), nil
 	}
 	// The handle is the authorization to *use* the secret, so grant/approval gating is bypassed;
-	// but a canary trips, an expired secret is refused, and a rate limit still applies.
+	// but a canary trips, the kill switch and expiry are refused, and a rate limit still applies.
+	// This mirrors gate() (main.go) in the same order, deliberately: the checks a handle skips are
+	// the ones a handle replaces (grant, approval), and nothing else. See gate() before adding
+	// anything here.
 	if isCanary(h.Secret, sec) {
 		tripCanary(h.Secret)
+	}
+	// A handle is minted before an incident; `arca disable` happens during one. Checking Disabled
+	// only at mint time would therefore close nothing — the capability an operator is racing to
+	// contain is always one that already exists. Refuse at use (SEC-13 kill switch).
+	if sec.Disabled {
+		return mcp.NewToolResultError("the secret behind this handle is disabled"), nil
 	}
 	if sec.Expired(time.Now()) {
 		return mcp.NewToolResultError("the secret behind this handle has expired"), nil

@@ -23,8 +23,14 @@ secret); pass `--overwrite` to replace them. A few flags shape the load:
 |------|--------|
 | `--dry-run` | Print what would be imported (new vs overwrite vs skip) and write nothing |
 | `--overwrite` | Replace existing secrets instead of skipping them |
+| `--allow-empty` | Let an empty value (`KEY=`) replace an existing secret — skipped by default |
 | `--prefix P` | Prepend `P` to every imported name (e.g. `--prefix STRIPE_`) |
 | `--tag t` | Attach tags to every imported secret (repeatable or comma-separated) |
+
+With `--overwrite`, a bare `KEY=` whose name already exists is **skipped and reported**: replacing a
+stored value with an empty one destroys it and the store keeps no previous version. Creating a *new*
+secret from `KEY=` is still allowed — a blank entry is an ordinary line in a real `.env` file and
+nothing is lost. Pass `--allow-empty` to overwrite anyway.
 
 ```sh
 # dotenv — a plain file, or decrypted from sops
