@@ -9,7 +9,7 @@ All paths are overridable so the store can live in your dotfiles while the audit
 | Variable | Purpose | Default |
 |---|---|---|
 | `ARCA_STORE` | JSON store path (sync this) | `~/.config/arca/store.json` |
-| `ARCA_AUDIT` | SQLite audit DB (do **not** sync) | `~/.local/state/arca/audit.db` |
+| `ARCA_AUDIT` | SQLite audit DB (do **not** sync) | `~/.local/state/arca/stores/<store-key>/audit.db` |
 | `ARCA_IDENTITY` | age private key | `$SOPS_AGE_KEY_FILE`, else `~/.config/arca/identity.txt` |
 | `ARCA_STRICT_AUDIT` | fail-closed auditing | enabled; a human at a controlling terminal may set `0`/`false`/`off`/`no` for best-effort (ignored for a detected agent or a headless caller) |
 | `ARCA_ACTOR` | explicit actor label in the audit | — (OS user / agent auto-detected) |
@@ -22,9 +22,46 @@ All paths are overridable so the store can live in your dotfiles while the audit
 | `ARCA_SYNC_AUTO` | force automatic sync on (`1`) or off (`0`), overriding `arca sync auto` | per `sync.json` |
 | `XDG_CONFIG_HOME` / `XDG_STATE_HOME` | base dirs | `~/.config` / `~/.local/state` |
 
-Local operational state (session signing keys, grants, handles, the canary registry, and the
-sync config/cursor `sync.json` / `sync-state.json`) lives under `$XDG_STATE_HOME/arca/`
-alongside the audit DB — never synced.
+### Local state is per store
+
+Local operational state (session signing keys, grants, handles, the canary registry, the rollback
+high-water mark `store.gen`, the escrow cursor, and the sync config/cursor `sync.json` /
+`sync-state.json`) lives alongside the audit DB under
+
+```
+$XDG_STATE_HOME/arca/stores/<store-key>/
+```
+
+— never synced. `<store-key>` is derived from the absolute path of the store the command is running
+against, so **two stores on one machine keep separate state**. That matters if you run the
+documented personal/work split: before 0.8.1 all of this was shared, so a `sync` against your work
+store reconciled it against your personal store's backend and replaced its contents, and the
+second store's legitimately lower generation tripped the rollback warning against the first
+store's high-water mark.
+
+Two entries are deliberately **not** per store:
+
+- **`$XDG_STATE_HOME/arca/machine-id`** identifies this *machine* to escrow. Keying it per store
+  would fork one machine into several escrow identities, each with its own segment sequence.
+- **`$ARCA_AUDIT`**, when you set it. The default audit DB is per store, because two stores sharing
+  one DB interleave their hash chains and `arca log --verify` on either reads the other's events as
+  its own. Setting `ARCA_AUDIT` explicitly is how you opt into one shared log anyway.
+
+  **One restriction:** if arca detects an AI agent and `$ARCA_AUDIT` points anywhere other than the
+  store's own audit DB, the command is refused. An agent controls its own environment, so an
+  honoured redirect would hand it an unread log *and* a fresh rate-limit window on every secret —
+  the audit log is what the rate limit counts. This is the one place agent detection alone is the
+  trigger, without the controlling-terminal hatch that `ARCA_STRICT_AUDIT=0` and `get --no-log`
+  use: an agent running under a pty has a terminal, and a hatch here would return the bypass.
+  Nothing changes for an operator, headless or not. If a human's shell exports an agent marker
+  (`AI_AGENT`, `CLAUDECODE`, …), unset it for that command; the refusal names the expected path.
+
+**Upgrading:** the first arca command after the upgrade moves the existing flat state into the
+per-store directory for whichever store it is running against, once. Nothing is copied and nothing
+is deleted. If you have a second store, it starts with empty state — that is the fix working, and
+`arca doctor` reports which store adopted the shared state so the empty grants list is explained
+rather than mysterious. If it is really the same store under a new path, move the directory
+`arca doctor` names to the one it reports for the current store.
 
 ### AI-agent detection
 

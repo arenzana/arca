@@ -53,6 +53,75 @@ All notable changes to arca are documented here. The format follows
   same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
   the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
   a hosted dnf/apt repo remains a possible follow-up.
+- **`--allow-empty` on `set`, `rotate` and `import`.** Storing an empty value is now refused by
+  default, because the overwhelmingly common cause is a failing producer in a pipeline
+  (`vault read … | arca set PRODKEY`) rather than an intent to store nothing. Pass
+  `--allow-empty` when the empty value is deliberate. Whitespace is a value, not an absence: a
+  single space still stores.
+
+### Changed
+- **Local state is now kept per store, under `$XDG_STATE_HOME/arca/stores/<store-key>/`.** The
+  sync config and cursor, the rollback high-water mark, grants, handles, the canary registry, the
+  escrow cursor, the audit DB and the session signing keys were shared by every store on a machine.
+  Running two stores — the documented personal/work split, one `ARCA_STORE` away — meant a `sync`
+  against store B reconciled it against store A's backend and replaced its contents, and B's
+  legitimately lower generation tripped the rollback warning against A's high-water mark. The
+  directory name is derived from the store's absolute path; `machine-id` deliberately stays shared,
+  because it identifies the machine to escrow rather than the store.
+
+  The first command after upgrading moves the existing state into the per-store directory for the
+  store it is running against, once. Nothing is copied and nothing is deleted, and a failure warns
+  rather than taking the command down. A *second* store starts with empty state — that is the fix —
+  and `arca doctor` gains a `state-dir` check that names which store adopted the shared state, so
+  an unexpectedly empty grants list is explained rather than mysterious. `$ARCA_AUDIT` still wins
+  when set, which is how you point several stores at one audit log deliberately.
+
+### Fixed
+- **A sync can no longer lose a concurrent local write.** `arca sync` did its network work while
+  holding no lock and then committed a decision computed *before* that network round trip, so a
+  `rm` or `rotate` landing in that window was silently overwritten by the pulled payload — a
+  removed secret came back and the store looked healthy afterwards. The sync is now split in two:
+  an unlocked phase that writes nothing and does all the network work and refusals, and a locked
+  phase that re-reads the local store and cursor, compares them byte-for-byte against the
+  snapshot the decision rests on, and only then commits. A change in that window restarts the
+  sync; sustained contention reports "run it again" after three attempts rather than committing
+  anything. No backend call is made while the store lock is held, so a slow backend can never
+  delay an incident-response command. Opportunistic auto-sync never waits for the lock: it
+  checks for a concurrent writer before going to the network and skips silently, so an open
+  `arca edit` session costs the next command nothing — the one exception being a push that has
+  already reached the remote, which always records its cursor because failing to would surface
+  later as a conflict that isn't one.
+- **`arca disable` now also stops MCP handles minted before it ran.** The handle path skips
+  `gate()` (a handle *replaces* grant and approval) and had lost the `Disabled` check with it, so
+  the kill switch closed six access paths and not the one an agent was already holding. The check
+  is at *use* time, which is the load-bearing part — a handle is minted before an incident and
+  `disable` is thrown during one. Handles go inert rather than being revoked, so `enable` restores
+  the pre-incident state instead of forcing a re-issue.
+- **An empty stdin no longer destroys a stored secret.** `arca set NAME` with a producer that
+  failed stored an empty value over the real one and exited 0, with no undo — the store keeps only
+  the current value. See `--allow-empty` above.
+
+### Security
+- **An AI agent can no longer redirect its own audit log.** `$ARCA_AUDIT` was honoured
+  unconditionally, and an agent controls its own environment — so pointing it at a scratch file
+  bought the agent a log nobody reads, a *fresh rate-limit window on every secret* (the audit log
+  is the rate counter), and a canary registry whose trips land where the operator never looks,
+  while `arca log`, `arca canary --list` and `arca doctor` stayed clean against the real DB.
+  A command now **refuses to run** when an agent is detected and `$ARCA_AUDIT` resolves to
+  anything other than that store's own audit DB. It refuses rather than ignoring the variable:
+  falling back to the real log silently would leave the agent believing it is unaudited and the
+  operator holding a log that contradicts the environment they can see.
+
+  Unchanged for everyone else: `$ARCA_AUDIT` remains the documented way for an *operator* to point
+  several stores at one shared log, with or without a terminal, so scripts and CI are unaffected.
+  Setting it to the path arca would have used anyway is not a redirection and is not refused.
+- **A canary trip that cannot be recorded now blocks the access.** `tripCanary` discarded the
+  audit write's error, which made the tripwire the one event in arca that was not fail-closed: a
+  caller who had already broken the audit DB could take a decoy and leave no trace but a line on
+  the stderr it was reading itself. Tripping still does **not** block the access when the trip
+  records normally — the value is fake, and letting the caller take it is what keeps the trap
+  useful. Both access paths carry the rule, including MCP `run_with_handle`, which bypasses the
+  policy gate and so had to be fixed separately.
 
 ## [0.7.0] - 2026-07-09
 

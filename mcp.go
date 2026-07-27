@@ -337,9 +337,12 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	// but a canary trips, the kill switch and expiry are refused, and a rate limit still applies.
 	// This mirrors gate() (main.go) in the same order, deliberately: the checks a handle skips are
 	// the ones a handle replaces (grant, approval), and nothing else. See gate() before adding
-	// anything here.
+	// anything here. A canary trip that cannot be recorded fails the call (D2) — this path bypasses
+	// gate(), so it carries that fail-closed rule itself rather than inheriting it.
 	if isCanary(h.Secret, sec) {
-		tripCanary(h.Secret)
+		if err := tripCanary(h.Secret); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 	}
 	// A handle is minted before an incident; `arca disable` happens during one. Checking Disabled
 	// only at mint time would therefore close nothing — the capability an operator is racing to

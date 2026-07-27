@@ -35,7 +35,7 @@ type grantFile struct {
 	Grants map[string]Grant `json:"grants"` // keyed by secret name; one active grant per secret
 }
 
-func grantsPath() string { return filepath.Join(stateDir(), "grants.json") }
+func grantsPath() string { return filepath.Join(storeStateDir(), "grants.json") }
 
 func loadGrants() (map[string]Grant, error) {
 	b, err := os.ReadFile(grantsPath()) //#nosec G304 -- path derives from the operator's state dir, not untrusted input

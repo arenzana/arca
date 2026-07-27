@@ -27,7 +27,7 @@ type Handle struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func handlesPath() string { return filepath.Join(stateDir(), "handles.json") }
+func handlesPath() string { return filepath.Join(storeStateDir(), "handles.json") }
 
 type handleFile struct {
 	Handles map[string]Handle `json:"handles"`

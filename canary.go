@@ -22,7 +22,7 @@ import (
 // value is an ordinary-looking store entry; only the "this is a canary" designation is kept private
 // here. See SEC-04. The pre-0.6.2 store flag (store.Secret.Canary) is still honored on read for
 // backward compatibility (see isCanary), but new canaries are never written to the store.
-func canariesPath() string { return filepath.Join(stateDir(), "canaries.json") }
+func canariesPath() string { return filepath.Join(storeStateDir(), "canaries.json") }
 
 type canaryFile struct {
 	Canaries []string `json:"canaries"`

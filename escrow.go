@@ -47,8 +47,12 @@ type escrowState struct {
 	PrevAnchor string `json:"prev_anchor,omitempty"`
 }
 
-func escrowStatePath() string { return filepath.Join(stateDir(), "escrow-state.json") }
-func machineIDPath() string   { return filepath.Join(stateDir(), "machine-id") }
+func escrowStatePath() string { return filepath.Join(storeStateDir(), "escrow-state.json") }
+
+// machineIDPath stays flat in stateDir(), NOT in the per-store dir (D4). It identifies this
+// machine to escrow; keying it per-store would fork one machine into several escrow identities,
+// each with its own segment sequence, and the truncation check compares sequences per machine.
+func machineIDPath() string { return filepath.Join(stateDir(), "machine-id") }
 
 func loadEscrowState() escrowState {
 	var st escrowState
@@ -61,6 +65,14 @@ func loadEscrowState() escrowState {
 func saveEscrowState(st escrowState) error {
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
+		return err
+	}
+	// Create our own parent, as every other state-dir writer does (saveGrants, saveHandles,
+	// saveCanaries, recordStoreGeneration, audit.Open). Before D4 this rode on machineID()
+	// having already created the flat state dir; once the cursor moved into the per-store dir
+	// that stopped being true, and a failed cursor write means escrow re-uploads the same
+	// segment and the create-only backend refuses it.
+	if err := os.MkdirAll(filepath.Dir(escrowStatePath()), 0o700); err != nil {
 		return err
 	}
 	tmp := escrowStatePath() + ".tmp"

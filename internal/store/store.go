@@ -89,6 +89,21 @@ func Load(path string) (*Store, error) {
 		}
 		return nil, err
 	}
+	return Decode(path, b)
+}
+
+// Decode parses store bytes that the caller has already read, applying exactly the validation
+// and schema migration Load applies. path is used for error messages and to bind the returned
+// store to a file for Save; the file is never read here.
+//
+// It exists so a caller that needs BOTH the raw bytes and the parsed store gets them from one
+// read of one file. `sync` is that caller: it seals the raw bytes into the pushed envelope and
+// decides push-vs-pull from the parsed generation, and reading twice let those two come from
+// different generations if a concurrent command wrote in between.
+func Decode(path string, b []byte) (*Store, error) {
+	if int64(len(b)) > maxStoreBytes {
+		return nil, fmt.Errorf("store %s is %d bytes, exceeding the %d-byte limit", path, len(b), int64(maxStoreBytes))
+	}
 	var s Store
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("parse store %s: %w", path, err)

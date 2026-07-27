@@ -70,8 +70,11 @@ func sandbox(t *testing.T) box {
 	d := t.TempDir()
 	return box{dir: d, env: []string{
 		"ARCA_STORE=" + filepath.Join(d, "store.json"),
-		"ARCA_AUDIT=" + filepath.Join(d, "audit.db"),
 		"ARCA_IDENTITY=" + filepath.Join(d, "id.txt"),
+		// $ARCA_AUDIT is deliberately NOT set: since D4 the audit DB lives under the per-store
+		// state dir, so XDG_STATE_HOME already sandboxes it, and an $ARCA_AUDIT override plus an
+		// agent marker is the R4 exploit the binary now refuses. Use b.auditDB(t) to locate it.
+		"ARCA_AUDIT=",
 		"XDG_STATE_HOME=" + filepath.Join(d, "state"), // keep grants.json + session keys out of $HOME
 		// Clear AI-agent detection so the suite is deterministic no matter what launched it: running
 		// e2e from inside an agent session (e.g. CLAUDECODE set) must not make the arca subprocess
@@ -143,6 +146,23 @@ func (b box) must(t *testing.T, stdin string, args ...string) string {
 		t.Fatalf("arca %v exited %d\nstderr: %s", args, code, errOut)
 	}
 	return out
+}
+
+// auditDB locates this box's audit DB. The box does not set $ARCA_AUDIT, so the path is the D4
+// default — $XDG_STATE_HOME/arca/stores/<key>/audit.db, where <key> is a hash of the resolved
+// store path that this package (a black-box caller of the binary) cannot compute. A box has
+// exactly one store, so a glob is unambiguous, and requiring exactly one match means a future
+// change to the layout fails this helper loudly instead of silently matching nothing.
+func (b box) auditDB(t *testing.T) string {
+	t.Helper()
+	m, err := filepath.Glob(filepath.Join(b.dir, "state", "arca", "stores", "*", "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 1 {
+		t.Fatalf("want exactly one audit db under %s, found %v", b.dir, m)
+	}
+	return m[0]
 }
 
 // assertControlPlaneRefused asserts that one of the six T11/T12-anchored commands is refused, in
@@ -301,7 +321,7 @@ func TestFailClosedAudit(t *testing.T) {
 	b.must(t, "plain", "set", "PLAIN")
 
 	// corrupt the audit db
-	if err := os.WriteFile(filepath.Join(b.dir, "audit.db"), []byte("not a database"), 0o600); err != nil {
+	if err := os.WriteFile(b.auditDB(t), []byte("not a database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// default is fail-closed: get aborts when it can't audit

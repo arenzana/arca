@@ -248,12 +248,12 @@ func TestPushStoreCASRace(t *testing.T) {
 	if _, err := fake.Push(context.Background(), []byte("interloper"), head.Generation+1, head); err != nil {
 		t.Fatal(err)
 	}
-	s, raw, err := localStoreForSync()
+	snap, err := readLocalSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Generation += 5 // pretend a local mutation targeting a new generation
-	if err := pushStore(context.Background(), fake, s, raw, head, loadSyncState(), false); err == nil || !strings.Contains(err.Error(), "reconcile") {
+	snap.s.Generation += 5 // pretend a local mutation targeting a new generation
+	if err := pushStore(context.Background(), fake, snap, head, syncOpts{}); err == nil || !strings.Contains(err.Error(), "reconcile") {
 		t.Fatalf("stale-prev push = %v, want a CAS reconcile hint", err)
 	}
 }
@@ -776,9 +776,9 @@ func TestPushStoreCASReconcileHint(t *testing.T) {
 	if _, err := fake.Push(context.Background(), []byte("other"), head.Generation+1, head); err != nil {
 		t.Fatal(err)
 	}
-	s, raw, _ := localStoreForSync()
-	s.Generation += 3
-	err := pushStore(context.Background(), fake, s, raw, head, loadSyncState(), false)
+	snap, _ := readLocalSnapshot()
+	snap.s.Generation += 3
+	err := pushStore(context.Background(), fake, snap, head, syncOpts{})
 	if err == nil || !strings.Contains(err.Error(), "reconcile") {
 		t.Fatalf("stale push should hint reconcile, got: %v", err)
 	}
@@ -872,7 +872,7 @@ func TestSyncQuietSuppressesInformationalOutput(t *testing.T) {
 	runArca(t, "", "sync") // now L == S == R: the "nothing to do" branch
 
 	verbose := captureStderr(t, func() {
-		if err := runSyncCtx(context.Background(), fake, false, false, false, false); err != nil {
+		if err := runSyncCtx(context.Background(), fake, syncOpts{}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -881,7 +881,7 @@ func TestSyncQuietSuppressesInformationalOutput(t *testing.T) {
 	}
 
 	quiet := captureStderr(t, func() {
-		if err := runSyncCtx(context.Background(), fake, false, false, false, true); err != nil {
+		if err := runSyncCtx(context.Background(), fake, syncOpts{quiet: true}); err != nil {
 			t.Fatal(err)
 		}
 	})
