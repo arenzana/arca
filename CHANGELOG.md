@@ -42,6 +42,27 @@ All notable changes to arca are documented here. The format follows
   the value first, so that path is destroy-and-downgrade and audited rather than silent escalation.
   See T11/T12/T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the residuals.
 
+### Fixed
+- **The MCP exec tools no longer let an agent exhaust arca's memory or wedge it indefinitely.**
+  `run_with_secrets` and `run_with_handle` capture their child's output to return it in the tool
+  result, and that capture had no ceiling and the child no deadline — so an agent-chosen `yes`,
+  `cat /dev/urandom`, or simply a hung command could grow arca's heap without limit or block a
+  worker forever. Output is now capped per stream (1 MiB, `ARCA_MCP_MAX_OUTPUT`) with an explicit
+  truncation notice in the result, and the child gets a wall-clock deadline (120s,
+  `ARCA_MCP_TIMEOUT`) after which it is killed and the call reported as an error. Both overrides
+  are **clamped** to a range rather than honoured verbatim — an agent that owns the environment
+  must not be able to spell "unlimited". `arca exec` is unaffected: it streams to stdout and was
+  never unbounded. The cap deliberately sits *downstream* of redaction, so truncation can only
+  ever discard bytes that already passed the redact writer's split-value hold-back.
+- **arca disables core dumps at startup** (`RLIMIT_CORE` → 0, Unix), for every command rather
+  than just `arca mcp`. Any command that touches a value holds it in cleartext on the heap:
+  `get`/`inject` decrypt to stdout, `exec` and the MCP tools additionally hold it in the redact
+  patterns and the child's environment, and `reencrypt` holds the whole store at once. A crash
+  dump on a host that collects them would contain all of it, defeating the disclosure controls
+  applied above. The MCP server is the sharpest case — it holds injected values for its whole
+  lifetime and the agent picks the command that can crash it — but it is not a special case.
+  Windows has no per-process equivalent; that remains machine-wide WER policy.
+
 ### Added
 - **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push
   and PR. arca is a secrets manager: a test fixture, doc example, or recipe carrying a real
