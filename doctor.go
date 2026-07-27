@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -260,8 +261,42 @@ func checkSync(_ *doctorEnv) []finding {
 	return []finding{f("sync", sevOK, "sync configured", detail, "")}
 }
 
+// checkStateDir reports which store owns this machine's state, per D4.
+//
+// It exists for one specific confusing moment: an operator with two stores on one machine runs a
+// command against the second one and finds no grants, no sync config, and a store the rollback
+// warning calls fresh. That is correct behaviour — the pre-D4 shared state was adopted by whichever
+// store ran first — but without this check the only visible symptom is "my state vanished", which
+// invites exactly the wrong repair.
+func checkStateDir(_ *doctorEnv) []finding {
+	dir := storeStateDir()
+	switch owner := adoptedBy(); {
+	case owner != "" && owner != absStorePath():
+		// Another store claimed the machine's pre-per-store state, so this one started clean. LOW,
+		// not MED: that is the correct outcome for a second store, and this check is here to
+		// explain a surprising symptom, not to raise an alarm about a working configuration.
+		// Checked before the leftovers case because leftovers in the shared dir belong to the
+		// store named here, and telling the wrong operator to move them would be worse than silence.
+		return []finding{f("state-dir", sevLow, "this store did not inherit the machine's shared state",
+			fmt.Sprintf("this store's state dir is fresh at %s; the machine's earlier shared state belongs to %s", dir, owner),
+			"expected for a second store on one machine — grants, sync config and the rollback mark are per-store now; if this is the same store under a new path, move that store's dir to "+dir)}
+
+	case anyLegacyState():
+		// Files this store owns are sitting in the shared dir and nothing is reading them: either
+		// the move has not run, or it ran and could not move everything (it warns per entry and
+		// keeps going, so a partial adoption leaves the claim in place and some entries flat).
+		return []finding{f("state-dir", sevMed, "pre-per-store state files are still in the shared state dir",
+			fmt.Sprintf("%s holds %s, which this store no longer reads (it reads %s)",
+				stateDir(), strings.Join(legacyStateLeftovers(), ", "), dir),
+			"the move did not complete — rerun any arca command and check stderr for the reason, or move the listed entries into the dir above by hand")}
+
+	default:
+		return []finding{f("state-dir", sevOK, "state dir is keyed to this store", dir, "")}
+	}
+}
+
 var doctorChecks = []func(*doctorEnv) []finding{
-	checkIdentity, checkReadership, checkSensitive, checkRotationExpiry, checkAgentExposure, checkAudit, checkSync,
+	checkIdentity, checkReadership, checkSensitive, checkRotationExpiry, checkAgentExposure, checkAudit, checkSync, checkStateDir,
 }
 
 func runDoctor() []finding {

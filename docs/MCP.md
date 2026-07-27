@@ -34,13 +34,41 @@ an agent accesses secrets through controlled, **audited tools** instead of raw s
 | `list_secrets` | Names + metadata (tags, policy, last read) — **never values** |
 | `show_secret` | Metadata for one secret |
 | `run_with_secrets` | Run a command with named secrets injected as env; returns the command's **output** (redacted), not the values |
-| `run_with_handle` | Run a command via an opaque `hdl_…` handle — uses a secret **without its name or value**, enforcing the handle's command scope and expiry. A handle bypasses the grant/approval gates, so it's the operator's pre-authorization: `arca handle create` is operator-only (refused for a detected agent) and needs `--override` to mint one for a `--require-approval`/`--require-grant` secret |
+| `run_with_handle` | Run a command via an opaque `hdl_…` handle — uses a secret **without its name or value**, enforcing the handle's command scope and expiry. A handle bypasses the grant/approval gates, so it's the operator's pre-authorization: `arca handle create` is operator-only (refused for a detected agent) and needs `--override` to mint one for a `--require-approval`/`--require-grant` secret. What a handle does **not** bypass: a canary still trips, and a disabled or expired secret is still refused — `arca disable` stops handles minted before you disabled it |
 | `read_secret` | Reveal a value (refused for `--no-print`, requires `--require-approval` confirmation, audited) — the escape hatch |
 | `audit_log` | Recent access events (a handle-issued event's secret name is masked to the handle id, so it can't map a handle back to the secret it wraps) |
 
 The intended flow is *use, don't reveal*: an agent calls `run_with_secrets` (or `run_with_handle`)
 so a command can use a secret, reserving `read_secret` for when the value genuinely must enter the
 model context.
+
+### Resource bounds on the exec tools
+
+`run_with_secrets` and `run_with_handle` let the **agent** choose the command. Unlike `arca exec`,
+which streams a child's output straight to your terminal, these tools have to hold that output in
+memory to return it in the tool result — so both the memory and the lifetime of an agent-chosen
+command are bounded:
+
+| Bound | Default | Override | Ceiling |
+|---|---|---|---|
+| Captured output, per stream | 1 MiB | `ARCA_MCP_MAX_OUTPUT` (bytes) | 16 MiB (floor 4 KiB) |
+| Child wall-clock deadline | 120s | `ARCA_MCP_TIMEOUT` (`90s`, `2m`, or bare seconds) | 600s (floor 1s) |
+
+Output past the cap is discarded and the result carries an explicit `[arca: output truncated …]`
+notice, so an agent is never silently handed a partial answer as if it were complete. A command
+that outlives its deadline is killed and reported as an error rather than a mysterious exit code.
+
+Both overrides are **clamped to their range, never honoured verbatim** — a value above the ceiling
+becomes the ceiling. This is deliberate and follows the same reasoning as `ARCA_AGENT_STRICT`:
+when the agent is the one launching `arca mcp`, the agent owns the environment, so a knob that
+could be set to "unlimited" would be a documented way to remove the bound rather than tune it.
+
+arca drops its core-dump limit (`RLIMIT_CORE`) to 0 at startup on Unix — for every command, not
+just this server. The MCP server is the sharpest case, since it holds injected secret values in
+cleartext for its whole lifetime and the agent picks the command that can crash it, but any
+command that touches a value has the same exposure. Windows has no equivalent per-process control
+— suppressing a Windows Error Reporting dump is machine-wide policy (the WER `LocalDumps` keys),
+so on Windows this is an operator/deployment step rather than something arca can do for you.
 
 ## Deny-by-default agent exposure (`--strict`)
 

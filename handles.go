@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/arenzana/arca/internal/atomicfile"
 )
 
 // A Handle is an opaque capability token for an AI agent: it lets the agent *use* a secret through
@@ -27,7 +29,7 @@ type Handle struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func handlesPath() string { return filepath.Join(stateDir(), "handles.json") }
+func handlesPath() string { return filepath.Join(storeStateDir(), "handles.json") }
 
 type handleFile struct {
 	Handles map[string]Handle `json:"handles"`
@@ -52,18 +54,11 @@ func loadHandles() (map[string]Handle, error) {
 }
 
 func saveHandles(h map[string]Handle) error {
-	if err := os.MkdirAll(filepath.Dir(handlesPath()), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(handleFile{Handles: h}, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := handlesPath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil { //#nosec G304 -- operator state dir
-		return err
-	}
-	return os.Rename(tmp, handlesPath())
+	return atomicfile.Write(handlesPath(), b, 0o600)
 }
 
 func newHandleID() (string, error) {
@@ -158,6 +153,13 @@ func newHandleCreate() *cobra.Command {
 			sec := s.Secrets[name]
 			if sec == nil {
 				return fmt.Errorf("no such secret: %s", name)
+			}
+			// A disabled secret is refused on every use path, so a handle minted for one is dead on
+			// arrival. Say so here rather than handing the operator a capability that silently does
+			// nothing. This is the convenience, not the control — the control is the use-time check
+			// in run_with_handle, because `disable` normally happens *after* the handle exists.
+			if sec.Disabled {
+				return fmt.Errorf("%s is disabled; `arca enable %s` first (a handle for a disabled secret is refused at use)", name, name)
 			}
 			// run_with_handle bypasses grant/approval, so minting a handle for such a secret converts
 			// "authorize/approve each use" into "approve once, use freely for the TTL". Make that an

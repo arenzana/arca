@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
@@ -134,6 +136,20 @@ func newVersion() *cobra.Command {
 }
 
 func main() {
+	// Every command that touches a value holds it in cleartext on the heap for the life of the
+	// process: `get` and `inject` decrypt to stdout, `exec` and the MCP tools additionally keep
+	// the value in redactPattern and in the child's environment, and `reencrypt` holds every
+	// secret in the store at once. A core dump on a host that collects them would contain all of
+	// it, defeating every disclosure control arca applies above. Do this before the command runs,
+	// once, for the whole binary rather than per-command — there is no command for which leaving
+	// core dumps enabled is the better default, and a per-command allow-list is a branch to get
+	// wrong later.
+	//
+	// Best-effort: a host that refuses is not a reason to refuse service, but the operator should
+	// know the exposure is still open.
+	if err := disableCoreDumps(); err != nil {
+		fmt.Fprintf(os.Stderr, "arca: warning: could not disable core dumps (%v) — a crash dump could contain secret values\n", err)
+	}
 	// Cobra prints the error itself (SilenceErrors=false); we just set the exit code.
 	if err := newRoot().Execute(); err != nil {
 		os.Exit(1)
@@ -163,6 +179,15 @@ func newRoot() *cobra.Command {
 	}
 	root.AddCommand(cmds...)
 	registerCompletions(cmds)
+	// The audit-redirect refusal (R4/D2) runs before any command's work, so a refused command
+	// has not already written the store or disclosed a secret. Root is the only place in the tree
+	// that sets a persistent pre-run hook: cobra runs the nearest one and stops, so a hook added
+	// to a subcommand later would silently shadow this one. If that ever becomes necessary, the
+	// subcommand's hook must call checkAuditRedirect() itself.
+	//
+	// `arca --version` and `arca --help` return inside cobra before persistent hooks run, which is
+	// why they stay usable under the refusal. That is fine: neither reads a secret or the log.
+	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error { return checkAuditRedirect() }
 	// Opportunistic auto-sync runs strictly AFTER a command's real work — never in an
 	// access path — and only when enabled (`arca sync auto on` / ARCA_SYNC_AUTO=1).
 	// The sync command itself is excluded (it already synced, or failed loudly).
@@ -204,12 +229,64 @@ func storePath() string {
 	return filepath.Join(configDir(), "store.json")
 }
 
+// defaultAuditPath is where the audit DB lives when $ARCA_AUDIT is not set: inside the active
+// store's state dir, because it is per-store data. Two stores sharing one audit DB interleave
+// their chains, so `log --verify` on either reads the other's events as its own.
+//
+// Calling this resolves the store state dir, which triggers one-time legacy adoption (D4).
+// checkAuditRedirect deliberately calls it only after the cheap env checks have already decided
+// the answer might be "refuse", so an ordinary command never pays for it twice and a *refused*
+// command does not silently perform a state migration on its way out.
+func defaultAuditPath() string { return filepath.Join(storeStateDir(), "audit.db") }
+
 // auditPath is the local SQLite audit DB (do not sync). Override with $ARCA_AUDIT.
+//
+// $ARCA_AUDIT wins, which is how an operator deliberately points several stores at one log — but
+// only for a caller that is not a detected AI agent. See checkAuditRedirect.
 func auditPath() string {
 	if p := os.Getenv("ARCA_AUDIT"); p != "" {
 		return p
 	}
-	return filepath.Join(stateDir(), "audit.db")
+	return defaultAuditPath()
+}
+
+// checkAuditRedirect refuses the whole command when a detected agent has pointed $ARCA_AUDIT at
+// anything other than this store's own audit DB (finding R4, ruling D2).
+//
+// The exploit it closes: auditPath() honours the environment unconditionally, and an agent
+// controls its own environment. Redirecting the DB to a scratch file gives the agent an audit log
+// nobody reads, an empty rate-limit window on every secret (checkRateLimit counts events in *that*
+// DB), and a canary registry whose trips land somewhere the operator never looks — all while
+// `arca log`, `arca canary --list` and `arca doctor` stay clean against the real log.
+//
+// It refuses rather than ignoring the variable and falling back to the real DB. Ignoring is the
+// worse failure: the agent believes it is unaudited and behaves accordingly, while the operator
+// gets a log that silently contradicts the environment they can see. Refusing is the fail-closed
+// direction and it is the direction that is visible from both sides.
+//
+// Deliberately NOT anchored to a controlling terminal the way the lax-ARCA_STRICT_AUDIT hatch is
+// (SEC-06). strictAudit() grants the TTY hatch only to a caller that is *not* a detected agent —
+// "an AI agent must not be able to weaken fail-closed auditing on itself" — and redirecting the
+// audit log is precisely that. An agent under a pty (tmux, a pty-allocating harness) has a
+// controlling terminal, so a TTY hatch here would hand the exploit straight back. The escape for a
+// human whose shell happens to export an agent marker is to unset the marker, which the error says.
+func checkAuditRedirect() error {
+	p := os.Getenv("ARCA_AUDIT")
+	if p == "" {
+		return nil // not overridden; nothing to refuse
+	}
+	id := detectIdentity()
+	if id.Agent == "" {
+		return nil // an operator may point several stores at one log
+	}
+	// Only now is the state dir worth resolving: both checks above are pure env reads.
+	if sameFile(p, defaultAuditPath()) {
+		return nil // pointed at the default anyway — no redirection, nothing gained
+	}
+	// The agent name and the path both come from the environment the agent controls, and this
+	// string lands on the operator's terminal — sanitize before writing (SEC-07).
+	return fmt.Errorf("refusing to run: $ARCA_AUDIT points the audit log at %s, but this process is detected as the agent %q — an agent must not redirect its own audit log. Unset $ARCA_AUDIT (the log for this store lives in %s), or unset the agent marker if you are a human",
+		sanitize(p), sanitize(id.Agent), sanitize(defaultAuditPath()))
 }
 
 // identityPath is the age private key. It defaults to reusing the caller's existing
@@ -258,7 +335,7 @@ var curStore *store.Store
 var loadedGeneration = -1
 
 // storeGenPath is the local high-water mark of the store generation (state dir, never synced).
-func storeGenPath() string { return filepath.Join(stateDir(), "store.gen") }
+func storeGenPath() string { return filepath.Join(storeStateDir(), "store.gen") }
 
 // storeGenHWM reads the local high-water mark without advancing it (0 if unset). Used as a
 // durable rollback floor on pull (SEC-35): the newest store generation this machine has ever
@@ -273,8 +350,16 @@ func storeGenHWM() int {
 
 func warnIfStoreRolledBack(gen int) {
 	if regressed, prev := recordStoreGeneration(gen); regressed {
-		fmt.Fprintf(os.Stderr, "arca: warning: the store looks rolled back (generation %d < last seen %d) — a rotated or deleted secret may have been resurrected; check the store's git history\n", gen, prev)
+		warnStoreRolledBack(gen, prev)
 	}
+}
+
+// warnStoreRolledBack emits the SEC-14 rollback notice. It is split out of
+// warnIfStoreRolledBack so a caller that must not write can still warn: the sync snapshot is
+// taken outside the store lock (D1 invariant I2), and recordStoreGeneration writes store.gen.
+// The high-water mark advances later, in sync's commit path, under the lock.
+func warnStoreRolledBack(gen, prev int) {
+	fmt.Fprintf(os.Stderr, "arca: warning: the store looks rolled back (generation %d < last seen %d) — a rotated or deleted secret may have been resurrected; check the store's git history\n", gen, prev)
 }
 
 // recordStoreGeneration compares gen against the local high-water mark, advances the mark when gen
@@ -290,12 +375,10 @@ func recordStoreGeneration(gen int) (regressed bool, prev int) {
 		return true, hwm
 	}
 	if gen > hwm {
-		if err := os.MkdirAll(filepath.Dir(storeGenPath()), 0o700); err == nil {
-			tmp := storeGenPath() + ".tmp"
-			if os.WriteFile(tmp, []byte(strconv.Itoa(gen)), 0o600) == nil { //#nosec G304 -- our own state-dir path
-				_ = os.Rename(tmp, storeGenPath())
-			}
-		}
+		// Deliberately best-effort, including the parent-dir fsync inside the helper: this is a
+		// warning heuristic, and losing the high-water mark to a crash costs a missed warning,
+		// never a command. Every other state writer treats the same error as fatal.
+		_ = atomicfile.Write(storeGenPath(), []byte(strconv.Itoa(gen)), 0o600)
 	}
 	return false, hwm
 }
@@ -583,20 +666,52 @@ func readAllLimited(r io.Reader, max int64) ([]byte, error) {
 	return b, nil
 }
 
-func readValue(prompt string) ([]byte, error) {
+// errEmptyValue reports that the value read was empty and the caller did not opt into that.
+// Callers translate it into a message naming the secret, because "empty" means something very
+// different for a new secret than for one that already holds a value.
+var errEmptyValue = errors.New("empty value")
+
+// readValue reads a secret value from the terminal (hidden) or from stdin.
+//
+// An empty read is refused unless allowEmpty. The failure it guards is the one that costs a
+// secret: `producer | arca set PRODKEY` where the producer fails and prints nothing. Stdin
+// closes empty, arca reports success, and the previous ciphertext is gone — there is no undo,
+// because the store only keeps the current value. Refusing costs a flag; storing costs the
+// secret. allowEmpty is a required parameter rather than an option struct so a future caller
+// has to decide rather than inherit the unsafe default by omission.
+func readValue(prompt string, allowEmpty bool) ([]byte, error) {
+	var b []byte
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprint(os.Stderr, prompt)
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		p, err := term.ReadPassword(int(os.Stdin.Fd()))
 		fmt.Fprintln(os.Stderr)
-		return b, err
+		if err != nil {
+			return nil, err
+		}
+		b = p
+	} else {
+		p, err := readAllLimited(os.Stdin, maxInputBytes)
+		if err != nil {
+			return nil, err
+		}
+		// Strip a single trailing newline (from `echo`/editors) but preserve internal newlines,
+		// so multi-line secrets like PEM keys round-trip intact.
+		b = []byte(strings.TrimRight(string(p), "\r\n"))
 	}
-	b, err := readAllLimited(os.Stdin, maxInputBytes)
-	if err != nil {
-		return nil, err
+	if len(b) == 0 && !allowEmpty {
+		return nil, errEmptyValue
 	}
-	// Strip a single trailing newline (from `echo`/editors) but preserve internal newlines,
-	// so multi-line secrets like PEM keys round-trip intact.
-	return []byte(strings.TrimRight(string(b), "\r\n")), nil
+	return b, nil
+}
+
+// emptyValueError explains a refused empty read in terms of what it would have done: replacing
+// a stored value is destructive and unrecoverable, creating an empty one is merely useless.
+func emptyValueError(name string, replacing bool) error {
+	if replacing {
+		return fmt.Errorf("refusing to store an empty value for %s: it would destroy the stored secret and there is no undo "+
+			"(a failed upstream command in a pipe reads as empty stdin); pass --allow-empty if you mean it", name)
+	}
+	return fmt.Errorf("refusing to store an empty value for %s: pass --allow-empty if you mean it", name)
 }
 
 func contains(ss []string, x string) bool {
@@ -722,12 +837,19 @@ func approverWho() string {
 // the rest (get/env/inject, MCP read_secret).
 func gate(sec *store.Secret, name, cmdline string) error {
 	// A canary is a decoy that should never legitimately be used: any access through this gate is
-	// a tripwire. Alert and record it, but let the access proceed — the value is fake, and letting
+	// a tripwire. Alert and record it, and let the access proceed — the value is fake, and letting
 	// the caller take it keeps the trap useful (an agent exfiltrating it doesn't learn it was caught).
 	// The designation lives in the local registry, not the synced store (SEC-04); isCanary also
 	// honors the legacy pre-0.6.2 store flag.
+	//
+	// The one thing that does block is a trip that could not be RECORDED (D2): an unrecordable
+	// tripwire is not a tripwire, and every other access path in arca is already fail-closed on its
+	// audit write. Note the ordering — the canary check runs before the Disabled and expiry
+	// refusals, so a decoy that is also disabled still records its trip before being refused.
 	if isCanary(name, sec) {
-		tripCanary(name)
+		if err := tripCanary(name); err != nil {
+			return err
+		}
 	}
 	// A disabled secret (the kill switch) is refused on every access path until re-enabled.
 	if sec.Disabled {
@@ -825,7 +947,15 @@ func parseRate(s string) (int, string, error) {
 // tripCanary records and announces that a decoy secret was used — a strong signal that something
 // is enumerating or exfiltrating secrets. The audit event (op=canary) is hash-chained and signed
 // like any other, so the trip can't be quietly scrubbed.
-func tripCanary(name string) {
+//
+// It returns an error only when the trip could not be RECORDED (R4, ruling D2). The access itself
+// stays non-blocking when a canary trips — the value is fake, and letting the caller take it is
+// what keeps the trap useful, since an agent exfiltrating a decoy does not learn it was caught.
+// Those are two different questions, and the old `_ = logAudit(...)` answered both with "carry on":
+// it made the tripwire the one event in arca that was not fail-closed, so a caller who could break
+// the audit log could trip canaries at will and leave the operator with the terminal warning as the
+// only trace — on a stderr stream that same caller reads. Callers must propagate this error.
+func tripCanary(name string) error {
 	id := detectIdentity()
 	who := id.Agent
 	if who == "" {
@@ -841,7 +971,13 @@ func tripCanary(name string) {
 		fmt.Fprintf(os.Stderr, " (session %s)", sanitize(shortID(id.Session)))
 	}
 	fmt.Fprintln(os.Stderr, " — this secret is a decoy and should never be used.")
-	_ = logAudit("canary", name, "") // best-effort: never block the access on the alert itself
+	// Fail-closed on the RECORD, not on the trip: logAudit already swallows the error under
+	// best-effort auditing (a non-agent human at a terminal who set ARCA_STRICT_AUDIT=0), so this
+	// inherits exactly the strictness the rest of the audit path has, no new policy of its own.
+	if err := logAudit("canary", name, ""); err != nil {
+		return fmt.Errorf("canary %s tripped but the trip could not be recorded: %w", sanitize(name), err)
+	}
+	return nil
 }
 
 // parseTTL parses a relative duration for --ttl. It extends Go's time.ParseDuration (ns…h)
@@ -969,7 +1105,7 @@ func newSet() *cobra.Command {
 	var tags []string
 	var desc, rotate, ttl, expiresAt string
 	var meta map[string]string
-	var noPrint, requireApproval, canary, requireGrant bool
+	var noPrint, requireApproval, canary, requireGrant, allowEmpty bool
 	var rate string
 	c := &cobra.Command{
 		Use:   "set NAME",
@@ -1001,8 +1137,14 @@ func newSet() *cobra.Command {
 				noPrint, requireApproval, requireGrant, canary, rate); err != nil {
 				return err
 			}
-			val, err := readValue("Value: ")
+			// Whether this set replaces an existing value decides how bad an empty read is, so
+			// look it up before reading rather than after.
+			replacing := s.Secrets[name] != nil
+			val, err := readValue("Value: ", allowEmpty)
 			if err != nil {
+				if errors.Is(err, errEmptyValue) {
+					return emptyValueError(name, replacing)
+				}
 				return err
 			}
 			armored, err := crypto.Encrypt(val, recips)
@@ -1098,6 +1240,7 @@ func newSet() *cobra.Command {
 	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
 	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
 	c.Flags().StringVar(&rate, "rate", "", "rate limit as N/DURATION (e.g. 10/1h); empty clears it")
+	c.Flags().BoolVar(&allowEmpty, "allow-empty", false, "permit storing an empty value (refused by default: an empty read would destroy an existing secret)")
 	return c
 }
 
@@ -1351,10 +1494,14 @@ func newRm() *cobra.Command {
 	}
 }
 
-// newDisable suspends a secret without changing its value: it stamps expiry at "now" so every
-// access path (get/exec/inject/env + MCP) refuses it, while the value and the rest of the metadata
-// are preserved. Reverse it with `enable`. This is the fast, reversible kill switch for a leak —
-// the actual token must still be revoked at its issuer; this only stops arca from handing it out.
+// newDisable suspends a secret without changing its value: it sets a dedicated Disabled flag —
+// independent of any real expiry (SEC-13) — so every access path (get/exec/inject/env + MCP,
+// including an already-minted handle) refuses it, while the value and the rest of the metadata are
+// preserved. Reverse it with `enable`. This is the fast, reversible kill switch for a leak — the
+// actual token must still be revoked at its issuer; this only stops arca from handing it out.
+//
+// Handles are made inert rather than revoked: `enable` must restore the pre-incident state exactly,
+// and destroying capabilities on the way in would make the reversal a re-issue.
 func newDisable() *cobra.Command {
 	return &cobra.Command{
 		Use:   "disable NAME",
@@ -1519,7 +1666,7 @@ func jsonScalar(rv json.RawMessage) (string, bool) {
 }
 
 func newImport() *cobra.Command {
-	var asJSON, dryRun, overwrite bool
+	var asJSON, dryRun, overwrite, allowEmpty bool
 	var prefix string
 	var tags []string
 	c := &cobra.Command{
@@ -1578,6 +1725,16 @@ func newImport() *cobra.Command {
 					skipped++
 					continue
 				}
+				// The same guard `set` and `rotate` apply, narrowed to where it is destructive:
+				// replacing a stored value with an empty one loses it and the store keeps no
+				// previous version. Creating an empty secret is merely useless, and a bare `KEY=`
+				// is an ordinary line in a real .env file — refusing those would break the common
+				// import for no safety gain — so only the overwriting case is skipped.
+				if p.val == "" && existing != nil && !allowEmpty {
+					fmt.Fprintf(os.Stderr, "skip %q: empty value would destroy the stored secret (pass --allow-empty if you mean it)\n", p.key)
+					skipped++
+					continue
+				}
 				if dryRun {
 					if existing != nil {
 						overwritten++
@@ -1630,6 +1787,7 @@ func newImport() *cobra.Command {
 	c.Flags().BoolVar(&asJSON, "json", false, `read a JSON object {"KEY":"value"} from stdin instead of dotenv lines`)
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "report what would be imported without writing anything")
 	c.Flags().BoolVar(&overwrite, "overwrite", false, "replace secrets that already exist (default: skip them)")
+	c.Flags().BoolVar(&allowEmpty, "allow-empty", false, "permit an empty value to replace an existing secret (skipped by default: it would destroy the stored value)")
 	c.Flags().StringVar(&prefix, "prefix", "", "prepend this prefix to every imported name")
 	c.Flags().StringSliceVar(&tags, "tag", nil, "tags to apply to imported secrets (repeatable or comma-separated)")
 	return c
@@ -2062,6 +2220,7 @@ func verifyLog(a *audit.Log, requireSigned bool, anchor string, remoteCheck bool
 // rotation date.
 func newRotate() *cobra.Command {
 	var rotate, ttl, expiresAt string
+	var allowEmpty bool
 	c := &cobra.Command{
 		Use:   "rotate NAME",
 		Short: "Replace an existing secret's value (keeps created_at; logs a rotation)",
@@ -2085,8 +2244,12 @@ func newRotate() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			val, err := readValue("New value: ")
+			// `rotate` only ever replaces: it has already refused a missing secret above.
+			val, err := readValue("New value: ", allowEmpty)
 			if err != nil {
+				if errors.Is(err, errEmptyValue) {
+					return emptyValueError(name, true)
+				}
 				return err
 			}
 			armored, err := crypto.Encrypt(val, recips)
@@ -2118,6 +2281,7 @@ func newRotate() *cobra.Command {
 	c.Flags().StringVar(&rotate, "rotate-after", "", "set the next rotation date (YYYY-MM-DD)")
 	c.Flags().StringVar(&ttl, "ttl", "", "refresh expiry to a relative duration (e.g. 30m, 12h, 7d, 2w)")
 	c.Flags().StringVar(&expiresAt, "expires-at", "", "refresh expiry to an absolute time (RFC3339 or YYYY-MM-DD)")
+	c.Flags().BoolVar(&allowEmpty, "allow-empty", false, "permit storing an empty value (refused by default: it would destroy the stored secret)")
 	return c
 }
 

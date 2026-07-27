@@ -83,9 +83,19 @@ warning).
   knows the recipients and serves a strictly-newer forged store can still substitute content;
   the complete defense is an operator signature over the store, planned. Treat the backend as
   honest-but-curious today; the refusals above close the replay/rollback class.
+- **A sync cannot lose a concurrent local change.** The CAS above arbitrates between
+  *machines*; this one arbitrates between *processes on one machine*. A sync does its network
+  work without holding the store lock, then takes the lock and re-checks that the local store
+  and the sync cursor are byte-for-byte what they were when it started. If another `arca`
+  process wrote in between — the `rm` or `rotate` you ran during an incident while a sync was
+  on the network — the sync restarts from a fresh snapshot instead of committing a decision
+  made before your change existed. Sustained contention gives up after three attempts with
+  "run it again" rather than overwriting anything.
 - **Offline is a normal state.** The local file remains the source of truth for every
   read and exec; sync never sits in an access path. Automatic mode runs strictly
-  *after* a command's real work and any failure is a warning, never an error.
+  *after* a command's real work and any failure is a warning, never an error. No network
+  call is ever made while the store lock is held, so a slow or unreachable backend can never
+  delay the `rotate` or `recipients rm` you run during an incident.
 
 ## Automatic sync
 
@@ -94,6 +104,18 @@ command that mutated the store pushes the change afterwards, and any command
 reconciles when the last sync is older than 15 minutes. Network work is bounded by a
 10-second timeout and can never fail the command it rides on. The MCP server process
 does not auto-sync (it is long-running; run `arca sync` or rely on the CLI's habits).
+
+Opportunistic sync also refuses to *wait* for the store lock: before it touches the network it
+checks whether another `arca` process is mid-write — most often an `arca edit` session with
+`$EDITOR` still open — and if so it skips silently, costing not even a round trip. The next
+command retries. Explicit `arca sync` waits for the lock as usual, so a long `edit` session
+never leaves the next command hanging behind a background sync.
+
+The one exception is a push that has already landed on the remote: recording it locally is no
+longer optional at that point, so that single write waits for the lock even in automatic mode.
+If it somehow cannot be recorded, the error says so and names the repair (`arca sync --pull`,
+which adopts the identical remote and fixes the cursor) rather than leaving a conflict to be
+decoded later.
 
 ## The audit trail follows (Option B escrow)
 

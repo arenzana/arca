@@ -5,10 +5,10 @@
 | Command | Purpose | Key flags |
 |---|---|---|
 | `init` | Create the store (reuse or generate an age key) | `--force` |
-| `set NAME` | Add/update a secret (value from TTY or stdin) | `--tag --desc --rotate-after --ttl --expires-at --meta k=v --no-print --require-approval --canary --require-grant --rate N/D` |
+| `set NAME` | Add/update a secret (value from TTY or stdin) | `--tag --desc --rotate-after --ttl --expires-at --meta k=v --no-print --require-approval --canary --require-grant --rate N/D --allow-empty` |
 | `generate NAME` | Create a secret with a random value | `-l/--length --charset --tag --desc --ttl --no-print --show --canary --require-grant --rate N/D` |
 | `get NAME` | Decrypt and print one secret (records a read) | `-n` (newline), `--no-log` |
-| `rotate NAME` | Replace value, keep `created_at`, log a rotation | `--rotate-after --ttl --expires-at` |
+| `rotate NAME` | Replace value, keep `created_at`, log a rotation | `--rotate-after --ttl --expires-at --allow-empty` |
 | `ls` | List secrets + metadata (no decryption) | `--tag`, `--reads`, `--json` |
 | `show NAME` | Show one secret's metadata (no value) | `--json` |
 | `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing`, `--json` |
@@ -23,7 +23,7 @@
 | `exposure` | List secrets by blast radius (recipients that can decrypt each); flags master/admin-looking names | `--sensitive` |
 | `doctor` | Security & health check of your setup, ranked by severity with a remedy per finding | `--json`, `--fix` |
 | `reencrypt` | Re-encrypt every secret to the current recipient set | — |
-| `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) — see [Importing](IMPORTING.md) | `--json`, `--dry-run`, `--overwrite`, `--prefix P`, `--tag t` |
+| `import` | Bulk-load secrets from stdin (dotenv lines, or a JSON object) — see [Importing](IMPORTING.md) | `--json`, `--dry-run`, `--overwrite`, `--allow-empty`, `--prefix P`, `--tag t` |
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
 | `exec -- CMD` | Run CMD with secrets injected as env (audited); injected values are redacted from its output | `--only a,b`, `--redact auto\|on\|off`, `--reveal` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
@@ -33,7 +33,7 @@
 | `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window | `--command`, `--uses`, `--ttl`, `--agent` |
 | `grants` | List active grants and their remaining uses | — |
 | `revoke SECRET` | Remove the active grant for a secret | — |
-| `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value — operator-only (refused for a detected agent) | `--ttl`, `--command`, `--as`, `--override` |
+| `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value — operator-only (refused for a detected agent), and refused for a disabled secret | `--ttl`, `--command`, `--as`, `--override` |
 | `handle ls` / `handle revoke ID` | List or revoke handles | — |
 | `mcp` | Run an MCP server exposing arca to AI agents (stdio) — see [MCP](MCP.md) | `--strict` (deny-by-default agent exposure) |
 | `agent allow/deny/ls NAME` | Manage which secrets a `--strict` MCP server exposes to agents | — |
@@ -42,6 +42,18 @@
 
 Values are always read from a TTY (no echo) or piped stdin — **never** passed as arguments.
 
+An **empty read is refused** on every write path (`set`, `rotate`, and `import --overwrite`). The
+case this exists for is a pipe whose producer failed:
+
+```bash
+vault-cli read prod/key | arca set PRODKEY    # producer fails, prints nothing…
+```
+
+Without the guard, stdin closes empty, arca reports success, and the stored value is gone — the
+store keeps only the current value, so there is no undo. Pass `--allow-empty` when you genuinely
+mean to store nothing. Whitespace is a value, not an absence: a single space is stored, while
+`""`, a bare newline, and CRLF are refused.
+
 The per-secret policy flags (`--no-print`, `--require-approval`, `--canary`, `--require-grant`,
 `--rate`) are documented in [Policies](POLICIES.md).
 
@@ -49,7 +61,9 @@ The per-secret policy flags (`--no-print`, `--require-approval`, `--canary`, `--
 
 `disable NAME` is the quickest way to take a secret out of service without losing it: the value and
 all metadata stay in the store, but every access path — `get`, `exec`, `inject`, `env`, and the MCP
-tools — refuses it until you `enable` it again. It's a dedicated flag, independent of expiry, so a
+tools, **including a capability handle minted before you disabled it** — refuses it until you
+`enable` it again. Handles are made inert rather than revoked, so undoing a false alarm restores the
+pre-incident state exactly instead of forcing you to re-issue every handle you had handed out. It's a dedicated flag, independent of expiry, so a
 disabled secret shows as `DISABLED` in `show` / `[disabled]` in `ls`, the audit log records the
 `disable`/`enable` intent, and — unlike before 0.6.3 — enabling it **keeps any real expiry** the
 secret was carrying (disable/enable no longer touch `expires_at`).
