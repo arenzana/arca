@@ -262,14 +262,28 @@ agent that scrubs its environment markers is still refused, because it cannot op
 controlling terminal that does not exist; the marker check only produces the readable
 error. That is T11's standing property, unchanged.
 
-*Not addressed — expiry.* `--ttl` / `--expires-at` on an existing secret overwrite
-`ExpiresAt` unconditionally, so `arca set NAME --ttl 30d` extends a secret that would
-have expired tomorrow, with no anchor. It is deliberately **not** folded into this
-predicate: `applyExpiry()` is shared with a third command, it has no clearing path, and
-comparing "extend" against "shorten" across a relative TTL and an absolute date is its
-own rule. Ranked Low — an extension neither reveals a value nor widens who may read it,
-and the expiry is visible in `arca show`. Filed rather than fixed here so the predicate
-this entry describes stays the one the code implements.
+*Expiry — now addressed.* This entry previously stopped short of `--ttl` /
+`--expires-at`, which overwrote `ExpiresAt` unconditionally: `arca set NAME --ttl 30d`
+extended a secret that would have expired tomorrow, with no anchor. Three things were
+filed as blocking it, and each is resolved:
+
+- **"Extend versus shorten" needed its own rule across a relative TTL and an absolute
+  date.** It did not, once both are resolved to an instant *before* being compared.
+  `policy.ResolveExpiry` does that, after which the question is one time comparison and
+  the two spellings stop being two rules. The ordering that makes it decidable: no
+  expiry at all is the *least* protected state, and an earlier expiry is tighter than a
+  later one. Extending or clearing is a downgrade; shortening, or setting one where
+  there was none, is not.
+- **No clearing path.** There is one now: a flag given *empty* clears the expiry,
+  matching `--rate ""`. That is also what obliges the predicate to treat clearing as the
+  widest relaxation rather than an absent value, since "never expires" is now reachable.
+- **The helper was shared with a third command.** `rotate` was the one that could move
+  an expiry with no anchor of any kind; it now anchors through the same predicate.
+
+Presence and value are handled separately throughout, so a flag that is absent still
+leaves an existing expiry alone. Without that, every re-set would silently drop the
+expiry it was not asked to touch, and the anchor would fire on ordinary traffic — the
+failure mode that teaches an operator to answer `y` without reading.
 
 *Interaction with the empty-value guard.* Before the guard on `set`/`rotate` refused
 an empty stdin read, this was materially worse: `arca set NAME --require-approval=false
@@ -405,6 +419,14 @@ trust boundary arca is designed to enforce.
 Recorded here so this document does not read as an all-clear. A threat model that
 describes intended behaviour rather than current behaviour is worse than none.
 
-| ID | Summary | Severity |
-|----|---------|----------|
-| T13 (residual) | `set` / `generate` extend an expiry (`--ttl`, `--expires-at`) on an existing secret with no anchor: `applyExpiry()` overwrites `ExpiresAt` unconditionally and has no clearing path. Not folded into the policy predicate that closed T13's five relaxation flags — the helper is shared with a third command and "extend versus shorten" needs its own rule across a relative TTL and an absolute date. Neither reveals a value nor widens who may read one, and the expiry is visible in `arca show` | Low |
+**None currently open.** The last two were the T12 residual (the recipient set was not
+pinned in local state, so a key added on another machine and synced in was never
+surfaced) and the T13 residual (an expiry could be extended, and could not be cleared at
+all). Both are now addressed and described in full in their own sections above.
+
+An empty table here is a statement about this moment, not a claim about the design. It
+should be read alongside *Residual risks (accepted)* below, which lists what arca
+deliberately does not defend against and which is the more useful section for deciding
+whether arca fits a given threat model. If you are adding a finding, add the row back
+rather than editing this paragraph away: the table existing and being empty carries
+different information from the table being gone.

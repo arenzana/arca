@@ -128,6 +128,33 @@ arca set SIGNING_KEY --rate ""           # clear the limit
 
 *Boundary:* a throttle, not a quota — a patient caller can stay under the cap by spreading use out.
 
+## Expiry (`--ttl`, `--expires-at`)
+
+Give a secret a deadline. Past it, every access path refuses it, before any approval prompt or
+decryption. `--ttl` takes a relative duration (`30m`, `12h`, `7d`, `2w`); `--expires-at` takes an
+absolute RFC3339 timestamp or `YYYY-MM-DD`. They are mutually exclusive.
+
+```sh
+arca set API_TOKEN --ttl 7d          # expires a week from now
+arca set API_TOKEN --expires-at 2027-01-01
+arca set API_TOKEN --ttl 1h          # shortening: no prompt
+arca set API_TOKEN --ttl 90d         # extending: prompts on the terminal
+arca set API_TOKEN --ttl ''          # clearing: prompts, like `--rate ''`
+arca set API_TOKEN --desc 'note'     # no expiry flag: the deadline is left alone
+```
+
+Expiry is a policy, so **extending or clearing one is a downgrade** and needs an operator at a
+terminal, the same anchor `--no-print`, `--require-approval`, `--require-grant`, `--rate` and
+`--canary` carry. The ordering behind that: no expiry at all is the *least* protected state a
+secret can be in, and an earlier deadline is tighter than a later one. Shortening a deadline, or
+setting one on a secret that had none, only tightens and stays headless.
+
+Both spellings resolve to an instant before being compared, so "am I extending this?" is one
+question regardless of which flag you reached for. `rotate` carries the same anchor.
+
+*Boundary:* expiry refuses future *use through arca*. It does not reach a copy a caller already
+took, and it is not revocation at the issuer — rotate the underlying credential for that.
+
 ## Capability handles
 
 Over MCP, hand an agent an **opaque `hdl_…` token** instead of a secret name. It can *use* the
