@@ -18,9 +18,15 @@ func TestHomePrefersTheEnvironmentVariable(t *testing.T) {
 }
 
 func TestHomeFallsBackToTheUserHome(t *testing.T) {
+	// os.UserHomeDir reads a different variable per platform: $HOME on Unix, %USERPROFILE% on
+	// Windows. Setting only HOME passes locally and fails on the Windows runner against the real
+	// profile directory, so set both and derive the expectation from the same call the code makes.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("HOME", "/home/tester")
-	if got, want := Home("XDG_CONFIG_HOME", ".config"), filepath.Join("/home/tester", ".config"); got != want {
+
+	if got, want := Home("XDG_CONFIG_HOME", ".config"), filepath.Join(home, ".config"); got != want {
 		t.Fatalf("Home = %q, want %q", got, want)
 	}
 }
