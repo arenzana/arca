@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -196,7 +197,9 @@ func TestDoctorFlagsUnpinnedRecipient(t *testing.T) {
 }
 
 func TestRecipientPinFileIsPrivate(t *testing.T) {
-	if os.Getenv("GOOS") == "windows" {
+	// GOOS is a build constant, not an environment variable: os.Getenv("GOOS") is empty
+	// everywhere, so guarding on it would run this POSIX-only check on Windows too.
+	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits are not Windows' access-control mechanism")
 	}
 	sandbox(t)
