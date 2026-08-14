@@ -26,19 +26,6 @@ All notable changes to arca are documented here. The format follows
   no longer works unattended in CI or a script. Rotating without an expiry flag is unaffected and
   stays headless, as does shortening. If you revive expired secrets from automation, that job
   needs a terminal now, or should create the secret fresh instead.
-
-### Changed
-- **`stale --missing` is now `ls --no-rotation`.** It asked a different question from the rest of
-  `stale`: which secrets have no rotation policy at all, rather than which are due. It also
-  produced different output, and that had a consequence beyond tidiness. `stale --json` emitted
-  rotation rows normally and `ls`-shaped rows under `--missing`, so a command whose JSON shape
-  `STABILITY.md` promises as stable actually had two shapes depending on a flag, and a consumer
-  parsing it could be handed either. It lives on `ls` now because the rows it emits were already
-  `ls` rows, which makes it an ordinary filter that composes with `--tag` rather than a mode that
-  silently ignored `--within`. The old flag is hidden and fails with a message naming its
-  replacement, rather than disappearing into "unknown flag".
-
-### Security
 - **A recipient that arrives by sync is now reported (T12).** `recipients add` and `reencrypt` are
   both anchored to an operator terminal, so a key cannot be added *on this machine* without someone
   seeing it. Neither covers a key added on **another** machine: the store arrives carrying a
@@ -60,6 +47,58 @@ All notable changes to arca are documented here. The format follows
   The residual is trust-on-first-use: the baseline is set silently on first load, so a key injected
   before that is never reported. Warning on every store that predates the check would train
   operators to ignore the one warning that matters.
+
+### Changed
+- **`stale --missing` is now `ls --no-rotation`.** It asked a different question from the rest of
+  `stale`: which secrets have no rotation policy at all, rather than which are due. It also
+  produced different output, and that had a consequence beyond tidiness. `stale --json` emitted
+  rotation rows normally and `ls`-shaped rows under `--missing`, so a command whose JSON shape
+  `STABILITY.md` promises as stable actually had two shapes depending on a flag, and a consumer
+  parsing it could be handed either. It lives on `ls` now because the rows it emits were already
+  `ls` rows, which makes it an ordinary filter that composes with `--tag` rather than a mode that
+  silently ignored `--within`. The old flag is hidden and fails with a message naming its
+  replacement, rather than disappearing into "unknown flag".
+
+## [0.9.2] - 2026-08-14
+
+A dependency-only release with no code changes. Both entries below are upstream security fixes
+that arca reaches on real call paths.
+
+### Security
+- **The Go toolchain moved to 1.26.6.** The nightly `govulncheck` job started failing against an
+  unchanged `main`: Go 1.26.6 shipped and the vulnerability database published five advisories
+  against the 1.26.5 standard library, all of them on paths arca actually calls. Quadratic
+  complexity in `resolvePath` ([GO-2026-6218](https://pkg.go.dev/vuln/GO-2026-6218), `net/url`);
+  unbounded post-handshake messages ([GO-2026-6090](https://pkg.go.dev/vuln/GO-2026-6090),
+  `crypto/tls`); a missing recursion-depth guard on decode
+  ([GO-2026-6088](https://pkg.go.dev/vuln/GO-2026-6088), `encoding/xml`) and the same gap in
+  `encoding/asn1` ([GO-2026-5972](https://pkg.go.dev/vuln/GO-2026-5972)); and `x/net/idna`
+  accepting ASCII-only Punycode labels through `net/http`
+  ([GO-2026-5026](https://pkg.go.dev/vuln/GO-2026-5026)). The tls, xml, asn1 and http traces all
+  enter the standard library through the S3 client in `internal/remote`, and the `net/url` one
+  arrives via the MCP server's `init` path. Every workflow resolves its toolchain with
+  `setup-go`'s `go-version-file: go.mod`, so the `toolchain` directive is the only place this is
+  pinned and the bump is the whole fix.
+- **`modernc.org/sqlite` 1.55.0 to 1.56.0.** Picks up the upstream SQLite 3.53.3 fix for a
+  data-corruption bug in journal recovery: a zeroed super-journal name still passes the
+  plain-byte-sum checksum, so `pager_playback()` could delete a hot journal without replaying it,
+  leaving a partially-applied transaction on disk. arca keeps its audit log in SQLite, and the
+  audit log is precisely the record a tampered-with run is supposed to be caught by.
+
+### Changed
+- GitHub Actions pins refreshed across the workflow set (harden-runner, codeql-action,
+  attest-build-provenance and two others), each still pinned to a SHA with the version carried in
+  a trailing comment.
+
+## [0.9.1] - 2026-08-01
+
+### Changed
+- Go modules (main and `tools/docsgen`) and GitHub Actions pins refreshed to latest
+  ([#115](https://github.com/arenzana/arca/pull/115)).
+
+## [0.9.0] - 2026-07-27
+
+### Security
 - **`set` and `generate` can no longer relax the policy on an existing secret without an operator
   terminal (T13).** The control-plane anchor covered the six commands that exist to widen access; it
   did not cover the two whose job is to write a value and whose policy flags ride along. So
@@ -111,6 +150,25 @@ All notable changes to arca are documented here. The format follows
   `set` / `generate` (`--require-approval=false` and friends) is **not** anchored — both overwrite
   the value first, so that path is destroy-and-downgrade and audited rather than silent escalation.
   See T11/T12/T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the residuals.
+- **An AI agent can no longer redirect its own audit log.** `$ARCA_AUDIT` was honoured
+  unconditionally, and an agent controls its own environment — so pointing it at a scratch file
+  bought the agent a log nobody reads, a *fresh rate-limit window on every secret* (the audit log
+  is the rate counter), and a canary registry whose trips land where the operator never looks,
+  while `arca log`, `arca canary --list` and `arca doctor` stayed clean against the real DB.
+  A command now **refuses to run** when an agent is detected and `$ARCA_AUDIT` resolves to
+  anything other than that store's own audit DB. It refuses rather than ignoring the variable:
+  falling back to the real log silently would leave the agent believing it is unaudited and the
+  operator holding a log that contradicts the environment they can see.
+  Unchanged for everyone else: `$ARCA_AUDIT` remains the documented way for an *operator* to point
+  several stores at one shared log, with or without a terminal, so scripts and CI are unaffected.
+  Setting it to the path arca would have used anyway is not a redirection and is not refused.
+- **A canary trip that cannot be recorded now blocks the access.** `tripCanary` discarded the
+  audit write's error, which made the tripwire the one event in arca that was not fail-closed: a
+  caller who had already broken the audit DB could take a decoy and leave no trace but a line on
+  the stderr it was reading itself. Tripping still does **not** block the access when the trip
+  records normally — the value is fake, and letting the caller take it is what keeps the trap
+  useful. Both access paths carry the rule, including MCP `run_with_handle`, which bypasses the
+  policy gate and so had to be fixed separately.
 
 ### Fixed
 - **The MCP exec tools no longer let an agent exhaust arca's memory or wedge it indefinitely.**
@@ -132,42 +190,6 @@ All notable changes to arca are documented here. The format follows
   applied above. The MCP server is the sharpest case — it holds injected values for its whole
   lifetime and the agent picks the command that can crash it — but it is not a special case.
   Windows has no per-process equivalent; that remains machine-wide WER policy.
-
-### Added
-- **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push
-  and PR. arca is a secrets manager: a test fixture, doc example, or recipe carrying a real
-  credential is a plausible mistake with outsized blast radius, and git history makes it permanent.
-  Invoked via `go run tool@version` like the other linters, so it is verified through the Go checksum
-  database and needs no marketplace action or license; `--redact` keeps a match out of the public CI
-  log.
-- **`.rpm` and `.deb` packages as release assets** (linux amd64/arm64), built by nfpm inside the
-  same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
-  the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
-  a hosted dnf/apt repo remains a possible follow-up.
-- **`--allow-empty` on `set`, `rotate` and `import`.** Storing an empty value is now refused by
-  default, because the overwhelmingly common cause is a failing producer in a pipeline
-  (`vault read … | arca set PRODKEY`) rather than an intent to store nothing. Pass
-  `--allow-empty` when the empty value is deliberate. Whitespace is a value, not an absence: a
-  single space still stores.
-
-### Changed
-- **Local state is now kept per store, under `$XDG_STATE_HOME/arca/stores/<store-key>/`.** The
-  sync config and cursor, the rollback high-water mark, grants, handles, the canary registry, the
-  escrow cursor, the audit DB and the session signing keys were shared by every store on a machine.
-  Running two stores — the documented personal/work split, one `ARCA_STORE` away — meant a `sync`
-  against store B reconciled it against store A's backend and replaced its contents, and B's
-  legitimately lower generation tripped the rollback warning against A's high-water mark. The
-  directory name is derived from the store's absolute path; `machine-id` deliberately stays shared,
-  because it identifies the machine to escrow rather than the store.
-
-  The first command after upgrading moves the existing state into the per-store directory for the
-  store it is running against, once. Nothing is copied and nothing is deleted, and a failure warns
-  rather than taking the command down. A *second* store starts with empty state — that is the fix —
-  and `arca doctor` gains a `state-dir` check that names which store adopted the shared state, so
-  an unexpectedly empty grants list is explained rather than mysterious. `$ARCA_AUDIT` still wins
-  when set, which is how you point several stores at one audit log deliberately.
-
-### Fixed
 - **A sync can no longer lose a concurrent local write.** `arca sync` did its network work while
   holding no lock and then committed a decision computed *before* that network round trip, so a
   `rm` or `rotate` landing in that window was silently overwritten by the pulled payload — a
@@ -218,58 +240,66 @@ All notable changes to arca are documented here. The format follows
   this and the fix was never carried back to the function directly above it. Temp files are now
   uniquely named and chmod'd before a single byte is written, everywhere.
 
-### Security
-- **An AI agent can no longer redirect its own audit log.** `$ARCA_AUDIT` was honoured
-  unconditionally, and an agent controls its own environment — so pointing it at a scratch file
-  bought the agent a log nobody reads, a *fresh rate-limit window on every secret* (the audit log
-  is the rate counter), and a canary registry whose trips land where the operator never looks,
-  while `arca log`, `arca canary --list` and `arca doctor` stayed clean against the real DB.
-  A command now **refuses to run** when an agent is detected and `$ARCA_AUDIT` resolves to
-  anything other than that store's own audit DB. It refuses rather than ignoring the variable:
-  falling back to the real log silently would leave the agent believing it is unaudited and the
-  operator holding a log that contradicts the environment they can see.
-
-  Unchanged for everyone else: `$ARCA_AUDIT` remains the documented way for an *operator* to point
-  several stores at one shared log, with or without a terminal, so scripts and CI are unaffected.
-  Setting it to the path arca would have used anyway is not a redirection and is not refused.
-- **A canary trip that cannot be recorded now blocks the access.** `tripCanary` discarded the
-  audit write's error, which made the tripwire the one event in arca that was not fail-closed: a
-  caller who had already broken the audit DB could take a decoy and leave no trace but a line on
-  the stderr it was reading itself. Tripping still does **not** block the access when the trip
-  records normally — the value is fake, and letting the caller take it is what keeps the trap
-  useful. Both access paths carry the rule, including MCP `run_with_handle`, which bypasses the
-  policy gate and so had to be fixed separately.
-
-## [0.9.2] - 2026-08-14
-
-A dependency-only release with no code changes. Both entries below are upstream security fixes
-that arca reaches on real call paths.
-
-### Security
-- **The Go toolchain moved to 1.26.6.** The nightly `govulncheck` job started failing against an
-  unchanged `main`: Go 1.26.6 shipped and the vulnerability database published five advisories
-  against the 1.26.5 standard library, all of them on paths arca actually calls. Quadratic
-  complexity in `resolvePath` ([GO-2026-6218](https://pkg.go.dev/vuln/GO-2026-6218), `net/url`);
-  unbounded post-handshake messages ([GO-2026-6090](https://pkg.go.dev/vuln/GO-2026-6090),
-  `crypto/tls`); a missing recursion-depth guard on decode
-  ([GO-2026-6088](https://pkg.go.dev/vuln/GO-2026-6088), `encoding/xml`) and the same gap in
-  `encoding/asn1` ([GO-2026-5972](https://pkg.go.dev/vuln/GO-2026-5972)); and `x/net/idna`
-  accepting ASCII-only Punycode labels through `net/http`
-  ([GO-2026-5026](https://pkg.go.dev/vuln/GO-2026-5026)). The tls, xml, asn1 and http traces all
-  enter the standard library through the S3 client in `internal/remote`, and the `net/url` one
-  arrives via the MCP server's `init` path. Every workflow resolves its toolchain with
-  `setup-go`'s `go-version-file: go.mod`, so the `toolchain` directive is the only place this is
-  pinned and the bump is the whole fix.
-- **`modernc.org/sqlite` 1.55.0 to 1.56.0.** Picks up the upstream SQLite 3.53.3 fix for a
-  data-corruption bug in journal recovery: a zeroed super-journal name still passes the
-  plain-byte-sum checksum, so `pager_playback()` could delete a hot journal without replaying it,
-  leaving a partially-applied transaction on disk. arca keeps its audit log in SQLite, and the
-  audit log is precisely the record a tampered-with run is supposed to be caught by.
+### Added
+- **Secret scanning in CI.** A `secret-scan` job runs gitleaks over the full history on every push
+  and PR. arca is a secrets manager: a test fixture, doc example, or recipe carrying a real
+  credential is a plausible mistake with outsized blast radius, and git history makes it permanent.
+  Invoked via `go run tool@version` like the other linters, so it is verified through the Go checksum
+  database and needs no marketplace action or license; `--redact` keeps a match out of the public CI
+  log.
+- **`--allow-empty` on `set`, `rotate` and `import`.** Storing an empty value is now refused by
+  default, because the overwhelmingly common cause is a failing producer in a pipeline
+  (`vault read … | arca set PRODKEY`) rather than an intent to store nothing. Pass
+  `--allow-empty` when the empty value is deliberate. Whitespace is a value, not an absence: a
+  single space still stores.
 
 ### Changed
-- GitHub Actions pins refreshed across the workflow set (harden-runner, codeql-action,
-  attest-build-provenance and two others), each still pinned to a SHA with the version carried in
-  a trailing comment.
+- **Local state is now kept per store, under `$XDG_STATE_HOME/arca/stores/<store-key>/`.** The
+  sync config and cursor, the rollback high-water mark, grants, handles, the canary registry, the
+  escrow cursor, the audit DB and the session signing keys were shared by every store on a machine.
+  Running two stores — the documented personal/work split, one `ARCA_STORE` away — meant a `sync`
+  against store B reconciled it against store A's backend and replaced its contents, and B's
+  legitimately lower generation tripped the rollback warning against A's high-water mark. The
+  directory name is derived from the store's absolute path; `machine-id` deliberately stays shared,
+  because it identifies the machine to escrow rather than the store.
+  The first command after upgrading moves the existing state into the per-store directory for the
+  store it is running against, once. Nothing is copied and nothing is deleted, and a failure warns
+  rather than taking the command down. A *second* store starts with empty state — that is the fix —
+  and `arca doctor` gains a `state-dir` check that names which store adopted the shared state, so
+  an unexpectedly empty grants list is explained rather than mysterious. `$ARCA_AUDIT` still wins
+  when set, which is how you point several stores at one audit log deliberately.
+
+## [0.8.0] - 2026-07-24
+
+### Added
+- **User-safety release**: `doctor` and `exposure` for blast-radius visibility, safer defaults
+  for AI-agent exposure, and escrow self-heal
+  ([#103](https://github.com/arenzana/arca/pull/103)). Reconstructed from the release history
+  rather than written at the time, so it is deliberately a summary and not invented detail.
+
+## [0.7.2] - 2026-07-20
+
+### Fixed
+- **Escrow key regex accepts the writer's own keys past sequence 999999 (SEC-43)**
+  ([#99](https://github.com/arenzana/arca/pull/99)).
+- Opportunistic auto-sync made quiet and non-colliding
+  ([#102](https://github.com/arenzana/arca/pull/102)).
+
+### Changed
+- Multi-machine sync surfaced on the landing page, plus a fleet setup walkthrough
+  ([#95](https://github.com/arenzana/arca/pull/95)), and dependency/action bumps.
+
+## [0.7.1] - 2026-07-10
+
+### Security
+- **Hardened the untrusted-backend pull and escrow paths (SEC-35..42)**
+  ([#94](https://github.com/arenzana/arca/pull/94)).
+
+### Added
+- **`.rpm` and `.deb` packages as release assets** (linux amd64/arm64), built by nfpm inside the
+  same goreleaser run — reproducible mtimes, listed in `checksums.txt`, and therefore covered by
+  the release's cosign bundle. Install directly with `dnf install ./arca_….rpm` / `dpkg -i`;
+  a hosted dnf/apt repo remains a possible follow-up.
 
 ## [0.7.0] - 2026-07-09
 
@@ -696,6 +726,10 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 
 [Unreleased]: https://github.com/arenzana/arca/compare/v0.9.2...HEAD
 [0.9.2]: https://github.com/arenzana/arca/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/arenzana/arca/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/arenzana/arca/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/arenzana/arca/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/arenzana/arca/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/arenzana/arca/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/arenzana/arca/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/arenzana/arca/compare/v0.6.4...v0.6.5
