@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/arenzana/arca/internal/buildinfo"
 )
 
 // TestVersionCommand covers the `version` subcommand in both human and --json forms. It needs no
@@ -16,7 +18,7 @@ func TestVersionCommand(t *testing.T) {
 		t.Fatalf("version output missing fields: %q", out)
 	}
 
-	var v versionView
+	var v buildinfo.Stamp
 	if err := json.Unmarshal([]byte(runArca(t, "", "version", "--json")), &v); err != nil {
 		t.Fatalf("version --json not valid JSON: %v", err)
 	}
@@ -28,7 +30,7 @@ func TestVersionCommand(t *testing.T) {
 // TestFormatVersion covers the human formatter directly, including the commit-truncation and the
 // present/absent commit+date branches that a `go build` in CI may not embed.
 func TestFormatVersion(t *testing.T) {
-	full := formatVersion(versionView{
+	full := buildinfo.Format(buildinfo.Stamp{
 		Version: "v1.2.3", Commit: "abcdef0123456789", Date: "2026-07-01T00:00:00Z",
 		Go: "go1.26", Platform: "darwin/arm64",
 	})
@@ -55,7 +57,7 @@ func TestFormatVersion(t *testing.T) {
 		}
 	}
 
-	bare := formatVersion(versionView{Version: "dev", Go: "go1.26", Platform: "linux/amd64"})
+	bare := buildinfo.Format(buildinfo.Stamp{Version: "dev", Go: "go1.26", Platform: "linux/amd64"})
 	if strings.Contains(bare, "commit:") || strings.Contains(bare, "built:") {
 		t.Fatalf("bare stamp should omit commit/date: %q", bare)
 	}
