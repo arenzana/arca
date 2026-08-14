@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -221,10 +222,22 @@ func TestPolicyPredicateCoversEveryPolicyFlag(t *testing.T) {
 		"ttl": true, "expires-at": true,
 	}
 
+	// Scan the whole package rather than a named list of files. A hardcoded list silently stops
+	// guarding anything the moment the code moves: this test named main.go and generate.go, and
+	// went on passing after `set` moved to cmd_secrets.go, checking only half of what it claimed.
+	// Globbing means a future author can reorganize freely and still cannot smuggle in an
+	// unclassified policy flag.
 	re := regexp.MustCompile(`Changed\("([a-z-]+)"\)`)
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	seen := map[string]bool{}
-	for _, f := range []string{"main.go", "generate.go"} {
-		src, err := os.ReadFile(f)
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f) //#nosec G304 -- test-local glob of the package's own sources
 		if err != nil {
 			t.Fatalf("cannot read %s: %v", f, err)
 		}

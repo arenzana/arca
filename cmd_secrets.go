@@ -11,7 +11,6 @@ import (
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
-	"github.com/arenzana/arca/internal/policy"
 	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
 	"github.com/spf13/cobra"
@@ -20,11 +19,8 @@ import (
 // newSet adds or updates a secret. The value comes from a TTY/stdin (never an arg). On an
 // existing secret it preserves CreatedAt and only touches the fields the user supplied.
 func newSet() *cobra.Command {
-	var tags []string
-	var desc, rotate, ttl, expiresAt string
-	var meta map[string]string
-	var noPrint, requireApproval, canary, requireGrant, allowEmpty bool
-	var rate string
+	var pf policyFlags
+	var allowEmpty bool
 	c := &cobra.Command{
 		Use:   "set NAME",
 		Short: "Add or update a secret (value from TTY or stdin)",
@@ -51,8 +47,7 @@ func newSet() *cobra.Command {
 			// change wearing a write command's clothes. Anchor it before the value is read, so a
 			// refusal costs nothing (the write below is unconditional and would destroy the value
 			// on its way to a policy change the caller is not allowed to make).
-			if err := requirePolicyOperator("set", name, cmd.Flags().Changed, s.Secrets[name],
-				noPrint, requireApproval, requireGrant, canary, rate); err != nil {
+			if err := pf.anchor(cmd, "set", name, s.Secrets[name]); err != nil {
 				return err
 			}
 			// Whether this set replaces an existing value decides how bad an empty read is, so
@@ -78,66 +73,16 @@ func newSet() *cobra.Command {
 			}
 			sec.Value = armored
 			sec.UpdatedAt = now
-			if len(tags) > 0 {
-				sec.Tags = tags
-			}
-			if desc != "" {
-				sec.Description = desc
-			}
-			if rotate != "" {
-				t, err := time.Parse("2006-01-02", rotate)
-				if err != nil {
-					return fmt.Errorf("rotate-after: %w", err)
-				}
-				sec.RotateAfter = &t
-			}
-			if err := applyExpiry(sec, ttl, expiresAt); err != nil {
+			canaryChanged, err := pf.apply(cmd, sec)
+			if err != nil {
 				return err
-			}
-			if len(meta) > 0 {
-				if sec.Meta == nil {
-					sec.Meta = map[string]string{}
-				}
-				for k, v := range meta {
-					sec.Meta[k] = v
-				}
-			}
-			// Only change the policy when the flag was actually given, so re-setting a secret
-			// doesn't silently clear its no-print bit.
-			if cmd.Flags().Changed("no-print") {
-				sec.NoPrint = noPrint
-			}
-			if cmd.Flags().Changed("require-approval") {
-				sec.RequireApproval = requireApproval
-			}
-			canaryChanged := cmd.Flags().Changed("canary")
-			if canaryChanged {
-				sec.Canary = false // never persist the designation to the (synced) store — SEC-04
-			}
-			if cmd.Flags().Changed("require-grant") {
-				sec.RequireGrant = requireGrant
-			}
-			if cmd.Flags().Changed("rate") {
-				if rate == "" {
-					sec.RateLimit, sec.RateWindow = 0, ""
-				} else {
-					n, w, err := policy.ParseRate(rate)
-					if err != nil {
-						return err
-					}
-					sec.RateLimit, sec.RateWindow = n, w
-				}
 			}
 			if err := s.Save(); err != nil {
 				return err
 			}
 			if canaryChanged {
-				update := unmarkCanary
-				if canary {
-					update = markCanary
-				}
-				if err := update(name); err != nil {
-					return fmt.Errorf("saved %s but failed to update its canary state: %w", name, err)
+				if err := pf.syncCanary(name, "saved"); err != nil {
+					return err
 				}
 			}
 			if err := logAudit("set", name, ""); err != nil {
@@ -147,17 +92,7 @@ func newSet() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().StringSliceVar(&tags, "tag", nil, "tags (repeatable or comma-separated)")
-	c.Flags().StringVar(&desc, "desc", "", "description")
-	c.Flags().StringVar(&rotate, "rotate-after", "", "rotation date (YYYY-MM-DD)")
-	c.Flags().StringVar(&ttl, "ttl", "", "expire after a relative duration (e.g. 30m, 12h, 7d, 2w)")
-	c.Flags().StringVar(&expiresAt, "expires-at", "", "expire at an absolute time (RFC3339 or YYYY-MM-DD)")
-	c.Flags().StringToStringVar(&meta, "meta", nil, "extra metadata key=value (repeatable)")
-	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
-	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
-	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
-	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
-	c.Flags().StringVar(&rate, "rate", "", "rate limit as N/DURATION (e.g. 10/1h); empty clears it")
+	pf.register(c)
 	c.Flags().BoolVar(&allowEmpty, "allow-empty", false, "permit storing an empty value (refused by default: an empty read would destroy an existing secret)")
 	return c
 }

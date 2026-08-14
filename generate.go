@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/arenzana/arca/internal/crypto"
-	"github.com/arenzana/arca/internal/policy"
 	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
 )
@@ -61,11 +60,10 @@ func randomSecret(n int, alphabet string) (string, error) {
 // stores it like `set`, so the value is never typed or pasted. By default it isn't printed; use
 // --show to emit it once.
 func newGenerate() *cobra.Command {
+	var pf policyFlags
 	var length int
-	var charset, desc, ttl, expiresAt string
-	var tags []string
-	var noPrint, requireApproval, show, canary, requireGrant bool
-	var rate string
+	var charset string
+	var show bool
 	c := &cobra.Command{
 		Use:   "generate NAME",
 		Short: "Create a secret with a random value",
@@ -94,8 +92,7 @@ func newGenerate() *cobra.Command {
 			}
 			// T13/R28, same anchor as `set`. `generate` on an existing name replaces the value
 			// with a fresh random one, so a refusal here also has to arrive before that write.
-			if err := requirePolicyOperator("generate", name, cmd.Flags().Changed, s.Secrets[name],
-				noPrint, requireApproval, requireGrant, canary, rate); err != nil {
+			if err := pf.anchor(cmd, "generate", name, s.Secrets[name]); err != nil {
 				return err
 			}
 			armored, err := crypto.Encrypt([]byte(val), recips)
@@ -110,49 +107,16 @@ func newGenerate() *cobra.Command {
 			}
 			sec.Value = armored
 			sec.UpdatedAt = now
-			if len(tags) > 0 {
-				sec.Tags = tags
-			}
-			if desc != "" {
-				sec.Description = desc
-			}
-			if err := applyExpiry(sec, ttl, expiresAt); err != nil {
+			canaryChanged, err := pf.apply(cmd, sec)
+			if err != nil {
 				return err
-			}
-			if cmd.Flags().Changed("no-print") {
-				sec.NoPrint = noPrint
-			}
-			if cmd.Flags().Changed("require-approval") {
-				sec.RequireApproval = requireApproval
-			}
-			canaryChanged := cmd.Flags().Changed("canary")
-			if canaryChanged {
-				sec.Canary = false // never persist the designation to the (synced) store — SEC-04
-			}
-			if cmd.Flags().Changed("require-grant") {
-				sec.RequireGrant = requireGrant
-			}
-			if cmd.Flags().Changed("rate") {
-				if rate == "" {
-					sec.RateLimit, sec.RateWindow = 0, ""
-				} else {
-					n, w, err := policy.ParseRate(rate)
-					if err != nil {
-						return err
-					}
-					sec.RateLimit, sec.RateWindow = n, w
-				}
 			}
 			if err := s.Save(); err != nil {
 				return err
 			}
 			if canaryChanged {
-				update := unmarkCanary
-				if canary {
-					update = markCanary
-				}
-				if err := update(name); err != nil {
-					return fmt.Errorf("generated %s but failed to update its canary state: %w", name, err)
+				if err := pf.syncCanary(name, "generated"); err != nil {
+					return err
 				}
 			}
 			if err := logAudit("generate", name, ""); err != nil {
@@ -165,18 +129,10 @@ func newGenerate() *cobra.Command {
 			return nil
 		},
 	}
+	pf.register(c)
 	c.Flags().IntVarP(&length, "length", "l", 32, "number of characters")
 	c.Flags().StringVar(&charset, "charset", "alnum", "alnum | hex | full | <custom alphabet>")
-	c.Flags().StringSliceVar(&tags, "tag", nil, "tags (repeatable or comma-separated)")
-	c.Flags().StringVar(&desc, "desc", "", "description")
-	c.Flags().StringVar(&ttl, "ttl", "", "expire after a relative duration (e.g. 30m, 12h, 7d, 2w)")
-	c.Flags().StringVar(&expiresAt, "expires-at", "", "expire at an absolute time (RFC3339 or YYYY-MM-DD)")
-	c.Flags().BoolVar(&noPrint, "no-print", false, "exec-only: get/env/inject refuse to reveal it")
-	c.Flags().BoolVar(&requireApproval, "require-approval", false, "require human approval (TTY) before each release")
 	c.Flags().BoolVar(&show, "show", false, "also print the generated value to stdout")
-	c.Flags().BoolVar(&canary, "canary", false, "mark as a decoy: any use trips an alert and a signed audit event")
-	c.Flags().BoolVar(&requireGrant, "require-grant", false, "usable only via exec/MCP with a matching active grant")
-	c.Flags().StringVar(&rate, "rate", "", "rate limit as N/DURATION (e.g. 10/1h)")
 	// --no-print promises the value never reaches stdout; --show is precisely that disclosure.
 	// Refuse the pair instead of honoring one over the other (FU-9) — consume via exec instead.
 	c.MarkFlagsMutuallyExclusive("no-print", "show")
