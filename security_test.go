@@ -6,6 +6,7 @@ import (
 
 	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // --- H1: secret-name validation -------------------------------------------------------------
@@ -56,7 +57,7 @@ func TestExecRefusesPoisonedReservedName(t *testing.T) {
 	runArca(t, "good-val", "set", "GOOD")
 
 	// Poison the store directly, bypassing set's validation, with a reserved env name.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestEnvExecSkipPoisonedName(t *testing.T) {
 	runArca(t, "good-val", "set", "GOOD")
 
 	// Poison the store directly, bypassing set's validation.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

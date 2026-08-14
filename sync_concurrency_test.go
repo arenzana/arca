@@ -21,6 +21,7 @@ import (
 
 	"github.com/arenzana/arca/internal/remote"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // hookBackend runs a hook immediately before a backend call. Because phase A's backend calls
@@ -79,7 +80,7 @@ type lockAssertingBackend struct {
 
 func (l *lockAssertingBackend) check(op string) {
 	l.t.Helper()
-	if _, err := os.Stat(storePath() + ".lock"); err == nil {
+	if _, err := os.Stat(xdg.StorePath() + ".lock"); err == nil {
 		l.t.Errorf("I1 violated: remote.Backend.%s was called while the store lock was held", op)
 	}
 }
@@ -202,7 +203,7 @@ func TestSyncCASRefusesToResurrectRemovedSecret(t *testing.T) {
 			}
 			armed = false // fire exactly once, on the pull under test
 			// The concurrent `arca rm API`, landing between the snapshot and the commit.
-			s, err := store.Load(storePath())
+			s, err := store.Load(xdg.StorePath())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -233,7 +234,7 @@ func TestSyncCASRefusesToResurrectRemovedSecret(t *testing.T) {
 
 	// The load-bearing assertion: the removal survived. Before the fix the pull committed a
 	// decision made before the `rm` existed and API came back.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +279,7 @@ func TestSyncCASRetryExhaustion(t *testing.T) {
 	runArca(t, "", "sync")
 
 	a.restore(t)
-	before, err := os.ReadFile(storePath())
+	before, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +291,7 @@ func TestSyncCASRetryExhaustion(t *testing.T) {
 	if fetches != syncAttempts {
 		t.Fatalf("phase A ran %d times, want %d (one per attempt)", fetches, syncAttempts)
 	}
-	after, err := os.ReadFile(storePath())
+	after, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +328,7 @@ func TestAutoSyncSkipsWhenStoreLocked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	before, err := os.ReadFile(storePath())
+	before, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +348,7 @@ func TestAutoSyncSkipsWhenStoreLocked(t *testing.T) {
 	if strings.Contains(out, "auto-sync") {
 		t.Fatalf("auto-sync warned about ordinary lock contention: %q", out)
 	}
-	after, err := os.ReadFile(storePath())
+	after, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +366,7 @@ func TestReadLocalSnapshotDoesNotWrite(t *testing.T) {
 	runArca(t, "hunter2", "set", "API")
 
 	// Push the high-water mark above the store's generation, so the snapshot sees a regression.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +378,7 @@ func TestReadLocalSnapshotDoesNotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	storeBefore, err := os.ReadFile(storePath())
+	storeBefore, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +399,7 @@ func TestReadLocalSnapshotDoesNotWrite(t *testing.T) {
 	if string(genBefore) != string(genAfter) {
 		t.Fatalf("phase-A snapshot wrote store.gen (%q -> %q); it runs outside the lock", genBefore, genAfter)
 	}
-	storeAfter, err := os.ReadFile(storePath())
+	storeAfter, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +422,7 @@ func TestReadLocalSnapshotSingleRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := store.Decode(storePath(), snap.raw)
+	decoded, err := store.Decode(xdg.StorePath(), snap.raw)
 	if err != nil {
 		t.Fatalf("snapshot raw bytes did not decode: %v", err)
 	}
@@ -633,7 +634,7 @@ func TestCASStoreAppearedUnderUs(t *testing.T) {
 func TestSnapshotRefusesCorruptStore(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
-	if err := os.WriteFile(storePath(), []byte(`{"version":1,`), 0o600); err != nil {
+	if err := os.WriteFile(xdg.StorePath(), []byte(`{"version":1,`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readLocalSnapshot(); err == nil || !strings.Contains(err.Error(), "parse store") {
@@ -661,7 +662,7 @@ func TestCASDetectsChange(t *testing.T) {
 		{
 			name: "store rewritten",
 			mutate: func(t *testing.T) {
-				s, err := store.Load(storePath())
+				s, err := store.Load(xdg.StorePath())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -674,7 +675,7 @@ func TestCASDetectsChange(t *testing.T) {
 		{
 			name: "store removed",
 			mutate: func(t *testing.T) {
-				if err := os.Remove(storePath()); err != nil {
+				if err := os.Remove(xdg.StorePath()); err != nil {
 					t.Fatal(err)
 				}
 			},

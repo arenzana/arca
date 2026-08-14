@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestShowSanitizesName covers FU-3: `show` must sanitize the secret name it prints, so a poisoned
@@ -13,7 +14,7 @@ func TestShowSanitizesName(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "GOOD")
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

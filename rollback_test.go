@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestSaveBumpsGeneration confirms every store write advances the monotonic generation counter,
@@ -14,12 +15,12 @@ func TestSaveBumpsGeneration(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "A")
-	s1, err := store.Load(storePath())
+	s1, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
 	runArca(t, "v2", "set", "B")
-	s2, err := store.Load(storePath())
+	s2, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func TestVerifyDetectsStoreRollback(t *testing.T) {
 	runArca(t, "v1", "set", "A")
 
 	// Snapshot the store, then advance it (a rotate bumps the generation and is audited).
-	old, err := os.ReadFile(storePath())
+	old, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestVerifyDetectsStoreRollback(t *testing.T) {
 
 	// Restore the older copy — the resurrection scenario. Verify must now fail loudly, even
 	// though the local high-water mark file is wiped (the heuristic a machine owner can reset).
-	if err := os.WriteFile(storePath(), old, 0o600); err != nil {
+	if err := os.WriteFile(xdg.StorePath(), old, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(storeGenPath()); err != nil {
@@ -90,7 +91,7 @@ func TestVerifyDetectsInLogGenerationRegression(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v1", "set", "A")
-	old, err := os.ReadFile(storePath())
+	old, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestVerifyDetectsInLogGenerationRegression(t *testing.T) {
 	// the store-older-than-log check can see.
 	runArca(t, "v2", "rotate", "A")
 	runArca(t, "v3", "rotate", "A")
-	if err := os.WriteFile(storePath(), old, 0o600); err != nil {
+	if err := os.WriteFile(xdg.StorePath(), old, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// Keep operating on the rolled-back store: the new event records an older generation.
@@ -123,7 +124,7 @@ func TestAnchorDetectsJointRollback(t *testing.T) {
 	runArca(t, "v1", "set", "A")
 
 	// Snapshot BOTH files (the joint-rollback attacker's copy) …
-	oldStore, err := os.ReadFile(storePath())
+	oldStore, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestAnchorDetectsJointRollback(t *testing.T) {
 
 	// Joint rollback: restore store + audit DB together (and reset the local high-water mark,
 	// as a machine-owner attacker would). A plain verify is clean — the state is consistent.
-	if err := os.WriteFile(storePath(), oldStore, 0o600); err != nil {
+	if err := os.WriteFile(xdg.StorePath(), oldStore, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(auditPath(), oldAudit, 0o600); err != nil {

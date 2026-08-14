@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // Every writer of local state publishes the same way since S7: a unique temp file in the
@@ -147,11 +149,11 @@ func stateWriters() []stateWriter {
 			// Also already on the pattern. It is the one writer that replaces the whole store with
 			// bytes off the network, which makes it the most expensive one to get wrong.
 			name: "pulled store",
-			path: storePath,
+			path: xdg.StorePath,
 			save: func(*testing.T) error { return writeLocalStore([]byte(`{"version":1,"generation":3}`)) },
 			check: func(t *testing.T) {
 				t.Helper()
-				b, err := os.ReadFile(storePath())
+				b, err := os.ReadFile(xdg.StorePath())
 				if err != nil {
 					t.Fatalf("read the pulled store: %v", err)
 				}

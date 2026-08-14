@@ -7,6 +7,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestDisableEnableLifecycle drives disable/enable through every access path: a disabled secret is
@@ -105,7 +106,7 @@ func TestDisableEnablePreservesExpiry(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "TOK", "--ttl", "30d")
-	before, err := store.Load(storePath())
+	before, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +121,7 @@ func TestDisableEnablePreservesExpiry(t *testing.T) {
 	}
 	runArca(t, "", "enable", "TOK")
 
-	after, err := store.Load(storePath())
+	after, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

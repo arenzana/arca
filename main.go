@@ -38,6 +38,7 @@ import (
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/policy"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // version is set at release time via -ldflags "-X main.version=...".
@@ -148,26 +149,6 @@ func newRoot() *cobra.Command {
 // dotfiles repo (git-synced) while the audit DB stays local, and tests can sandbox everything.
 // ----------------------------------------------------------------------------
 
-// xdgHome returns $env if set, else $HOME/def — an XDG-with-fallback helper.
-func xdgHome(env, def string) string {
-	if v := os.Getenv(env); v != "" {
-		return v
-	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, def)
-}
-
-func configDir() string { return filepath.Join(xdgHome("XDG_CONFIG_HOME", ".config"), "arca") }
-func stateDir() string  { return filepath.Join(xdgHome("XDG_STATE_HOME", ".local/state"), "arca") }
-
-// storePath is the JSON store (git-syncable). Override with $ARCA_STORE.
-func storePath() string {
-	if p := os.Getenv("ARCA_STORE"); p != "" {
-		return p
-	}
-	return filepath.Join(configDir(), "store.json")
-}
-
 // defaultAuditPath is where the audit DB lives when $ARCA_AUDIT is not set: inside the active
 // store's state dir, because it is per-store data. Two stores sharing one audit DB interleave
 // their chains, so `log --verify` on either reads the other's events as its own.
@@ -228,29 +209,13 @@ func checkAuditRedirect() error {
 		sanitize(p), sanitize(id.Agent), sanitize(defaultAuditPath()))
 }
 
-// identityPath is the age private key. It defaults to reusing the caller's existing
-// $SOPS_AGE_KEY_FILE so arca shares one key with sops; override with $ARCA_IDENTITY.
-func identityPath() string {
-	if p := os.Getenv("ARCA_IDENTITY"); p != "" {
-		return p
-	}
-	if p := os.Getenv("SOPS_AGE_KEY_FILE"); p != "" {
-		return p
-	}
-	return filepath.Join(configDir(), "identity.txt")
-}
-
-// ----------------------------------------------------------------------------
-// Shared helpers.
-// ----------------------------------------------------------------------------
-
 // openStore loads the JSON store and warns if it looks rolled back — its monotonic generation
 // counter went backwards versus the highest we've recorded locally. That catches a git revert, a
 // sync conflict, or an attacker restoring an old copy to resurrect a rotated or deleted secret
 // (SEC-14). It's a best-effort *warning*, not a hard stop: the high-water mark is a local heuristic
 // (a machine owner can delete it), and a store can legitimately be fresh on a new machine.
 func openStore() (*store.Store, error) {
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +289,7 @@ func recordStoreGeneration(gen int) (regressed bool, prev int) {
 	}
 	return false, hwm
 }
-func loadIDs() ([]age.Identity, error) { return crypto.LoadIdentities(identityPath()) }
+func loadIDs() ([]age.Identity, error) { return crypto.LoadIdentities(xdg.IdentityPath()) }
 
 // logAudit records one access event. Auditing is fail-closed by DEFAULT: if the audit log
 // cannot be written, the operation is aborted (the error is returned). For reads, callers log

@@ -1,6 +1,6 @@
 // Per-store state directories (finding R5, design D4).
 //
-// `stateDir()` is `$XDG_STATE_HOME/arca` for every store on the machine, so before this change
+// `xdg.StateDir()` is `$XDG_STATE_HOME/arca` for every store on the machine, so before this change
 // `store.gen`, `sync.json`, `sync-state.json`, `grants.json`, `handles.json`, `canaries.json`,
 // `escrow-state.json`, the audit DB and the session signing keys were shared by every store a
 // machine had. Two stores — the documented personal/work split, which is one `ARCA_STORE` away —
@@ -8,8 +8,8 @@
 // backend and replaced B's contents, and B's legitimately lower generation tripped the SEC-14
 // rollback warning against A's high-water mark. Both are reproduced by tests in this package.
 //
-// Per-store files now live in `stateDir()/stores/<key>`, keyed to the store they belong to.
-// `machine-id` deliberately stays flat in `stateDir()`: it identifies the MACHINE to escrow, not
+// Per-store files now live in `xdg.StateDir()/stores/<key>`, keyed to the store they belong to.
+// `machine-id` deliberately stays flat in `xdg.StateDir()`: it identifies the MACHINE to escrow, not
 // the store, and keying it per-store would silently fork this machine's escrow identity into one
 // lineage per store.
 package main
@@ -23,9 +23,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/arenzana/arca/internal/xdg"
 )
 
-// legacyStateEntries are the per-store files that lived directly in stateDir() before D4.
+// legacyStateEntries are the per-store files that lived directly in xdg.StateDir() before D4.
 //
 // `audit.db`'s two SQLite sidecars are listed explicitly because the log runs in WAL mode
 // (internal/audit/audit.go sets `journal_mode=WAL`), so moving the DB without them would strand
@@ -46,7 +48,7 @@ var legacyStateEntries = []string{
 	"sessions",
 }
 
-// absStorePath is storePath() made absolute and symlink-resolved, which is what the per-store key
+// absStorePath is xdg.StorePath() made absolute and symlink-resolved, which is what the per-store key
 // is derived from. Two spellings of one store must key to one dir, or an operator who wrote a
 // relative path today and an absolute one tomorrow silently loses their grants and sync cursor.
 //
@@ -61,7 +63,7 @@ var legacyStateEntries = []string{
 // Both split one store into two dirs, which is the conservative direction — a split degrades to
 // "this store's state looks fresh", which `arca doctor` names and an operator can repair by moving
 // the dir, whereas collapsing two distinct stores onto one dir is the clobber R5 is about.
-func absStorePath() string { return resolvePath(storePath()) }
+func absStorePath() string { return resolvePath(xdg.StorePath()) }
 
 // resolvePath makes p absolute and symlink-resolves its containing DIRECTORY, leaving the final
 // element alone. Factored out of absStorePath so the audit-redirect check (R4/D2) compares paths
@@ -115,9 +117,9 @@ func storeStateKey() string {
 }
 
 // storesRoot is the parent of every per-store state dir.
-func storesRoot() string { return filepath.Join(stateDir(), "stores") }
+func storesRoot() string { return filepath.Join(xdg.StateDir(), "stores") }
 
-// storeStateDir is the state directory for the active store. It has the same shape as stateDir():
+// storeStateDir is the state directory for the active store. It has the same shape as xdg.StateDir():
 // it resolves the active store internally and takes no argument, so every path helper built on it
 // keeps its signature and the change stays inside the helper block at the top of each file
 // (a hard constraint of D4, not a preference).
@@ -134,7 +136,7 @@ func storeStateDir() string {
 
 // adoptedByPath records which store adopted this machine's pre-D4 flat state. Its contents are the
 // adopter's absolute store path; its existence means the claim has been made.
-func adoptedByPath() string { return filepath.Join(stateDir(), "adopted-by") }
+func adoptedByPath() string { return filepath.Join(xdg.StateDir(), "adopted-by") }
 
 // adoptedBy returns the store path that claimed this machine's legacy state, or "" if none has.
 func adoptedBy() string {
@@ -218,7 +220,7 @@ func claimAndMoveLegacyState(dst string) {
 		return
 	}
 	for _, name := range legacyStateEntries {
-		from := filepath.Join(stateDir(), name)
+		from := filepath.Join(xdg.StateDir(), name)
 		if _, err := os.Stat(from); err != nil {
 			continue // never existed, or an earlier attempt already moved it
 		}
@@ -229,7 +231,7 @@ func claimAndMoveLegacyState(dst string) {
 			// one would undo whatever that run recorded. Leave the shared copy alone and let
 			// `arca doctor` put it in front of the operator, who is the only one who can say which
 			// of the two they want.
-			warnAdoption(fmt.Errorf("%s exists in both %s and %s, so the shared copy was left in place", name, stateDir(), dst))
+			warnAdoption(fmt.Errorf("%s exists in both %s and %s, so the shared copy was left in place", name, xdg.StateDir(), dst))
 			continue
 		}
 		if err := os.Rename(from, to); err != nil {
@@ -242,7 +244,7 @@ func claimAndMoveLegacyState(dst string) {
 // adoptLockPath is the O_EXCL lock serializing adoption. The store lock cannot be used for this:
 // it lives next to the store, it is already held by some callers that compute state paths, and
 // taking it here would deadlock.
-func adoptLockPath() string { return filepath.Join(stateDir(), "stores.lock") }
+func adoptLockPath() string { return filepath.Join(xdg.StateDir(), "stores.lock") }
 
 // errAdoptionInProgress means a live holder has the adoption lock — the one lock failure that is
 // someone else's progress rather than our failure. It is a distinct error because the two get
@@ -254,7 +256,7 @@ var errAdoptionInProgress = errors.New("another process is adopting the shared s
 // lockAdoption takes the adoption lock, reclaiming one left behind by a crash. Adoption is a
 // handful of renames, so anything older than staleLockAge (shared with lock.go) is dead.
 func lockAdoption() (func(), error) {
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+	if err := os.MkdirAll(xdg.StateDir(), 0o700); err != nil {
 		return nil, err
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -288,20 +290,20 @@ func waitForAdoption() {
 	}
 }
 
-// legacyStateLeftovers lists the pre-D4 flat entries still sitting in stateDir(), in the declared
+// legacyStateLeftovers lists the pre-D4 flat entries still sitting in xdg.StateDir(), in the declared
 // order. `doctor` names them, because "some state was left behind" is not actionable and
 // "grants.json and audit.db were left behind" is.
 func legacyStateLeftovers() []string {
 	var out []string
 	for _, name := range legacyStateEntries {
-		if _, err := os.Stat(filepath.Join(stateDir(), name)); err == nil {
+		if _, err := os.Stat(filepath.Join(xdg.StateDir(), name)); err == nil {
 			out = append(out, name)
 		}
 	}
 	return out
 }
 
-// anyLegacyState reports whether any pre-D4 flat file is still sitting in stateDir().
+// anyLegacyState reports whether any pre-D4 flat file is still sitting in xdg.StateDir().
 func anyLegacyState() bool { return len(legacyStateLeftovers()) > 0 }
 
 // warnAdoption reports an adoption problem on stderr. Adoption is bookkeeping; it warns rather

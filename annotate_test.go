@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestAnnotate covers editing tags/description/meta without touching the value: the value and its
@@ -15,7 +16,7 @@ func TestAnnotate(t *testing.T) {
 	runArca(t, "", "init")
 	runArca(t, "topsecret", "set", "API", "--tag", "old", "--desc", "d1", "--no-print")
 
-	before, err := store.Load(storePath())
+	before, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +26,7 @@ func TestAnnotate(t *testing.T) {
 	runArca(t, "", "annotate", "API",
 		"--add-tag", "prod,db", "--rm-tag", "old", "--desc", "d2", "--meta", "owner=team")
 
-	after, err := store.Load(storePath())
+	after, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestAnnotate(t *testing.T) {
 
 	// --tag replaces the whole set; --rm-meta drops a key; --desc "" clears.
 	runArca(t, "", "annotate", "API", "--tag", "only", "--rm-meta", "owner", "--desc", "")
-	final, _ := store.Load(storePath())
+	final, _ := store.Load(xdg.StorePath())
 	fsec := final.Secrets["API"]
 	if len(fsec.Tags) != 1 || fsec.Tags[0] != "only" {
 		t.Fatalf("tags after replace = %v, want [only]", fsec.Tags)

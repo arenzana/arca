@@ -7,13 +7,14 @@ import (
 
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // mutateStore loads the sandbox store, lets fn edit it, and saves — for setting fields (past
 // expiry/rotation) that the CLI would refuse or that need a specific clock.
 func mutateStore(t *testing.T, fn func(*store.Store)) {
 	t.Helper()
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +39,7 @@ func TestLabelSurvivesReencryptAndReload(t *testing.T) {
 		t.Fatalf("label lost after reencrypt:\n%s", out)
 	}
 	// And it must round-trip through a fresh load from disk.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func TestAgentExposurePersists(t *testing.T) {
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "API")
 	runArca(t, "", "agent", "allow", "API")
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestInitForceAndExisting covers init's refusal to clobber and the --force override.
@@ -283,7 +284,7 @@ func TestPathResolution(t *testing.T) {
 	t.Setenv("ARCA_STORE", "/tmp/s.json")
 	t.Setenv("ARCA_AUDIT", "/tmp/a.db")
 	t.Setenv("ARCA_IDENTITY", "/tmp/id")
-	if storePath() != "/tmp/s.json" || auditPath() != "/tmp/a.db" || identityPath() != "/tmp/id" {
+	if xdg.StorePath() != "/tmp/s.json" || auditPath() != "/tmp/a.db" || xdg.IdentityPath() != "/tmp/id" {
 		t.Fatal("env override paths")
 	}
 
@@ -293,13 +294,13 @@ func TestPathResolution(t *testing.T) {
 	t.Setenv("SOPS_AGE_KEY_FILE", "")
 	t.Setenv("XDG_CONFIG_HOME", "/x/cfg")
 	t.Setenv("XDG_STATE_HOME", "/x/state")
-	if configDir() != "/x/cfg/arca" || stateDir() != "/x/state/arca" {
-		t.Fatalf("xdg dirs: %s %s", configDir(), stateDir())
+	if xdg.ConfigDir() != "/x/cfg/arca" || xdg.StateDir() != "/x/state/arca" {
+		t.Fatalf("xdg dirs: %s %s", xdg.ConfigDir(), xdg.StateDir())
 	}
 	// The audit DB moved into the per-store state dir (D4), so its default is keyed to the store
 	// rather than shared. Asserted as a property, not a literal: hard-coding the hash would make
 	// this test a restatement of storeStateKey rather than a check on it.
-	if storePath() != "/x/cfg/arca/store.json" || identityPath() != "/x/cfg/arca/identity.txt" {
+	if xdg.StorePath() != "/x/cfg/arca/store.json" || xdg.IdentityPath() != "/x/cfg/arca/identity.txt" {
 		t.Fatal("default paths")
 	}
 	wantAudit := filepath.Join(storeStateDir(), "audit.db")
@@ -311,14 +312,14 @@ func TestPathResolution(t *testing.T) {
 	}
 
 	t.Setenv("SOPS_AGE_KEY_FILE", "/sops/key")
-	if identityPath() != "/sops/key" {
-		t.Fatalf("identity sops fallback = %s", identityPath())
+	if xdg.IdentityPath() != "/sops/key" {
+		t.Fatalf("identity sops fallback = %s", xdg.IdentityPath())
 	}
 
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home, _ := os.UserHomeDir()
-	if configDir() != filepath.Join(home, ".config", "arca") {
-		t.Fatalf("home fallback = %s", configDir())
+	if xdg.ConfigDir() != filepath.Join(home, ".config", "arca") {
+		t.Fatalf("home fallback = %s", xdg.ConfigDir())
 	}
 }
 

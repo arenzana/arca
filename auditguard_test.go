@@ -17,7 +17,7 @@ package main
 // this comment said the opposite ("using only symbols that exist there"), which cost a reviewer a
 // `go vet` failure. The missing symbol is defaultAuditPath, introduced by the fix; the shim is
 //
-//	func defaultAuditPath() string { return filepath.Join(stateDir(), "audit.db") }
+//	func defaultAuditPath() string { return filepath.Join(xdg.StateDir(), "audit.db") }
 //
 // which is what the baseline's own auditPath() falls back to (main.go:212 @ f984ce5). Add it, do
 // not remove the three tests that reference it — subtracting tests to make the file compile is an
@@ -34,6 +34,7 @@ import (
 	"testing"
 
 	"github.com/arenzana/arca/internal/audit"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestAgentCannotRedirectItsAuditLog is R4 at its narrowest: with an agent marker set, an
@@ -114,7 +115,7 @@ func TestAuditRedirectIsRefusedBeforeTheCommandDoesAnyWork(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 
-	before, err := os.ReadFile(storePath())
+	before, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestAuditRedirectIsRefusedBeforeTheCommandDoesAnyWork(t *testing.T) {
 	if err := runArcaErr("planted", "set", "PLANTED"); err == nil {
 		t.Fatal("a redirected agent was allowed to write a secret")
 	}
-	after, err := os.ReadFile(storePath())
+	after, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
