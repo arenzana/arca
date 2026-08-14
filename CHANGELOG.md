@@ -187,6 +187,37 @@ All notable changes to arca are documented here. The format follows
   useful. Both access paths carry the rule, including MCP `run_with_handle`, which bypasses the
   policy gate and so had to be fixed separately.
 
+## [0.9.2] - 2026-08-14
+
+A dependency-only release with no code changes. Both entries below are upstream security fixes
+that arca reaches on real call paths.
+
+### Security
+- **The Go toolchain moved to 1.26.6.** The nightly `govulncheck` job started failing against an
+  unchanged `main`: Go 1.26.6 shipped and the vulnerability database published five advisories
+  against the 1.26.5 standard library, all of them on paths arca actually calls. Quadratic
+  complexity in `resolvePath` ([GO-2026-6218](https://pkg.go.dev/vuln/GO-2026-6218), `net/url`);
+  unbounded post-handshake messages ([GO-2026-6090](https://pkg.go.dev/vuln/GO-2026-6090),
+  `crypto/tls`); a missing recursion-depth guard on decode
+  ([GO-2026-6088](https://pkg.go.dev/vuln/GO-2026-6088), `encoding/xml`) and the same gap in
+  `encoding/asn1` ([GO-2026-5972](https://pkg.go.dev/vuln/GO-2026-5972)); and `x/net/idna`
+  accepting ASCII-only Punycode labels through `net/http`
+  ([GO-2026-5026](https://pkg.go.dev/vuln/GO-2026-5026)). The tls, xml, asn1 and http traces all
+  enter the standard library through the S3 client in `internal/remote`, and the `net/url` one
+  arrives via the MCP server's `init` path. Every workflow resolves its toolchain with
+  `setup-go`'s `go-version-file: go.mod`, so the `toolchain` directive is the only place this is
+  pinned and the bump is the whole fix.
+- **`modernc.org/sqlite` 1.55.0 to 1.56.0.** Picks up the upstream SQLite 3.53.3 fix for a
+  data-corruption bug in journal recovery: a zeroed super-journal name still passes the
+  plain-byte-sum checksum, so `pager_playback()` could delete a hot journal without replaying it,
+  leaving a partially-applied transaction on disk. arca keeps its audit log in SQLite, and the
+  audit log is precisely the record a tampered-with run is supposed to be caught by.
+
+### Changed
+- GitHub Actions pins refreshed across the workflow set (harden-runner, codeql-action,
+  attest-build-provenance and two others), each still pinned to a SHA with the version carried in
+  a trailing comment.
+
 ## [0.7.0] - 2026-07-09
 
 `arca sync`: first-class multi-machine replication through an untrusted S3-compatible
@@ -610,7 +641,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/arenzana/arca/compare/v0.9.1...v0.9.2
 [0.7.1]: https://github.com/arenzana/arca/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/arenzana/arca/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/arenzana/arca/compare/v0.6.4...v0.6.5
