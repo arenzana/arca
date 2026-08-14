@@ -20,6 +20,12 @@ All notable changes to arca are documented here. The format follows
   setting an expiry where there was none, is not and stays headless. A flag that is absent still
   leaves an existing expiry alone, so re-running a write command never silently drops one.
   With this, `docs/THREAT-MODEL.md` has no open findings for the first time.
+  **This changes a documented workflow, so it is worth stating plainly.** `arca rotate NAME --ttl
+  1h` on an *already expired* secret was the documented way to revive it, and reviving is the
+  largest extension there is: a dead credential becomes live again. It now prompts, which means it
+  no longer works unattended in CI or a script. Rotating without an expiry flag is unaffected and
+  stays headless, as does shortening. If you revive expired secrets from automation, that job
+  needs a terminal now, or should create the secret fresh instead.
 
 ### Changed
 - **`stale --missing` is now `ls --no-rotation`.** It asked a different question from the rest of
