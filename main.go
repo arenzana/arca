@@ -23,8 +23,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,81 +34,24 @@ import (
 
 	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
+	"github.com/arenzana/arca/internal/buildinfo"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/policy"
 	"github.com/arenzana/arca/internal/store"
 )
 
 // version is set at release time via -ldflags "-X main.version=...".
+//
+// It stays in main, and must. That exact symbol name is spelled in both .goreleaser.yaml and the
+// Makefile, and a `-X` naming a symbol that does not exist is not an error: the link has no
+// effect and the variable keeps its default. Moving this into internal/buildinfo and missing
+// either call site would produce releases that build, pass, publish, and report "dev". Everything
+// that is a *function* of this value lives in that package; the fragile part lives here.
 var version = "dev"
 
-// appVersion returns the build version: the ldflags-injected value for a release build, the
-// module version from the build info for a `go install module@version` build, or "dev".
-func appVersion() string {
-	if version != "dev" {
-		return version
-	}
-	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-		return bi.Main.Version
-	}
-	return version
-}
-
-// versionView is the full build stamp: version plus the VCS commit/date Go embeds and the
-// toolchain/platform. Emitted by `arca version` (and `--json` for scripts/agents).
-type versionView struct {
-	Version  string `json:"version"`
-	Commit   string `json:"commit,omitempty"`
-	Date     string `json:"date,omitempty"`
-	Go       string `json:"go"`
-	Platform string `json:"platform"`
-}
-
-func buildStamp() versionView {
-	v := versionView{Version: appVersion(), Go: runtime.Version(), Platform: runtime.GOOS + "/" + runtime.GOARCH}
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			switch s.Key {
-			case "vcs.revision":
-				v.Commit = s.Value
-			case "vcs.time":
-				v.Date = s.Value
-			}
-		}
-	}
-	return v
-}
-
-// formatVersion renders the build stamp for humans as an aligned key/value table (the commit is
-// short-hashed to 12 chars; the commit/date rows are omitted when the values aren't embedded, e.g.
-// a `go build` without VCS). Label column width is computed so every value lines up.
-func formatVersion(v versionView) string {
-	commit := v.Commit
-	if len(commit) > 12 {
-		commit = commit[:12]
-	}
-	rows := [][2]string{{"version", v.Version}}
-	if commit != "" {
-		rows = append(rows, [2]string{"commit", commit})
-	}
-	if v.Date != "" {
-		rows = append(rows, [2]string{"built", v.Date})
-	}
-	rows = append(rows, [2]string{"go", v.Go}, [2]string{"platform", v.Platform})
-
-	w := 0
-	for _, r := range rows {
-		if len(r[0]) > w {
-			w = len(r[0])
-		}
-	}
-	var b strings.Builder
-	b.WriteString("arca\n")
-	for _, r := range rows {
-		fmt.Fprintf(&b, "  %-*s  %s\n", w+1, r[0]+":", r[1])
-	}
-	return b.String()
-}
+// appVersion returns the build version. Thin wrapper so call sites do not each have to remember
+// to pass the injected variable.
+func appVersion() string { return buildinfo.Version(version) }
 
 // newVersion prints the build stamp. `arca --version` already prints just the version string;
 // this subcommand adds the commit, build date, and toolchain, and a --json form.
@@ -121,11 +62,11 @@ func newVersion() *cobra.Command {
 		Short: "Print version, commit, and build info",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			v := buildStamp()
+			v := buildinfo.Collect(version)
 			if jsonOut {
 				return emitJSON(v)
 			}
-			fmt.Print(formatVersion(v))
+			fmt.Print(buildinfo.Format(v))
 			return nil
 		},
 	}
