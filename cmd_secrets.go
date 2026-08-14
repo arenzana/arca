@@ -162,7 +162,7 @@ func newGet() *cobra.Command {
 // DB for last-read/count, which is why that data lives outside the store.
 func newLs() *cobra.Command {
 	var tag string
-	var reads, jsonOut bool
+	var reads, jsonOut, noRotation bool
 	c := &cobra.Command{
 		Use:     "ls",
 		Aliases: []string{"list"},
@@ -172,6 +172,14 @@ func newLs() *cobra.Command {
 			s, err := openStore()
 			if err != nil {
 				return err
+			}
+			// One filter for both output paths. Two copies of a predicate that must agree is how
+			// `--json` and the table drift into disagreeing about what they are listing.
+			skip := func(sec *store.Secret) bool {
+				if tag != "" && !contains(sec.Tags, tag) {
+					return true
+				}
+				return noRotation && sec.RotateAfter != nil
 			}
 			var a *audit.Log
 			if reads || jsonOut { // --json always enriches with last-read when available
@@ -183,7 +191,7 @@ func newLs() *cobra.Command {
 				views := []secretView{}
 				for _, name := range s.Names() {
 					sec := s.Secrets[name]
-					if tag != "" && !contains(sec.Tags, tag) {
+					if skip(sec) {
 						continue
 					}
 					var lr time.Time
@@ -203,7 +211,7 @@ func newLs() *cobra.Command {
 			rows := [][]string{}
 			for _, name := range s.Names() {
 				sec := s.Secrets[name]
-				if tag != "" && !contains(sec.Tags, tag) {
+				if skip(sec) {
 					continue
 				}
 				updated := sec.UpdatedAt.Local().Format("2006-01-02")
@@ -230,6 +238,7 @@ func newLs() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&tag, "tag", "", "filter by tag")
+	c.Flags().BoolVar(&noRotation, "no-rotation", false, "only secrets with no rotation policy set")
 	c.Flags().BoolVar(&reads, "reads", false, "include last-read / read-count from the audit log")
 	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
 	return c

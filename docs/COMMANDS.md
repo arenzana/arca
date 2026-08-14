@@ -9,9 +9,9 @@
 | `generate NAME` | Create a secret with a random value | `-l/--length --charset --tag --desc --ttl --no-print --show --canary --require-grant --rate N/D` |
 | `get NAME` | Decrypt and print one secret (records a read) | `-n` (newline), `--no-log` |
 | `rotate NAME` | Replace value, keep `created_at`, log a rotation | `--rotate-after --ttl --expires-at --allow-empty` |
-| `ls` | List secrets + metadata (no decryption) | `--tag`, `--reads`, `--json` |
+| `ls` | List secrets + metadata (no decryption) | `--tag`, `--no-rotation`, `--reads`, `--json` |
 | `show NAME` | Show one secret's metadata (no value) | `--json` |
-| `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--missing`, `--json` |
+| `stale` | Secrets overdue/soon for rotation, or expired/expiring | `--within N`, `--json` |
 | `rm NAME` | Remove a secret | — |
 | `disable NAME` | Suspend a secret — refused on every access path — without deleting it or changing its value (a distinct kill switch, independent of expiry) | — |
 | `enable NAME` | Re-enable a disabled secret (keeps any real expiry) | — |

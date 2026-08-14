@@ -138,8 +138,8 @@ func TestRotateErrorsAndStaleVariants(t *testing.T) {
 	if out := runArca(t, "", "stale"); !strings.Contains(out, "R") {
 		t.Fatalf("stale = %q", out)
 	}
-	if out := runArca(t, "", "stale", "--missing"); !strings.Contains(out, "NONE") {
-		t.Fatalf("stale --missing = %q", out)
+	if out := runArca(t, "", "ls", "--no-rotation"); !strings.Contains(out, "NONE") {
+		t.Fatalf("ls --no-rotation = %q", out)
 	}
 	if out := runArca(t, "", "stale", "--within", "1000000"); !strings.Contains(out, "SOON") {
 		t.Fatalf("stale --within = %q", out)

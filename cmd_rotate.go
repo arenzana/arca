@@ -99,24 +99,10 @@ func newStale() *cobra.Command {
 			now := time.Now()
 
 			if missing {
-				views := []secretView{}
-				rows := [][]string{}
-				for _, name := range s.Names() {
-					sec := s.Secrets[name]
-					if sec.RotateAfter != nil {
-						continue
-					}
-					if jsonOut {
-						views = append(views, viewOf(name, sec, time.Time{}, 0))
-					} else {
-						rows = append(rows, sanitizeAll([]string{name, strings.Join(sec.Tags, ","), sec.UpdatedAt.Local().Format("2006-01-02")}))
-					}
-				}
-				if jsonOut {
-					return emitJSON(views)
-				}
-				renderTable([]string{"NAME", "TAGS", "UPDATED"}, rows)
-				return nil
+				return fmt.Errorf("--missing has moved to `arca ls --no-rotation`\n" +
+					"it asked a different question from the rest of this command (which secrets have no\n" +
+					"rotation policy at all, rather than which are due), and it emitted `ls` rows, so\n" +
+					"`stale --json` had two different shapes depending on this flag")
 			}
 
 			// cutoff = now (+within days): surface anything whose rotation is due or whose hard
@@ -165,7 +151,10 @@ func newStale() *cobra.Command {
 		},
 	}
 	c.Flags().IntVar(&within, "within", 0, "also include secrets due within N days")
-	c.Flags().BoolVar(&missing, "missing", false, "instead, list secrets with no rotation policy")
+	// Kept, hidden, purely so the old spelling gets a migration message instead of cobra's
+	// "unknown flag". Remove once 1.0 has shipped and the deprecation has had a release to land.
+	c.Flags().BoolVar(&missing, "missing", false, "deprecated: use `arca ls --no-rotation`")
+	_ = c.Flags().MarkHidden("missing")
 	c.Flags().BoolVar(&jsonOut, "json", false, "output JSON")
 	return c
 }

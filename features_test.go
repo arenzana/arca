@@ -53,9 +53,11 @@ func TestJSONOutput(t *testing.T) {
 		t.Fatalf("stale --json missing OLD: %v", stale)
 	}
 
+	// Formerly `stale --missing --json`. It is an ls filter now: the rows it emitted were always
+	// ls rows, which is exactly why stale's --json used to have two shapes.
 	var miss []map[string]any
-	if err := json.Unmarshal([]byte(runArca(t, "", "stale", "--missing", "--json")), &miss); err != nil {
-		t.Fatalf("stale --missing --json: %v", err)
+	if err := json.Unmarshal([]byte(runArca(t, "", "ls", "--no-rotation", "--json")), &miss); err != nil {
+		t.Fatalf("ls --no-rotation --json: %v", err)
 	}
 }
 
