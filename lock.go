@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // Store mutations are a read-modify-write (load → change → save). Without a lock, two concurrent
@@ -49,7 +51,7 @@ func lockStore() (release func(), err error) { return lockStoreFor(lockTimeout) 
 // behind a human who is simply reading. Skipping is free: auto-sync is best-effort by contract
 // and the next command retries.
 func lockStoreFor(timeout time.Duration) (release func(), err error) {
-	lock := storePath() + ".lock"
+	lock := xdg.StorePath() + ".lock"
 	token, err := lockToken()
 	if err != nil {
 		return nil, err

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 func TestEditCommand(t *testing.T) {
@@ -148,7 +149,7 @@ func TestEditDecryptError(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "good", "set", "GOOD")
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +190,7 @@ func TestEditEncryptError(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "GOOD")
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

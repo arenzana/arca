@@ -22,6 +22,7 @@ import (
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/remote"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestQA_SecondStoreOnSameMachineIsClobberedBySync (Scott, QA) — one operator, one machine, one
@@ -163,7 +164,7 @@ func TestStoreStateKeyIsStableAndDistinct(t *testing.T) {
 	if a != storeStateDir() {
 		t.Fatal("state dir is not stable across calls for one store")
 	}
-	if !strings.HasPrefix(a, filepath.Join(stateDir(), "stores")+string(os.PathSeparator)) {
+	if !strings.HasPrefix(a, filepath.Join(xdg.StateDir(), "stores")+string(os.PathSeparator)) {
 		t.Fatalf("state dir %s is not under %s", a, storesRoot())
 	}
 
@@ -190,16 +191,16 @@ func TestStoreStateKeyIsStableAndDistinct(t *testing.T) {
 	}
 }
 
-// plantLegacyState writes the pre-D4 flat layout into stateDir(): one file per adopted entry plus
+// plantLegacyState writes the pre-D4 flat layout into xdg.StateDir(): one file per adopted entry plus
 // machine-id, which must NOT move. Contents are the file's own name so a test can prove a file
 // arrived intact rather than merely existing.
 func plantLegacyState(t *testing.T) {
 	t.Helper()
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+	if err := os.MkdirAll(xdg.StateDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range legacyStateEntries {
-		p := filepath.Join(stateDir(), name)
+		p := filepath.Join(xdg.StateDir(), name)
 		if name == "sessions" { // a directory, and it must move whole
 			if err := os.MkdirAll(p, 0o700); err != nil {
 				t.Fatal(err)
@@ -228,7 +229,7 @@ func TestAdoptLegacyStateMovesEverythingOnce(t *testing.T) {
 	dir := storeStateDir() // triggers adoption
 
 	for _, name := range legacyStateEntries {
-		if _, err := os.Stat(filepath.Join(stateDir(), name)); err == nil {
+		if _, err := os.Stat(filepath.Join(xdg.StateDir(), name)); err == nil {
 			t.Errorf("%s was left behind in the shared state dir", name)
 		}
 		moved := filepath.Join(dir, name)
@@ -338,7 +339,7 @@ func TestAdoptionNeverOverwritesTheNewerPerStoreCopy(t *testing.T) {
 	if err != nil || string(b) != "newer" {
 		t.Fatalf("adoption overwrote the newer per-store copy: %v %q", err, b)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir(), "grants.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(xdg.StateDir(), "grants.json")); err != nil {
 		t.Errorf("the shared copy was destroyed rather than left in place: %v", err)
 	}
 	// Everything that did NOT collide still moved — one conflict must not strand the other ten.
@@ -383,7 +384,7 @@ func TestAdoptHelperProcess(t *testing.T) {
 func TestConcurrentAdoptionAcrossStoresIsSerialized(t *testing.T) {
 	dir := sandbox(t)
 	plantLegacyState(t)
-	state := stateDir()
+	state := xdg.StateDir()
 
 	const racers = 4
 	stores := make([]string, racers)
@@ -393,7 +394,7 @@ func TestConcurrentAdoptionAcrossStoresIsSerialized(t *testing.T) {
 		cmds[i] = exec.Command(os.Args[0], "-test.run=^TestAdoptHelperProcess$") //#nosec G204 -- os.Args[0] is this test binary
 		cmds[i].Env = []string{
 			adoptHelperEnv + "=1",
-			"XDG_STATE_HOME=" + filepath.Dir(state), // stateDir() appends /arca
+			"XDG_STATE_HOME=" + filepath.Dir(state), // xdg.StateDir() appends /arca
 			"ARCA_STORE=" + stores[i],
 			"HOME=" + dir,
 			"PATH=" + os.Getenv("PATH"),
@@ -507,7 +508,7 @@ func TestAdoptResumesAPartialMove(t *testing.T) {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(filepath.Join(stateDir(), "grants.json"), filepath.Join(dst, "grants.json")); err != nil {
+	if err := os.Rename(filepath.Join(xdg.StateDir(), "grants.json"), filepath.Join(dst, "grants.json")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(adoptedByPath(), []byte(absStorePath()+"\n"), 0o600); err != nil {
@@ -536,7 +537,7 @@ func TestAdoptedStateIsNotStolenByAnotherStore(t *testing.T) {
 	plantLegacyState(t)
 	storeStateDir() // the first store claims and adopts
 
-	if err := os.WriteFile(filepath.Join(stateDir(), "grants.json"), []byte("first store's"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(xdg.StateDir(), "grants.json"), []byte("first store's"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -546,7 +547,7 @@ func TestAdoptedStateIsNotStolenByAnotherStore(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(second, "grants.json")); err == nil {
 		t.Error("a second store adopted state claimed by another store")
 	}
-	b, err := os.ReadFile(filepath.Join(stateDir(), "grants.json"))
+	b, err := os.ReadFile(filepath.Join(xdg.StateDir(), "grants.json"))
 	if err != nil || string(b) != "first store's" {
 		t.Errorf("the first store's leftover was moved or destroyed: %v %q", err, b)
 	}
@@ -610,7 +611,7 @@ func TestConcurrentAdoptionMovesTheStateExactlyOnce(t *testing.T) {
 	// property the staged design lacked: a failed publish left the only copy in a staging dir that
 	// nothing would ever read again.
 	for _, name := range legacyStateEntries {
-		_, inShared := os.Stat(filepath.Join(stateDir(), name))
+		_, inShared := os.Stat(filepath.Join(xdg.StateDir(), name))
 		_, inStore := os.Stat(filepath.Join(dirs[0], name))
 		if inShared != nil && inStore != nil {
 			t.Errorf("%s is in neither the shared dir nor the per-store dir", name)
@@ -662,7 +663,7 @@ func TestAdoptedAuditHistoryStillVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if err := os.Rename(filepath.Join(dir, e.Name()), filepath.Join(stateDir(), e.Name())); err != nil {
+		if err := os.Rename(filepath.Join(dir, e.Name()), filepath.Join(xdg.StateDir(), e.Name())); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -726,10 +727,10 @@ func TestAdoptDegradesWhenTheStateDirIsUnwritable(t *testing.T) {
 	sandbox(t)
 	plantLegacyState(t)
 
-	if err := os.Chmod(stateDir(), 0o500); err != nil {
+	if err := os.Chmod(xdg.StateDir(), 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(stateDir(), 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(xdg.StateDir(), 0o700) })
 
 	started := time.Now()
 	out := captureStderr(t, func() { _ = storeStateDir() })
@@ -739,10 +740,10 @@ func TestAdoptDegradesWhenTheStateDirIsUnwritable(t *testing.T) {
 	if !strings.Contains(out, "could not adopt") {
 		t.Errorf("a failed adoption should warn, got %q", out)
 	}
-	if err := os.Chmod(stateDir(), 0o700); err != nil {
+	if err := os.Chmod(xdg.StateDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir(), "grants.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(xdg.StateDir(), "grants.json")); err != nil {
 		t.Errorf("a failed adoption destroyed the legacy grants.json: %v", err)
 	}
 	if adoptedBy() != "" {

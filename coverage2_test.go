@@ -8,6 +8,7 @@ import (
 
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestRecipientNoopBranches covers the "no new" / "no matching" no-op branches of recipients
@@ -36,7 +37,7 @@ func TestReencryptCannotDecrypt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

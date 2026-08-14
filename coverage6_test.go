@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestDecryptErrorPaths plants a validly-named but undecryptable secret (a corrupt store
@@ -16,7 +17,7 @@ func TestDecryptErrorPaths(t *testing.T) {
 	runArca(t, "", "init")
 	runArca(t, "good", "set", "GOOD")
 
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

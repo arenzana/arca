@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestLockStoreOpenError covers the non-EEXIST open-failure branch (the lock's directory is
@@ -43,7 +45,7 @@ func TestLockStore(t *testing.T) {
 	rel2()
 
 	// A lock older than staleLockAge is treated as abandoned and stolen.
-	lock := storePath() + ".lock"
+	lock := xdg.StorePath() + ".lock"
 	if err := os.WriteFile(lock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +84,7 @@ func TestLockReleaseChecksOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock := storePath() + ".lock"
+	lock := xdg.StorePath() + ".lock"
 	// Simulate a successor taking over: overwrite the lock with a different owner's token.
 	if err := os.WriteFile(lock, []byte("99999:deadbeef"), 0o600); err != nil {
 		t.Fatal(err)
@@ -108,7 +110,7 @@ func TestLockHeartbeat(t *testing.T) {
 	}
 	defer rel()
 
-	lock := storePath() + ".lock"
+	lock := xdg.StorePath() + ".lock"
 	time.Sleep(3 * staleLockAge) // well past the stale threshold
 	fi, err := os.Stat(lock)
 	if err != nil {
@@ -147,7 +149,7 @@ func TestLockStoreForNonBlocking(t *testing.T) {
 		t.Fatalf("lockStoreFor(0) waited %v; it must not block", elapsed)
 	}
 	// The message still names the lock file, which is the operator's escape hatch.
-	if !strings.Contains(err.Error(), storePath()+".lock") {
+	if !strings.Contains(err.Error(), xdg.StorePath()+".lock") {
 		t.Fatalf("contention error lost the lock path: %v", err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestSetRefusesEmptyValue is the regression guard for R3, the data-loss bug: `readValue` used to
@@ -57,7 +58,7 @@ func TestSetEmptyValueMessageDistinguishesCreateFromReplace(t *testing.T) {
 		t.Errorf("creating a new secret destroys nothing; message overstates it: %q", creating)
 	}
 	// A refused create must not leave a half-made secret behind.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +168,7 @@ func TestImportSkipsEmptyOverwrite(t *testing.T) {
 		t.Fatalf("import overwrote a stored secret with an empty value: get = %q, want real-token", out)
 	}
 	// The new-secret half of the same import is unaffected: nothing was lost, so nothing is refused.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // syncStatePath holds what this machine last saw on the remote (never synced itself).
@@ -298,7 +299,7 @@ func openEnvelope(envelope []byte) ([]byte, *store.Store, error) {
 // it a crash just after a pull could leave the directory entry on the pre-pull inode while sync
 // state had already been advanced to say the pull landed.
 func writeLocalStore(payload []byte) error {
-	return atomicfile.Write(storePath(), payload, 0o600)
+	return atomicfile.Write(xdg.StorePath(), payload, 0o600)
 }
 
 // ----------------------------------------------------------------------------
@@ -398,14 +399,14 @@ type localSnapshot struct {
 // bootstrap with a pull.
 func readLocalSnapshot() (localSnapshot, error) {
 	snap := localSnapshot{st: loadSyncState()}
-	raw, err := os.ReadFile(storePath()) //#nosec G304 -- operator-controlled store path
+	raw, err := os.ReadFile(xdg.StorePath()) //#nosec G304 -- operator-controlled store path
 	if os.IsNotExist(err) {
 		return snap, nil
 	}
 	if err != nil {
 		return snap, err
 	}
-	s, err := store.Decode(storePath(), raw)
+	s, err := store.Decode(xdg.StorePath(), raw)
 	if err != nil {
 		return snap, err
 	}
@@ -458,7 +459,7 @@ func underLock(wait time.Duration, commit func() error) error {
 // so a sync whose CAS passes cannot have had its push-vs-pull verdict change underneath it.
 // That is why there is no separate re-evaluation step here.
 func casLocalUnchanged(snap localSnapshot) error {
-	raw, err := os.ReadFile(storePath()) //#nosec G304 -- operator-controlled store path
+	raw, err := os.ReadFile(xdg.StorePath()) //#nosec G304 -- operator-controlled store path
 	switch {
 	case os.IsNotExist(err):
 		if snap.s != nil {

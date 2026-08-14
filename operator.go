@@ -137,7 +137,7 @@ func requireOperator(cmd, question string) error {
 // hands the bypass straight back to the party being constrained. If a genuinely non-interactive
 // consumer ever appears, the answer is an operator-minted capability — created interactively, scoped,
 // expiring, and **never written to the state dir**, because a bearer token on local disk is readable
-// by the same UID this anchor exists to stop (handles.json is written 0600 to stateDir(), which is
+// by the same UID this anchor exists to stop (handles.json is written 0600 to xdg.StateDir(), which is
 // the shape to avoid). Until such a consumer exists, no bypass is built at all.
 // TestControlPlaneHasNoEnvBypass enforces the absence.
 

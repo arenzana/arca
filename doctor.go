@@ -18,6 +18,7 @@ import (
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 type severity int
@@ -307,7 +308,7 @@ func checkStateDir(_ *doctorEnv) []finding {
 		// keeps going, so a partial adoption leaves the claim in place and some entries flat).
 		return []finding{f("state-dir", sevMed, "pre-per-store state files are still in the shared state dir",
 			fmt.Sprintf("%s holds %s, which this store no longer reads (it reads %s)",
-				stateDir(), strings.Join(legacyStateLeftovers(), ", "), dir),
+				xdg.StateDir(), strings.Join(legacyStateLeftovers(), ", "), dir),
 			"the move did not complete — rerun any arca command and check stderr for the reason, or move the listed entries into the dir above by hand")}
 
 	default:
@@ -320,8 +321,8 @@ var doctorChecks = []func(*doctorEnv) []finding{
 }
 
 func runDoctor() []finding {
-	e := &doctorEnv{identityPath: identityPath(), storePath: storePath()}
-	if s, err := store.Load(storePath()); err == nil {
+	e := &doctorEnv{identityPath: xdg.IdentityPath(), storePath: xdg.StorePath()}
+	if s, err := store.Load(xdg.StorePath()); err == nil {
 		e.store = s
 	} else {
 		e.storeErr = err
@@ -342,7 +343,7 @@ func fixIdentityPerms() (bool, error) {
 	if runtime.GOOS == "windows" {
 		return false, nil
 	}
-	p := identityPath()
+	p := xdg.IdentityPath()
 	fi, err := os.Stat(p)
 	if err != nil {
 		return false, nil

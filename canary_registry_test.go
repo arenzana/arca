@@ -8,6 +8,7 @@ import (
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // TestCanaryCommandRegistryFailure covers the command-level error path: if the registry can't be
@@ -94,7 +95,7 @@ func TestCanaryRegistryErrors(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_STATE_HOME", blocker) // stateDir() = blocker/arca → MkdirAll can't create it
+	t.Setenv("XDG_STATE_HOME", blocker) // xdg.StateDir() = blocker/arca → MkdirAll can't create it
 	if err := saveCanaries(map[string]bool{"A": true}); err == nil {
 		t.Fatal("saveCanaries should fail when the state dir can't be created")
 	}
@@ -110,7 +111,7 @@ func TestCanaryNotInStore(t *testing.T) {
 	runArca(t, "realvalue", "set", "REAL")
 
 	// The store entry must exist but carry no canary flag...
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestCanaryNotInStore(t *testing.T) {
 		t.Fatal("canary flag was persisted to the store (SEC-04 regression)")
 	}
 	// ...and the raw store bytes must not contain the word "canary" at all.
-	raw, err := os.ReadFile(storePath())
+	raw, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func TestCanaryLegacyStoreFlagTrips(t *testing.T) {
 	runArca(t, "decoy", "set", "OLD")
 
 	// Simulate a store written by an older arca: canary flag set, registry empty.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +253,7 @@ func TestLegacyCanaryMigration(t *testing.T) {
 	runArca(t, "real", "set", "REAL")
 
 	// Regress the store to its pre-0.6.2 shape: the flag in the synced file, not the registry.
-	s, err := store.Load(storePath())
+	s, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +268,7 @@ func TestLegacyCanaryMigration(t *testing.T) {
 	// Any command that loads the store triggers the migration.
 	runArca(t, "", "ls")
 
-	raw, err := os.ReadFile(storePath())
+	raw, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +282,7 @@ func TestLegacyCanaryMigration(t *testing.T) {
 	if !set["TRAP"] || set["REAL"] {
 		t.Fatalf("registry after migration = %v, want TRAP only", set)
 	}
-	s2, err := store.Load(storePath())
+	s2, err := store.Load(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

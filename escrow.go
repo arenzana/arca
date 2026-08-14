@@ -26,6 +26,7 @@ import (
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // segment is the escrowed unit. It is serialized to JSON and age-encrypted to the
@@ -50,10 +51,10 @@ type escrowState struct {
 
 func escrowStatePath() string { return filepath.Join(storeStateDir(), "escrow-state.json") }
 
-// machineIDPath stays flat in stateDir(), NOT in the per-store dir (D4). It identifies this
+// machineIDPath stays flat in xdg.StateDir(), NOT in the per-store dir (D4). It identifies this
 // machine to escrow; keying it per-store would fork one machine into several escrow identities,
 // each with its own segment sequence, and the truncation check compares sequences per machine.
-func machineIDPath() string { return filepath.Join(stateDir(), "machine-id") }
+func machineIDPath() string { return filepath.Join(xdg.StateDir(), "machine-id") }
 
 func loadEscrowState() escrowState {
 	var st escrowState
@@ -104,7 +105,7 @@ func machineID() (string, error) {
 		return "", err
 	}
 	id := fmt.Sprintf("%s-%s", host, hex.EncodeToString(suf[:]))
-	if err := os.MkdirAll(stateDir(), 0o700); err != nil {
+	if err := os.MkdirAll(xdg.StateDir(), 0o700); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(machineIDPath(), []byte(id+"\n"), 0o600); err != nil {

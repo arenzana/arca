@@ -12,6 +12,7 @@ import (
 
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
+	"github.com/arenzana/arca/internal/xdg"
 )
 
 // withFakeBackend routes the sync command at an in-memory backend for the test.
@@ -362,13 +363,13 @@ func TestSyncLocalAheadPullRefused(t *testing.T) {
 	_ = s
 	_ = raw
 	runArca(t, "", "sync") // push v2 first so remote == local == gen N
-	old, err := os.ReadFile(storePath())
+	old, err := os.ReadFile(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}
 	runArca(t, "v3", "rotate", "A")
 	runArca(t, "", "sync")
-	if err := os.WriteFile(storePath(), old, 0o600); err != nil { // roll local back
+	if err := os.WriteFile(xdg.StorePath(), old, 0o600); err != nil { // roll local back
 		t.Fatal(err)
 	}
 	if err := runArcaErr("", "sync", "--push"); err == nil || !strings.Contains(err.Error(), "rolled back") {
@@ -755,7 +756,7 @@ func TestWriteLocalStoreAndErrors(t *testing.T) {
 	if err := writeLocalStore([]byte(`{"version":1,"generation":1,"recipients":["age1x"],"secrets":{}}`)); err != nil {
 		t.Fatalf("writeLocalStore: %v", err)
 	}
-	fi, err := os.Stat(storePath())
+	fi, err := os.Stat(xdg.StorePath())
 	if err != nil {
 		t.Fatal(err)
 	}

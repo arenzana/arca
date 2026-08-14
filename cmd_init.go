@@ -9,6 +9,7 @@ import (
 
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/store"
+	"github.com/arenzana/arca/internal/xdg"
 	"github.com/spf13/cobra"
 )
 
@@ -21,10 +22,10 @@ func newInit() *cobra.Command {
 		Short: "Initialize the store (reuses $SOPS_AGE_KEY_FILE or generates an identity)",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if _, err := os.Stat(storePath()); err == nil && !force {
-				return fmt.Errorf("store already exists at %s (use --force)", storePath())
+			if _, err := os.Stat(xdg.StorePath()); err == nil && !force {
+				return fmt.Errorf("store already exists at %s (use --force)", xdg.StorePath())
 			}
-			idPath := identityPath()
+			idPath := xdg.IdentityPath()
 			var recips []string
 			if fi, err := os.Stat(idPath); err == nil {
 				// Reuse the existing identity (e.g. the sops age key). Warn if its file is
@@ -65,10 +66,10 @@ func newInit() *cobra.Command {
 				recips = []string{rec}
 				fmt.Fprintf(os.Stderr, "generated new identity at %s\n", idPath)
 			}
-			if err := store.New(storePath(), recips).Save(); err != nil {
+			if err := store.New(xdg.StorePath(), recips).Save(); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "initialized store at %s\nrecipients: %s\n", storePath(), strings.Join(recips, ", "))
+			fmt.Fprintf(os.Stderr, "initialized store at %s\nrecipients: %s\n", xdg.StorePath(), strings.Join(recips, ", "))
 			return nil
 		},
 	}
