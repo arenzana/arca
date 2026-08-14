@@ -93,7 +93,7 @@ func newRecipients() *cobra.Command {
 			return nil
 		},
 	}
-	c.AddCommand(newRecipientsAdd(), newRecipientsRm())
+	c.AddCommand(newRecipientsAdd(), newRecipientsRm(), newRecipientsPin())
 	return c
 }
 
@@ -175,6 +175,14 @@ func newRecipientsAdd() *cobra.Command {
 					return err
 				}
 			}
+			// Accept exactly the keys the operator was just shown into the local baseline, so the
+			// T12 load-time warning does not fire on a key this machine deliberately added. Only
+			// these keys: see pinAdd. Best-effort for the same reason recordStoreGeneration is —
+			// a lost pin costs a spurious warning later, never a failed command, and it fails
+			// toward warning rather than toward silence.
+			if len(added) > 0 {
+				_ = pinAdd(added...)
+			}
 			if len(added) > 0 {
 				fmt.Fprintf(os.Stderr, "added %d recipient(s); run `arca reencrypt` to re-wrap existing secrets\n", len(added))
 			} else {
@@ -227,6 +235,11 @@ func newRecipientsRm() *cobra.Command {
 			if err := logAudit("recipients-rm", "*", ""); err != nil {
 				return err
 			}
+			// Drop just these keys from the local baseline. Not a re-pin from the store: rm is
+			// deliberately unanchored because removal only restricts, so re-pinning here would
+			// hand an agent an unanchored way to accept a key that arrived by sync, simply by
+			// removing some unrelated one. See pinRemove.
+			_ = pinRemove(args...)
 
 			// Automatically re-wrap existing ciphertext to the remaining keys, so the *current* store
 			// immediately stops being decryptable by the removed one (closing the old rm→reencrypt gap).
@@ -249,6 +262,58 @@ func newRecipientsRm() *cobra.Command {
 	}
 	c.Flags().BoolVar(&noReencrypt, "no-reencrypt", false, "don't re-wrap existing secrets now (do it later with `arca reencrypt`)")
 	return c
+}
+
+// newRecipientsPin accepts the store's current recipient set as this machine's baseline, which is
+// what stops the T12 load-time warning. Anchored to an operator, and for the same reason `add` is:
+// this is the control that makes an injected key visible, so an agent that could reach the accept
+// path unanchored could add a key on one machine, sync it here, and pin away the evidence. The
+// prompt lists the keys that are not yet accepted, because *which* key is the decision.
+func newRecipientsPin() *cobra.Command {
+	return &cobra.Command{
+		Use:   "pin",
+		Short: "Accept the current recipient set as this machine's expected baseline",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			added, removed, pinned := recipientDrift(s)
+			if pinned && len(added) == 0 && len(removed) == 0 {
+				fmt.Fprintln(os.Stderr, "recipient set already matches the pinned baseline; nothing to accept")
+				return nil
+			}
+			var q strings.Builder
+			q.WriteString("Accept the current recipient set as expected on this machine?")
+			for _, r := range added {
+				label := s.Label(r)
+				if label == "" {
+					label = "unlabeled"
+				}
+				fmt.Fprintf(&q, "\n  + %s (%s) — will be able to decrypt every secret in this store", r, label)
+			}
+			for _, r := range removed {
+				fmt.Fprintf(&q, "\n  - %s — no longer present", r)
+			}
+			if err := requireOperator("recipients pin", q.String()); err != nil {
+				return err
+			}
+			if err := writeRecipientPin(s); err != nil {
+				return err
+			}
+			// Audited like the other recipient-set changes (SEC-44): accepting a key into the
+			// baseline is the moment an unfamiliar recipient stops being reported, so the log
+			// should say who stopped reporting it and when.
+			for _, r := range added {
+				if err := logAudit("recipients-pin", r, ""); err != nil {
+					return err
+				}
+			}
+			fmt.Fprintf(os.Stderr, "pinned %d recipient(s) as this machine's baseline\n", len(s.Recipients))
+			return nil
+		},
+	}
 }
 
 // newReencrypt decrypts every secret with the local identity and re-wraps it to the current

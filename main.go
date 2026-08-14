@@ -313,6 +313,9 @@ func openStore() (*store.Store, error) {
 		return nil, err
 	}
 	warnIfStoreRolledBack(s.Generation)
+	// T12 residual: a recipient added on another machine arrives here by sync without ever
+	// passing the terminal anchor that guards `recipients add` locally. Report it on load.
+	warnIfRecipientsChanged(s)
 	migrateLegacyCanaries(s)
 	if loadedGeneration < 0 {
 		loadedGeneration = s.Generation // first load of this invocation = the pre-command generation

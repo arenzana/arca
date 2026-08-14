@@ -137,7 +137,7 @@ the operator's controlling terminal can attempt to answer its own prompt — on 
 self-authorization into a *visible* one rather than making it impossible; the
 guarantee needs the age identity out of the agent's reach (AR-1).
 
-### T12 — Recipient injection: exfiltration that never enters an access path — ◐ PARTIALLY ADDRESSED
+### T12 — Recipient injection: exfiltration that never enters an access path — ✅ ADDRESSED
 The widest case of T11, called out separately because its blast radius and its
 audit behaviour are both different in kind.
 
@@ -157,7 +157,7 @@ recipient set grew or to whom. `arca log --verify` still reported a clean chain 
 correctly, since the chain is honest about everything it was told, and it was
 never told.
 
-*Partially addressed.* Three separable fixes were identified; two are done:
+*Addressed.* Three separable fixes were identified; all three are done:
 
 1. ✅ **Audit `recipients add`** (SEC-44). Each added key is recorded individually as
    `op=recipients-add` with the key in the `name` field, and a relabel as
@@ -169,16 +169,43 @@ never told.
    legitimate pending change. The `recipients add` prompt shows the key itself, because
    *which* key is the decision — it is the last chance to notice an unfamiliar one
    before `reencrypt` makes it total.
-3. ⚠ **Pin the recipient set in local state** — still open. The pattern
-   `storeGenPath()` already uses for rollback would surface a change on load and let
-   `doctor` raise it; `doctor` currently reports decryption blast radius at LOW and as
-   a static count with no baseline to compare against. Without this, a recipient added
-   on *another* machine and synced in is still not flagged on load.
+3. ✅ **Pin the recipient set in local state.** The first two fixes both act on the
+   machine where the key is added. Neither covers the case where it is added on
+   *another* machine and pulled in by sync: the store simply arrives carrying a
+   recipient nobody here was ever shown. `recipients.pin` (state dir, never synced,
+   `0600`) records the set this machine has accepted. A recipient present in the store
+   but absent from the pin is reported on every load and raises `doctor`'s readership
+   check to HIGH, naming the key — previously that check reported a count at LOW, which
+   is a fact rather than a finding, because there was no baseline to compare against.
 
-*Detection for the remaining gap:* `arca who-can-read` / `arca exposure` show the
-current recipient set, and the audit log now names added keys on the machine where
-they were added. Review both. See `GUIDES/` for the response runbook if an
-unrecognized key is found.
+   The pin deliberately does **not** behave like `store.gen`. That high-water mark
+   advances by itself on seeing a higher number, because its job is to catch a
+   generation going *backwards*; a recipient set going *forwards* is the attack, so the
+   pin only moves on an anchored operator action. Two consequences follow, and both are
+   load-bearing rather than incidental:
+
+   - **The pin is edited, never rewritten from the store.** `recipients add` accepts
+     only the keys the operator was just shown, and `recipients rm` drops only the keys
+     it removed. Re-pinning from the store in either path would turn a decision about
+     one key into acceptance of every key present. This matters most for `rm`, which is
+     deliberately *not* anchored on the grounds that removal only restricts: if it
+     re-pinned, removing any key at all would silently accept an injected one, which is
+     an unanchored path to silencing exactly this warning.
+   - **Loading never accepts.** The warning repeats until an operator runs
+     `arca recipients pin`, which is itself anchored and audited (`op=recipients-pin`),
+     and which lists the unaccepted keys in its prompt. A warning that silenced itself
+     would report each injected key once, which is not meaningfully different from not
+     reporting it.
+
+   The residual is trust-on-first-use: the baseline is established silently on first
+   load, so a key injected *before* that is baked in and never reported. Warning on
+   every store that predates the check would train operators to ignore the one warning
+   that matters, and `store.gen` makes the same trade by starting at 0.
+
+*Detection:* the load-time warning and `doctor` are the primary path. `arca
+who-can-read` / `arca exposure` show the current recipient set, and the audit log
+names added keys on the machine where they were added. See `GUIDES/` for the
+response runbook if an unrecognized key is found.
 
 ### T13 — Clearing a policy bit on the write path is not anchored — ✅ ADDRESSED
 T11 anchors the six commands that *widen* access. It did not anchor the two that
@@ -380,5 +407,4 @@ describes intended behaviour rather than current behaviour is worse than none.
 
 | ID | Summary | Severity |
 |----|---------|----------|
-| T12 (residual) | The recipient set is not pinned in local state, so a recipient added on another machine and synced in is not surfaced on load; `doctor` reports blast radius as a static count with no baseline | Medium |
 | T13 (residual) | `set` / `generate` extend an expiry (`--ttl`, `--expires-at`) on an existing secret with no anchor: `applyExpiry()` overwrites `ExpiresAt` unconditionally and has no clearing path. Not folded into the policy predicate that closed T13's five relaxation flags — the helper is shared with a third command and "extend versus shorten" needs its own rule across a relative TTL and an absolute date. Neither reveals a value nor widens who may read one, and the expiry is visible in `arca show` | Low |

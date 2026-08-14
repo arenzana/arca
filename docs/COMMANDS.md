@@ -18,7 +18,7 @@
 | `edit NAME` | Edit a secret's value in `$EDITOR` (re-encrypted) | — |
 | `rename OLD NEW` | Rename a secret, preserving metadata/history (alias `mv`) | `--force` |
 | `annotate NAME` | Edit a secret's tags/description/metadata **without** changing its value (works on `--no-print` secrets) | `--tag --add-tag --rm-tag --desc --meta k=v --rm-meta` |
-| `recipients` | List age recipients (with labels); `add`/`rm` subcommands manage the set | `add --label name@machine` |
+| `recipients` | List age recipients (with labels); `add`/`rm`/`pin` subcommands manage the set | `add --label name@machine` |
 | `who-can-read [NAME]` | Show which recipients can decrypt the store (or one secret); flags high-privilege names | — |
 | `exposure` | List secrets by blast radius (recipients that can decrypt each); flags master/admin-looking names | `--sensitive` |
 | `doctor` | Security & health check of your setup, ranked by severity with a remedy per finding | `--json`, `--fix` |
@@ -82,6 +82,28 @@ issuer first** (GitHub, AWS, …), then `disable` or `rotate` it here.
 
 Note: `env` skips any secret it can't release — disabled/expired and `--require-grant` — instead of
 failing, so one suspended secret never blanks out `eval "$(arca env)"`.
+
+## Accepting a recipient set (`recipients pin`)
+
+arca records the recipient set each machine has been shown, in `recipients.pin` under that
+machine's state dir. The file never syncs: it is this machine's memory of what it expects, and a
+baseline that travelled with the store would be controlled by whoever controls the store.
+
+Adding a recipient here is already guarded by an operator prompt. A recipient added on **another**
+machine and pulled in by sync is not, so the store can arrive carrying a key nobody here was ever
+shown. When that happens arca warns on every load and `doctor` raises its readership check to HIGH
+and names the key. Review it with `arca who-can-read`, then either:
+
+- `arca recipients pin` to accept the current set as expected (prompts on the terminal, listing the
+  keys that are not yet accepted, and records `op=recipients-pin` in the audit log), or
+- `arca recipients rm KEY` to drop it.
+
+The warning repeats until you do one or the other. Loading the store never accepts a key by itself,
+because a warning that silenced itself would report an injected key exactly once.
+
+The baseline is established silently the first time a store is loaded, so a key that was already
+present at that point is accepted without comment. Reviewing `arca who-can-read` once, on a store
+that predates this check, is the way to close that gap.
 
 ## Removing a recipient (`recipients rm`)
 
