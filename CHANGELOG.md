@@ -6,6 +6,8 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-14
+
 ### Security
 - **Extending or clearing an expiry now needs an operator terminal (T13 residual).** The anchor
   that closed T13 covered five relaxation flags but stopped at `--ttl` / `--expires-at`, which
@@ -724,7 +726,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/arenzana/arca/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/arenzana/arca/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/arenzana/arca/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/arenzana/arca/compare/v0.8.0...v0.9.0
