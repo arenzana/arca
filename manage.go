@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/secretname"
 )
 
 // newEdit decrypts a secret into a temporary file, opens it in $EDITOR, and re-encrypts the
@@ -146,7 +147,7 @@ func newRename() *cobra.Command {
 		Args:    cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
 			old, dst := args[0], args[1]
-			if err := validName(dst); err != nil {
+			if err := secretname.Validate(dst); err != nil {
 				return err
 			}
 			unlock, err := lockStore()

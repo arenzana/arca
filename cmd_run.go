@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/secretname"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -130,7 +131,7 @@ func newExec() *cobra.Command {
 				}
 				// Defense in depth against a poisoned/hand-edited store: never inject a name
 				// that isn't a valid identifier (e.g. LD_PRELOAD-style or `=`-bearing names).
-				if validName(name) != nil {
+				if secretname.Validate(name) != nil {
 					fmt.Fprintf(os.Stderr, "skip %q: not a valid env name\n", name)
 					continue
 				}
@@ -245,7 +246,7 @@ func newEnv() *cobra.Command {
 				// Defense in depth: never emit `export <name>=…` for a name that isn't a valid
 				// identifier — a crafted name in a poisoned store could otherwise inject shell
 				// when the output is run via `eval "$(arca env)"`.
-				if validName(name) != nil {
+				if secretname.Validate(name) != nil {
 					fmt.Fprintf(os.Stderr, "skip %q: not a valid env name\n", name)
 					continue
 				}

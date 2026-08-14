@@ -37,6 +37,7 @@ import (
 	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/policy"
 	"github.com/arenzana/arca/internal/store"
 )
 
@@ -726,56 +727,6 @@ func contains(ss []string, x string) bool {
 // shellQuote single-quotes a value for safe `eval` in a POSIX shell (used by `env`).
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// nameRe is the allowed shape of a secret name: a valid shell / environment-variable
-// identifier. Enforced on every write (set/import) so a name can never inject shell when
-// emitted by `env` (used via `eval "$(arca env)"`) or hijack a variable like LD_PRELOAD when
-// injected by `exec`. `inject` already restricts arca://NAME references to this same shape.
-var nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-// reservedEnvNames are environment-variable names that must never be used as a secret name: a
-// value injected under one of them (via exec/env/run_with_secrets/handle) hijacks the child
-// process rather than being consumed by it. LD_*/DYLD_* load attacker code into the dynamic
-// linker; PATH/CDPATH redirect binary lookup; IFS/BASH_ENV/ENV/SHELLOPTS/PS*/PROMPT_COMMAND alter
-// shell parsing; the language-runtime hooks below inject libraries or startup code. Because the
-// store keeps recipient public keys in cleartext and is meant to be git-synced, anyone who can
-// write the store could otherwise craft a correctly-encrypted entry under one of these names and
-// get code execution on the operator's next `arca exec`. The shape check (nameRe) alone does NOT
-// stop this — every name here is a valid identifier. Matched case-insensitively so a case-folding
-// platform (Windows) or a confusable can't slip through.
-var reservedEnvNames = map[string]bool{
-	"PATH": true, "IFS": true, "BASH_ENV": true, "ENV": true, "SHELLOPTS": true,
-	"BASHOPTS": true, "CDPATH": true, "PS1": true, "PS2": true, "PS3": true, "PS4": true,
-	"PROMPT_COMMAND": true, "GLOBIGNORE": true, "FIGNORE": true,
-	"PERL5LIB": true, "PERL5OPT": true, "PYTHONPATH": true, "PYTHONSTARTUP": true,
-	"NODE_OPTIONS": true, "RUBYOPT": true, "RUBYLIB": true, "GEM_PATH": true,
-	"GIT_SSH": true, "GIT_SSH_COMMAND": true, "GIT_EXTERNAL_DIFF": true, "GIT_PAGER": true,
-	"HOSTALIASES": true, "TERMINFO": true, "TERMCAP": true, "PAGER": true, "EDITOR": true,
-}
-
-// reservedName reports whether name would hijack a child process if injected as an environment
-// variable. It matches reservedEnvNames case-insensitively plus the dynamic-linker prefixes
-// LD_* and DYLD_* (which cover LD_PRELOAD, LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES, and kin).
-func reservedName(name string) bool {
-	u := strings.ToUpper(name)
-	if reservedEnvNames[u] {
-		return true
-	}
-	return strings.HasPrefix(u, "LD_") || strings.HasPrefix(u, "DYLD_")
-}
-
-// validName rejects names that aren't safe identifiers, or that would hijack a child process's
-// environment (reserved names like PATH/LD_PRELOAD). It is enforced on every write and re-checked
-// at every env-injection site, so an already-poisoned store can't be used either.
-func validName(name string) error {
-	if !nameRe.MatchString(name) {
-		return fmt.Errorf("invalid secret name %q: must match [A-Za-z_][A-Za-z0-9_]*", name)
-	}
-	if reservedName(name) {
-		return fmt.Errorf("secret name %q is a reserved environment variable and can't be used: injecting it would hijack the child process", name)
-	}
-	return nil
-}
-
 // approve enforces a per-secret human approval gate before a value is released. It requires an
 // interactive confirmation on the controlling terminal (/dev/tty on Unix, CONIN$/CONOUT$ on
 // Windows) every single time — there is deliberately NO environment pre-approval (SEC-06).
@@ -887,7 +838,7 @@ func gate(sec *store.Secret, name, cmdline string) error {
 // access hasn't been recorded yet, so it is allowed iff the prior uses within the window are below
 // the cap. A refusal is itself recorded (op=ratelimit) as a throttle signal.
 func checkRateLimit(sec *store.Secret, name string) error {
-	win, winStr := rateWindow(sec.RateWindow)
+	win, winStr := policy.RateWindow(sec.RateWindow)
 	a, err := audit.Open(auditPath())
 	if err != nil {
 		return err
@@ -905,43 +856,6 @@ func checkRateLimit(sec *store.Secret, name string) error {
 		fmt.Fprintf(os.Stderr, "note: %s is at its last permitted use in this %s window\n", name, winStr)
 	}
 	return nil
-}
-
-// rateWindow resolves a stored RateWindow to the window actually enforced, returning both the
-// duration and the string form used in messages. An empty window means the documented 1h default;
-// an unparseable one can only come from a hand-edited store, and falling back to 1h keeps a
-// malformed field from disabling the cap entirely.
-//
-// Extracted from checkRateLimit so requirePolicyOperator (operator.go) compares rate limits by the
-// same rule that enforces them. A second copy of this defaulting would let the anchor guard a
-// policy the access path does not apply.
-func rateWindow(stored string) (time.Duration, string) {
-	winStr := stored
-	if winStr == "" {
-		winStr = "1h"
-	}
-	win, err := parseTTL(winStr)
-	if err != nil {
-		return time.Hour, "1h"
-	}
-	return win, winStr
-}
-
-// parseRate parses a "--rate N/DURATION" value (e.g. "10/1h") into a use cap and a window string.
-func parseRate(s string) (int, string, error) {
-	n, dur, ok := strings.Cut(strings.TrimSpace(s), "/")
-	if !ok {
-		return 0, "", fmt.Errorf("rate must look like N/DURATION, e.g. 10/1h")
-	}
-	count, err := strconv.Atoi(strings.TrimSpace(n))
-	if err != nil || count <= 0 {
-		return 0, "", fmt.Errorf("rate count must be a positive integer (got %q)", strings.TrimSpace(n))
-	}
-	dur = strings.TrimSpace(dur)
-	if _, err := parseTTL(dur); err != nil {
-		return 0, "", fmt.Errorf("rate window %q: %w", dur, err)
-	}
-	return count, dur, nil
 }
 
 // tripCanary records and announces that a decoy secret was used — a strong signal that something
@@ -980,27 +894,6 @@ func tripCanary(name string) error {
 	return nil
 }
 
-// parseTTL parses a relative duration for --ttl. It extends Go's time.ParseDuration (ns…h)
-// with 'd' (days) and 'w' (weeks) suffixes, the units people actually reach for with secrets.
-func parseTTL(s string) (time.Duration, error) {
-	s = strings.TrimSpace(s)
-	if n := len(s); n >= 2 {
-		switch s[n-1] {
-		case 'd', 'w':
-			num, err := strconv.ParseFloat(s[:n-1], 64)
-			if err != nil {
-				return 0, fmt.Errorf("invalid duration %q", s)
-			}
-			hours := 24.0
-			if s[n-1] == 'w' {
-				hours = 24 * 7
-			}
-			return time.Duration(num * hours * float64(time.Hour)), nil
-		}
-	}
-	return time.ParseDuration(s)
-}
-
 // applyExpiry sets sec.ExpiresAt from the mutually-exclusive --ttl (relative) and
 // --expires-at (absolute RFC3339 or YYYY-MM-DD) flags. It is a no-op when neither is given,
 // so re-setting a secret without the flags preserves any existing expiry.
@@ -1009,7 +902,7 @@ func applyExpiry(sec *store.Secret, ttl, expiresAt string) error {
 	case ttl != "" && expiresAt != "":
 		return fmt.Errorf("use either --ttl or --expires-at, not both")
 	case ttl != "":
-		d, err := parseTTL(ttl)
+		d, err := policy.ParseTTL(ttl)
 		if err != nil {
 			return fmt.Errorf("ttl: %w", err)
 		}

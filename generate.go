@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/policy"
+	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
 )
 
@@ -70,7 +72,7 @@ func newGenerate() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			if err := validName(name); err != nil {
+			if err := secretname.Validate(name); err != nil {
 				return err
 			}
 			val, err := randomSecret(length, resolveCharset(charset))
@@ -134,7 +136,7 @@ func newGenerate() *cobra.Command {
 				if rate == "" {
 					sec.RateLimit, sec.RateWindow = 0, ""
 				} else {
-					n, w, err := parseRate(rate)
+					n, w, err := policy.ParseRate(rate)
 					if err != nil {
 						return err
 					}

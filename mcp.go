@@ -27,6 +27,7 @@ import (
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/secretname"
 )
 
 func newMCP() *cobra.Command {
@@ -264,7 +265,7 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 			return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
 		}
 		// Defense in depth: refuse to inject a name that isn't a valid identifier (poisoned store).
-		if err := validName(name); err != nil {
+		if err := secretname.Validate(name); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		if err := gate(sec, name, cmdline); err != nil {
@@ -405,7 +406,7 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 	// Re-validate the env name at injection time (as exec/env/run_with_secrets do), so a tampered
 	// handles.json can't inject a reserved name like LD_PRELOAD/PATH into the child (FU-2 / SEC-01).
-	if err := validName(h.EnvName); err != nil {
+	if err := secretname.Validate(h.EnvName); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	plain, err := crypto.Decrypt(sec.Value, ids)

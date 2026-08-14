@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/arenzana/arca/internal/atomicfile"
+	"github.com/arenzana/arca/internal/policy"
+	"github.com/arenzana/arca/internal/secretname"
 )
 
 // A Handle is an opaque capability token for an AI agent: it lets the agent *use* a secret through
@@ -107,13 +109,13 @@ func newHandleCreate() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := args[0]
-			if err := validName(name); err != nil {
+			if err := secretname.Validate(name); err != nil {
 				return err
 			}
 			if ttl == "" {
 				return fmt.Errorf("a handle must be time-bounded; pass --ttl (e.g. 1h)")
 			}
-			d, err := parseTTL(ttl)
+			d, err := policy.ParseTTL(ttl)
 			if err != nil {
 				return err
 			}
@@ -180,7 +182,7 @@ func newHandleCreate() *cobra.Command {
 			if env == "" {
 				env = name
 			}
-			if err := validName(env); err != nil {
+			if err := secretname.Validate(env); err != nil {
 				return fmt.Errorf("--as must be a valid env-var name: %w", err)
 			}
 			id, err := newHandleID()

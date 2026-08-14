@@ -14,6 +14,7 @@ import (
 	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
 )
 
@@ -199,7 +200,7 @@ func newCanary() *cobra.Command {
 				return listCanaries()
 			}
 			name := args[0]
-			if err := validName(name); err != nil {
+			if err := secretname.Validate(name); err != nil {
 				return err
 			}
 			val, err := canaryValue(template)

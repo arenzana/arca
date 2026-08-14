@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/arenzana/arca/internal/policy"
 )
 
 func TestParseTTL(t *testing.T) {
@@ -24,12 +26,12 @@ func TestParseTTL(t *testing.T) {
 		{"d", 0, false},
 	}
 	for _, c := range cases {
-		got, err := parseTTL(c.in)
+		got, err := policy.ParseTTL(c.in)
 		switch {
 		case c.ok && (err != nil || got != c.want):
-			t.Errorf("parseTTL(%q) = %v, %v; want %v", c.in, got, err, c.want)
+			t.Errorf("policy.ParseTTL(%q) = %v, %v; want %v", c.in, got, err, c.want)
 		case !c.ok && err == nil:
-			t.Errorf("parseTTL(%q) expected an error, got %v", c.in, got)
+			t.Errorf("policy.ParseTTL(%q) expected an error, got %v", c.in, got)
 		}
 	}
 }
