@@ -6,6 +6,17 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`stale --missing` is now `ls --no-rotation`.** It asked a different question from the rest of
+  `stale`: which secrets have no rotation policy at all, rather than which are due. It also
+  produced different output, and that had a consequence beyond tidiness. `stale --json` emitted
+  rotation rows normally and `ls`-shaped rows under `--missing`, so a command whose JSON shape
+  `STABILITY.md` promises as stable actually had two shapes depending on a flag, and a consumer
+  parsing it could be handed either. It lives on `ls` now because the rows it emits were already
+  `ls` rows, which makes it an ordinary filter that composes with `--tag` rather than a mode that
+  silently ignored `--within`. The old flag is hidden and fails with a message naming its
+  replacement, rather than disappearing into "unknown flag".
+
 ### Security
 - **A recipient that arrives by sync is now reported (T12).** `recipients add` and `reencrypt` are
   both anchored to an operator terminal, so a key cannot be added *on this machine* without someone
