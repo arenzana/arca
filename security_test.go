@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
 )
 
@@ -13,13 +14,13 @@ func TestValidName(t *testing.T) {
 	good := []string{"A", "_x", "API_TOKEN", "a1", "lower_case", "_", "MY_PATH", "PATHFINDER", "LDAP_URL"}
 	bad := []string{"", "1a", "a-b", "a b", "a;b", "a=b", "PATH/x", "föö", "x;touch /tmp/p"}
 	for _, n := range good {
-		if err := validName(n); err != nil {
-			t.Errorf("validName(%q) = %v, want nil", n, err)
+		if err := secretname.Validate(n); err != nil {
+			t.Errorf("secretname.Validate(%q) = %v, want nil", n, err)
 		}
 	}
 	for _, n := range bad {
-		if validName(n) == nil {
-			t.Errorf("validName(%q) = nil, want error", n)
+		if secretname.Validate(n) == nil {
+			t.Errorf("secretname.Validate(%q) = nil, want error", n)
 		}
 	}
 }
@@ -34,14 +35,14 @@ func TestValidNameRejectsReserved(t *testing.T) {
 		"PS1", "PYTHONPATH", "NODE_OPTIONS", "PERL5LIB", "GIT_SSH_COMMAND", "EDITOR",
 	}
 	for _, n := range reserved {
-		if err := validName(n); err == nil {
-			t.Errorf("validName(%q) = nil, want reserved-name error", n)
+		if err := secretname.Validate(n); err == nil {
+			t.Errorf("secretname.Validate(%q) = nil, want reserved-name error", n)
 		}
 	}
 	// Names that merely contain or extend a reserved token stay valid.
 	for _, n := range []string{"LDAP", "LD", "DYLD", "MY_PATH", "PATH_TO_KEY", "ENVOY", "EDITORS"} {
-		if err := validName(n); err != nil {
-			t.Errorf("validName(%q) = %v, want nil (not reserved)", n, err)
+		if err := secretname.Validate(n); err != nil {
+			t.Errorf("secretname.Validate(%q) = %v, want nil (not reserved)", n, err)
 		}
 	}
 }

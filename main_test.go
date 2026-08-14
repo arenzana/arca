@@ -13,6 +13,7 @@ import (
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/policy"
 	"github.com/arenzana/arca/internal/store"
 )
 
@@ -671,12 +672,12 @@ func TestCanaryList(t *testing.T) {
 
 // TestParseRate covers the --rate N/DURATION parser.
 func TestParseRate(t *testing.T) {
-	if n, w, err := parseRate("10/2h"); err != nil || n != 10 || w != "2h" {
-		t.Fatalf("parseRate(10/2h) = %d,%q,%v", n, w, err)
+	if n, w, err := policy.ParseRate("10/2h"); err != nil || n != 10 || w != "2h" {
+		t.Fatalf("policy.ParseRate(10/2h) = %d,%q,%v", n, w, err)
 	}
 	for _, bad := range []string{"", "10", "abc/1h", "0/1h", "-1/1h", "5/notaduration"} {
-		if _, _, err := parseRate(bad); err == nil {
-			t.Fatalf("parseRate(%q) should error", bad)
+		if _, _, err := policy.ParseRate(bad); err == nil {
+			t.Fatalf("policy.ParseRate(%q) should error", bad)
 		}
 	}
 }

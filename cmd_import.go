@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -40,7 +41,7 @@ func parseDotenvSecrets(r io.Reader) ([]kvPair, error) {
 			continue
 		}
 		k = strings.TrimSpace(k)
-		if validName(k) != nil {
+		if secretname.Validate(k) != nil {
 			fmt.Fprintf(os.Stderr, "skip %q: not a valid secret name\n", k)
 			continue
 		}
@@ -65,7 +66,7 @@ func parseJSONSecrets(r io.Reader) ([]kvPair, error) {
 	}
 	out := make([]kvPair, 0, len(raw))
 	for k, rv := range raw {
-		if validName(k) != nil {
+		if secretname.Validate(k) != nil {
 			fmt.Fprintf(os.Stderr, "skip %q: not a valid secret name\n", k)
 			continue
 		}
@@ -123,7 +124,7 @@ func newImport() *cobra.Command {
 			plan := make([]kvPair, 0, len(pairs))
 			for _, p := range pairs {
 				name := prefix + p.key
-				if validName(name) != nil {
+				if secretname.Validate(name) != nil {
 					fmt.Fprintf(os.Stderr, "skip %q: not a valid secret name\n", name)
 					continue
 				}

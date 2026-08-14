@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/arenzana/arca/internal/policy"
+	"github.com/arenzana/arca/internal/secretname"
 )
 
 // FuzzShellQuote is the authoritative eval-safety check: a value quoted by shellQuote (used by
@@ -67,7 +70,7 @@ func FuzzValidName(f *testing.F) {
 		f.Add(n)
 	}
 	f.Fuzz(func(t *testing.T, name string) {
-		if validName(name) == nil && !safe.MatchString(name) {
+		if secretname.Validate(name) == nil && !safe.MatchString(name) {
 			t.Fatalf("validName accepted %q, which is not a safe identifier", name)
 		}
 	})
@@ -78,7 +81,7 @@ func FuzzParseTTL(f *testing.F) {
 	for _, s := range []string{"1h", "30m", "7d", "2w", "", "abc", "-5m", "999999999999999h"} {
 		f.Add(s)
 	}
-	f.Fuzz(func(t *testing.T, s string) { _, _ = parseTTL(s) })
+	f.Fuzz(func(t *testing.T, s string) { _, _ = policy.ParseTTL(s) })
 }
 
 func FuzzParseRate(f *testing.F) {
@@ -86,9 +89,9 @@ func FuzzParseRate(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		n, w, err := parseRate(s)
+		n, w, err := policy.ParseRate(s)
 		if err == nil && (n <= 0 || w == "") {
-			t.Fatalf("parseRate(%q) returned ok with n=%d w=%q", s, n, w)
+			t.Fatalf("policy.ParseRate(%q) returned ok with n=%d w=%q", s, n, w)
 		}
 	})
 }

@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arenzana/arca/internal/policy"
 	"github.com/arenzana/arca/internal/store"
 )
 
@@ -243,19 +244,19 @@ func canaryNow(name string, cur *store.Secret) (bool, error) {
 // capability. So the comparison is on the rate itself, and clearing is simply the limiting case of
 // raising it. A tighter limit, and a limit newly applied to a secret that had none, stay headless.
 //
-// The window defaulting mirrors checkRateLimit() through the shared rateWindow() helper, so what is
+// The window defaulting mirrors checkRateLimit() through the shared policy.RateWindow() helper, so what is
 // compared here is what is enforced there. Two copies of that rule would be one refactor away from
 // an anchor that guards a policy nobody applies.
 func rateDowngrade(cur *store.Secret, rate string) (*policyDowngrade, error) {
 	if cur.RateLimit <= 0 {
 		return nil, nil // no limit today: anything this invocation writes is the same or tighter
 	}
-	_, curWin := rateWindow(cur.RateWindow)
+	_, curWin := policy.RateWindow(cur.RateWindow)
 	curDesc := fmt.Sprintf("%d/%s", cur.RateLimit, curWin)
 	if strings.TrimSpace(rate) == "" {
 		return &policyDowngrade{"--rate", curDesc, "unlimited"}, nil
 	}
-	n, w, err := parseRate(rate)
+	n, w, err := policy.ParseRate(rate)
 	if err != nil {
 		return nil, err // surface the bad flag before prompting, not after
 	}
@@ -267,7 +268,7 @@ func rateDowngrade(cur *store.Secret, rate string) (*policyDowngrade, error) {
 
 // perSecond normalizes "N per window" so limits with different windows are comparable.
 func perSecond(limit int, window string) float64 {
-	win, _ := rateWindow(window)
+	win, _ := policy.RateWindow(window)
 	return float64(limit) / win.Seconds()
 }
 

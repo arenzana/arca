@@ -13,6 +13,8 @@ import (
 
 	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
+	"github.com/arenzana/arca/internal/policy"
+	"github.com/arenzana/arca/internal/secretname"
 )
 
 // A Grant is a just-in-time, command-scoped authorization to use a `--require-grant` secret: an
@@ -175,13 +177,13 @@ func newGrant() *cobra.Command {
 				name, grantScope(ttl, uses, command, agent))); err != nil {
 				return err
 			}
-			if err := validName(name); err != nil {
+			if err := secretname.Validate(name); err != nil {
 				return err
 			}
 			if ttl == "" {
 				return fmt.Errorf("a grant must be time-bounded; pass --ttl (e.g. 15m, 2h)")
 			}
-			d, err := parseTTL(ttl)
+			d, err := policy.ParseTTL(ttl)
 			if err != nil {
 				return err
 			}
