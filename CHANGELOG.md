@@ -7,6 +7,27 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Security
+- **A recipient that arrives by sync is now reported (T12).** `recipients add` and `reencrypt` are
+  both anchored to an operator terminal, so a key cannot be added *on this machine* without someone
+  seeing it. Neither covers a key added on **another** machine: the store arrives carrying a
+  recipient nobody here was shown, and no read path looks at the recipient set at all. Every
+  per-secret control is irrelevant to it, because re-wrapping never calls `gate()`.
+  `recipients.pin` (state dir, `0600`, never synced) records the set this machine has accepted. A
+  recipient in the store but not in the pin is reported on every load and raises `doctor`'s
+  readership check to HIGH, naming the key. That check previously reported a count at LOW, which is
+  a fact rather than a finding, since there was nothing to compare it against.
+  The pin does not behave like `store.gen`. That high-water mark advances by itself on seeing a
+  higher number, because it exists to catch a generation going *backwards*; a recipient set going
+  *forwards* is the attack. So the pin is edited, never rewritten from the store: `recipients add`
+  accepts only the keys just shown, and `recipients rm` drops only what it removed. That distinction
+  is load-bearing for `rm`, which is deliberately unanchored on the grounds that removal only
+  restricts — had it re-pinned from the store, removing any key at all would have silently accepted
+  an injected one, an unanchored path to silencing this very warning. Loading never accepts either:
+  the warning repeats until an operator runs the new `arca recipients pin`, which is itself anchored,
+  lists the unaccepted keys in its prompt, and records `op=recipients-pin`.
+  The residual is trust-on-first-use: the baseline is set silently on first load, so a key injected
+  before that is never reported. Warning on every store that predates the check would train
+  operators to ignore the one warning that matters.
 - **`set` and `generate` can no longer relax the policy on an existing secret without an operator
   terminal (T13).** The control-plane anchor covered the six commands that exist to widen access; it
   did not cover the two whose job is to write a value and whose policy flags ride along. So

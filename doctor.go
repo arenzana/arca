@@ -129,8 +129,28 @@ func checkReadership(e *doctorEnv) []finding {
 		sev = sevLow
 		detail += fmt.Sprintf("; %d unlabeled (can't tell who/which machine they are)", unlabeled)
 	}
-	return []finding{f("readership", sev, "store decryption blast radius", detail,
-		"review with `arca who-can-read`; name keys via `arca recipients add <key> --label name@machine`")}
+	// A count on its own is not a finding, it is a fact — without a baseline there is nothing for
+	// the operator to compare it against, which is what left T12 partially addressed. Drift from
+	// the pinned set is the part that warrants attention: those keys can decrypt this store and
+	// were never shown to an operator here.
+	added, removed, pinned := recipientDrift(e.store)
+	switch {
+	case !pinned:
+		detail += "; no pinned baseline yet (it is written on first use, so a change from here on is reportable)"
+	case len(added) > 0:
+		sev = sevHigh
+		detail += fmt.Sprintf("; %d NOT in the pinned set: %s", len(added), strings.Join(added, ", "))
+	case len(removed) > 0:
+		if sev < sevLow {
+			sev = sevLow
+		}
+		detail += fmt.Sprintf("; %d pinned recipient(s) no longer present: %s", len(removed), strings.Join(removed, ", "))
+	}
+	remedy := "review with `arca who-can-read`; name keys via `arca recipients add <key> --label name@machine`"
+	if len(added) > 0 || len(removed) > 0 {
+		remedy = "review with `arca who-can-read`, then `arca recipients pin` to accept the current set or `arca recipients rm <key>` to drop one"
+	}
+	return []finding{f("readership", sev, "store decryption blast radius", detail, remedy)}
 }
 
 func checkSensitive(e *doctorEnv) []finding {
