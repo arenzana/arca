@@ -57,6 +57,22 @@ go run github.com/securego/gosec/v2/cmd/gosec@latest -severity medium ./...
 `exec` calls and config-derived file paths trip gosec G204/G304. Annotate them with a justified
 `//#nosec` only when the input is genuinely operator-controlled, never to silence untrusted input.
 
+### Size ratchets
+
+Two limits exist to stop a file or a function growing without anyone noticing. `main.go` once
+reached 2374 lines carrying ten unrelated jobs, and nothing failed the whole time it happened.
+
+```sh
+go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 30 -ignore '_test\.go' .
+go test -run TestNoFileGrowsUnbounded .    # no Go file over 1000 lines
+```
+
+Both are set just clear of today's worst case, so they do not fire on ordinary work: the average
+function scores 5.1 against a limit of 30. **The fix when one trips is to split the thing, not to
+raise the limit.** Raising it is precisely how a file gets to 2374 lines. Lowering a limit is
+welcome and is its own commit: simplify first, then move the number in the same change so the diff
+shows what bought it.
+
 ## Style
 
 - Match the surrounding code: standard library first, small focused functions, comments that

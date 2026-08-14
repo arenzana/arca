@@ -70,6 +70,17 @@ jobs:
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
       - name: gosec (medium+)
         run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 -severity medium -confidence medium -quiet ./...
+      # A ratchet, not a target. main.go reached 2374 lines holding ten unrelated jobs before
+      # anyone noticed, because nothing ever failed while it grew. 30 sits just above today's worst
+      # function (newExec at 28), so this passes now and refuses to let the number climb. The
+      # average is 5.1, so ordinary code is nowhere near it and this will not fire on normal work.
+      # Lowering the bar is its own task: simplify a function, then drop the number in the same
+      # commit. Tests are excluded deliberately — a long table-driven test is not the complexity
+      # this guards against, and counting them would push the threshold up past where it can bite.
+      - name: gocyclo (no function over 30)
+        run: |
+          go run github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0 -over 30 -ignore '_test\.go' .
+          echo "no function scored over 30"
 
   govulncheck:
     runs-on: ubuntu-latest
