@@ -66,8 +66,7 @@ func (p *policyFlags) register(c *cobra.Command) {
 // It exists as a method so the flags handed to the anchor are structurally the same ones apply
 // writes. Passing them positionally at each call site is what would let the two drift.
 func (p *policyFlags) anchor(cmd *cobra.Command, verb, name string, existing *store.Secret) error {
-	return requirePolicyOperator(verb, name, cmd.Flags().Changed, existing,
-		p.noPrint, p.requireApproval, p.requireGrant, p.canary, p.rate)
+	return requirePolicyOperator(verb, name, cmd.Flags().Changed, existing, *p)
 }
 
 // apply writes the flags onto sec, reporting whether the canary designation changed so the caller
@@ -87,7 +86,7 @@ func (p *policyFlags) apply(cmd *cobra.Command, sec *store.Secret) (canaryChange
 		}
 		sec.RotateAfter = &t
 	}
-	if err := applyExpiry(sec, p.ttl, p.expiresAt); err != nil {
+	if err := applyExpiry(cmd.Flags().Changed, sec, p.ttl, p.expiresAt); err != nil {
 		return false, err
 	}
 	if len(p.meta) > 0 {

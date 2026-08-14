@@ -22,7 +22,7 @@ func newRotate() *cobra.Command {
 		Use:   "rotate NAME",
 		Short: "Replace an existing secret's value (keeps created_at; logs a rotation)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			unlock, err := lockStore()
 			if err != nil {
@@ -39,6 +39,16 @@ func newRotate() *cobra.Command {
 			}
 			recips, err := crypto.ParseRecipients(s.Recipients)
 			if err != nil {
+				return err
+			}
+			// T13 residual: `rotate` is the third command that can move an expiry, and until now
+			// the only one that did it with no anchor at all. It writes no other policy field, so
+			// only the expiry pair is populated here; the predicate ignores flags never given.
+			// Before the value is read, for the reason `set` anchors early: the write below is
+			// unconditional and a late refusal would destroy the value on the way to a change the
+			// caller was not allowed to make.
+			if err := (&policyFlags{ttl: ttl, expiresAt: expiresAt}).
+				anchor(cmd, "rotate", name, sec); err != nil {
 				return err
 			}
 			// `rotate` only ever replaces: it has already refused a missing secret above.
@@ -62,7 +72,7 @@ func newRotate() *cobra.Command {
 				}
 				sec.RotateAfter = &t
 			}
-			if err := applyExpiry(sec, ttl, expiresAt); err != nil {
+			if err := applyExpiry(cmd.Flags().Changed, sec, ttl, expiresAt); err != nil {
 				return err
 			}
 			if err := s.Save(); err != nil {

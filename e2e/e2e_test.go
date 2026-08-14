@@ -370,10 +370,25 @@ func TestTTL(t *testing.T) {
 		t.Fatalf("stale = %q", out)
 	}
 
-	// rotate --ttl revives it
-	b.must(t, "fresh", "rotate", "OLD", "--ttl", "1h")
-	if out := b.must(t, "", "get", "OLD"); out != "fresh" {
-		t.Fatalf("after rotate --ttl get OLD = %q", out)
+	// Reviving an expired secret is an expiry extension, so it now needs an operator terminal
+	// (T13 residual). This binary is run without one, which is exactly the case the anchor is
+	// for: `rotate --ttl` used to revive a dead credential headless, and an agent could reach it.
+	if _, errOut, code := b.run(t, "fresh", "rotate", "OLD", "--ttl", "1h"); code == 0 {
+		t.Fatal("reviving an expired secret with no terminal should be refused")
+	} else if !strings.Contains(errOut, "terminal") {
+		t.Fatalf("refusal should explain the terminal requirement, got %q", errOut)
+	}
+
+	// The refusal is the whole command: the value is not written on the way to a refused policy
+	// change, so the secret is still expired and still holds what it held.
+	if _, _, code := b.run(t, "", "get", "OLD"); code == 0 {
+		t.Fatal("OLD should still be expired after the refused revive")
+	}
+
+	// Rotating without touching the expiry is untouched: it replaces the value and stays headless.
+	b.must(t, "fresh", "rotate", "EPH")
+	if out := b.must(t, "", "get", "EPH"); out != "fresh" {
+		t.Fatalf("after rotate get EPH = %q", out)
 	}
 }
 

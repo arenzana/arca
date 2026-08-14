@@ -176,7 +176,7 @@ func (d policyDowngrade) String() string { return fmt.Sprintf("%s %s → %s", d.
 // is the only path in the CLI that disarms a decoy. Checking that the list is complete is a matter
 // of reading those two blocks, not of trusting this comment; TestPolicyPredicateCoversEveryPolicyFlag
 // fails if either command grows a policy flag this predicate does not know about.
-func policyDowngrades(name string, changed func(string) bool, cur *store.Secret, noPrint, requireApproval, requireGrant, canary bool, rate string) ([]policyDowngrade, error) {
+func policyDowngrades(name string, changed func(string) bool, cur *store.Secret, p policyFlags) ([]policyDowngrade, error) {
 	if cur == nil {
 		return nil, nil
 	}
@@ -186,16 +186,16 @@ func policyDowngrades(name string, changed func(string) bool, cur *store.Secret,
 		now  bool
 		next bool
 	}{
-		{"--no-print", cur.NoPrint, noPrint},
-		{"--require-approval", cur.RequireApproval, requireApproval},
-		{"--require-grant", cur.RequireGrant, requireGrant},
+		{"--no-print", cur.NoPrint, p.noPrint},
+		{"--require-approval", cur.RequireApproval, p.requireApproval},
+		{"--require-grant", cur.RequireGrant, p.requireGrant},
 	} {
 		if changed(strings.TrimPrefix(b.flag, "--")) && b.now && !b.next {
 			out = append(out, policyDowngrade{b.flag, "true", "false"})
 		}
 	}
 	if changed("rate") {
-		d, err := rateDowngrade(cur, rate)
+		d, err := rateDowngrade(cur, p.rate)
 		if err != nil {
 			return nil, err
 		}
@@ -203,7 +203,17 @@ func policyDowngrades(name string, changed func(string) bool, cur *store.Secret,
 			out = append(out, *d)
 		}
 	}
-	if changed("canary") && !canary {
+	// T13 residual: an expiry is a policy, and extending one leaves the value usable for longer.
+	if changed("ttl") || changed("expires-at") {
+		d, err := expiryDowngrade(cur, p.ttl, p.expiresAt, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		if d != nil {
+			out = append(out, *d)
+		}
+	}
+	if changed("canary") && !p.canary {
 		was, err := canaryNow(name, cur)
 		if err != nil {
 			return nil, err
@@ -247,6 +257,38 @@ func canaryNow(name string, cur *store.Secret) (bool, error) {
 // The window defaulting mirrors checkRateLimit() through the shared policy.RateWindow() helper, so what is
 // compared here is what is enforced there. Two copies of that rule would be one refactor away from
 // an anchor that guards a policy nobody applies.
+// expiryDowngrade reports whether this invocation would leave a secret usable for longer than it
+// is now. It is a comparison rather than a spelling match for the reason rateDowngrade is: an
+// agent refused one way of relaxing a control reaches for another.
+//
+// The ordering is what makes it decidable. No expiry at all is the *least* protected state, and an
+// earlier expiry is more protected than a later one. So:
+//
+//   - a secret with no expiry has nothing to relax; anything written is same-or-tighter
+//   - moving the instant later extends the window in which the value still works: a downgrade
+//   - moving it earlier, or setting one where there was none, tightens: no anchor
+//   - clearing it outright is the widest form of that same move, from a deadline to none
+//
+// Both flags are resolved to an instant first, which is what collapses "extend versus shorten"
+// from a rule per spelling into one comparison. `now` is a parameter so the boundary is testable.
+func expiryDowngrade(cur *store.Secret, ttl, expiresAt string, now time.Time) (*policyDowngrade, error) {
+	if cur.ExpiresAt == nil {
+		return nil, nil // it already never expires; there is no protection here to remove
+	}
+	next, err := policy.ResolveExpiry(ttl, expiresAt, now)
+	if err != nil {
+		return nil, err // surface the bad flag before prompting, not after
+	}
+	curDesc := cur.ExpiresAt.UTC().Format(time.RFC3339)
+	if next == nil {
+		return &policyDowngrade{"--ttl/--expires-at", curDesc, "never"}, nil
+	}
+	if !next.After(*cur.ExpiresAt) {
+		return nil, nil
+	}
+	return &policyDowngrade{"--ttl/--expires-at", curDesc, next.UTC().Format(time.RFC3339)}, nil
+}
+
 func rateDowngrade(cur *store.Secret, rate string) (*policyDowngrade, error) {
 	if cur.RateLimit <= 0 {
 		return nil, nil // no limit today: anything this invocation writes is the same or tighter
@@ -279,9 +321,8 @@ func perSecond(limit int, window string) float64 {
 // value unconditionally and before the policy block, so a refusal that arrived after the write
 // would leave the caller having destroyed the secret it was refused permission to downgrade — the
 // anchor would then be a control that only adds damage.
-func requirePolicyOperator(cmdName, name string, changed func(string) bool, cur *store.Secret,
-	noPrint, requireApproval, requireGrant, canary bool, rate string) error {
-	downgrades, err := policyDowngrades(name, changed, cur, noPrint, requireApproval, requireGrant, canary, rate)
+func requirePolicyOperator(cmdName, name string, changed func(string) bool, cur *store.Secret, p policyFlags) error {
+	downgrades, err := policyDowngrades(name, changed, cur, p)
 	if err != nil || len(downgrades) == 0 {
 		return err
 	}

@@ -211,15 +211,16 @@ func TestPolicyPredicateCoversEveryPolicyFlag(t *testing.T) {
 	policy := map[string]bool{
 		"no-print": true, "require-approval": true, "require-grant": true,
 		"rate": true, "canary": true,
+		// Expiry joined this set when the T13 residual closed. It was filed separately while
+		// applyExpiry() was shared with a third command that did not anchor, could not clear an
+		// expiry, and had no rule for "extend" across a relative TTL and an absolute date. All
+		// three are now resolved: both spellings resolve to an instant before being compared.
+		"ttl": true, "expires-at": true,
 	}
 	notPolicy := map[string]bool{
 		// Metadata and value shape. None of these weakens a constraint on who may use the secret.
 		"tag": true, "desc": true, "meta": true, "rotate-after": true,
 		"length": true, "charset": true, "show": true,
-		// Expiry is deliberately excluded here and filed separately: applyExpiry() is shared with a
-		// third command, cannot clear an expiry, and "extend" needs its own comparison rule. See the
-		// note in docs/THREAT-MODEL.md rather than widening this predicate silently.
-		"ttl": true, "expires-at": true,
 	}
 
 	// Scan the whole package rather than a named list of files. A hardcoded list silently stops

@@ -35,6 +35,45 @@ func ParseTTL(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
+// ResolveExpiry turns the mutually-exclusive --ttl (relative) and --expires-at (absolute) pair
+// into a single absolute instant.
+//
+// Resolving before comparing is the whole trick to deciding whether an expiry change tightens or
+// relaxes a secret. A relative duration and an absolute date look like two different rules right up
+// until both are instants, after which "extend or shorten" is an ordinary time comparison. Trying
+// to compare a `--ttl` against a stored date without resolving it first is what made this look
+// like it needed a rule per spelling.
+//
+// A nil result with a nil error means neither flag carried a value. Only the caller knows whether
+// that means "leave the expiry alone" (the flag was absent) or "remove it" (the flag was given
+// empty), so that decision is deliberately not made here.
+func ResolveExpiry(ttl, expiresAt string, now time.Time) (*time.Time, error) {
+	switch {
+	case ttl != "" && expiresAt != "":
+		return nil, fmt.Errorf("use either --ttl or --expires-at, not both")
+	case ttl != "":
+		d, err := ParseTTL(ttl)
+		if err != nil {
+			return nil, fmt.Errorf("ttl: %w", err)
+		}
+		if d <= 0 {
+			return nil, fmt.Errorf("ttl must be positive")
+		}
+		t := now.UTC().Add(d)
+		return &t, nil
+	case expiresAt != "":
+		t, err := time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			if t, err = time.Parse("2006-01-02", expiresAt); err != nil {
+				return nil, fmt.Errorf("expires-at: want RFC3339 or YYYY-MM-DD, got %q", expiresAt)
+			}
+		}
+		t = t.UTC()
+		return &t, nil
+	}
+	return nil, nil
+}
+
 // RateWindow resolves a stored rate window to the window actually enforced, returning both the
 // duration and the string form used in messages. An empty window means the documented 1h default;
 // an unparseable one can only come from a hand-edited store, and falling back to 1h keeps a

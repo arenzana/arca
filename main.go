@@ -894,32 +894,25 @@ func tripCanary(name string) error {
 	return nil
 }
 
-// applyExpiry sets sec.ExpiresAt from the mutually-exclusive --ttl (relative) and
-// --expires-at (absolute RFC3339 or YYYY-MM-DD) flags. It is a no-op when neither is given,
-// so re-setting a secret without the flags preserves any existing expiry.
-func applyExpiry(sec *store.Secret, ttl, expiresAt string) error {
-	switch {
-	case ttl != "" && expiresAt != "":
-		return fmt.Errorf("use either --ttl or --expires-at, not both")
-	case ttl != "":
-		d, err := policy.ParseTTL(ttl)
-		if err != nil {
-			return fmt.Errorf("ttl: %w", err)
-		}
-		if d <= 0 {
-			return fmt.Errorf("ttl must be positive")
-		}
-		t := time.Now().UTC().Add(d)
-		sec.ExpiresAt = &t
-	case expiresAt != "":
-		t, err := time.Parse(time.RFC3339, expiresAt)
-		if err != nil {
-			if t, err = time.Parse("2006-01-02", expiresAt); err != nil {
-				return fmt.Errorf("expires-at: want RFC3339 or YYYY-MM-DD, got %q", expiresAt)
-			}
-		}
-		t = t.UTC()
-		sec.ExpiresAt = &t
+// applyExpiry sets sec.ExpiresAt from the mutually-exclusive --ttl (relative) and --expires-at
+// (absolute RFC3339 or YYYY-MM-DD) flags.
+//
+// Presence and value are different questions, which is why this takes `changed` and not just the
+// strings. A flag not given leaves any existing expiry alone, so re-running a write command never
+// quietly drops one. A flag given *empty* clears it, matching what `--rate ""` already does.
+//
+// Before this there was no way to remove an expiry at all; the T13 residual recorded the missing
+// clearing path. Adding it is what makes "never expires" reachable from a write command, and so
+// also what obliges expiryDowngrade to treat clearing as the widest relaxation rather than as an
+// absent value.
+func applyExpiry(changed func(string) bool, sec *store.Secret, ttl, expiresAt string) error {
+	if !changed("ttl") && !changed("expires-at") {
+		return nil
 	}
+	next, err := policy.ResolveExpiry(ttl, expiresAt, time.Now())
+	if err != nil {
+		return err
+	}
+	sec.ExpiresAt = next // nil when the flag was given empty: the expiry is cleared
 	return nil
 }

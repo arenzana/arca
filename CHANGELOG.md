@@ -6,6 +6,27 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **Extending or clearing an expiry now needs an operator terminal (T13 residual).** The anchor
+  that closed T13 covered five relaxation flags but stopped at `--ttl` / `--expires-at`, which
+  overwrote `ExpiresAt` unconditionally: `arca set NAME --ttl 30d` extended a secret due to expire
+  tomorrow, headless. Three things were filed as blocking it and all three are resolved. "Extend
+  versus shorten" turned out not to need a rule per spelling, because resolving both to an instant
+  *before* comparing collapses it to one time comparison. There is now a clearing path, a flag
+  given empty removes the expiry, matching `--rate ""`. And `rotate`, the third command that can
+  move an expiry and the only one with no anchor at all, now goes through the same predicate.
+  The ordering: no expiry is the least protected state a secret can be in, and an earlier expiry
+  is tighter than a later one. Extending or clearing is a downgrade and prompts; shortening, or
+  setting an expiry where there was none, is not and stays headless. A flag that is absent still
+  leaves an existing expiry alone, so re-running a write command never silently drops one.
+  With this, `docs/THREAT-MODEL.md` has no open findings for the first time.
+  **This changes a documented workflow, so it is worth stating plainly.** `arca rotate NAME --ttl
+  1h` on an *already expired* secret was the documented way to revive it, and reviving is the
+  largest extension there is: a dead credential becomes live again. It now prompts, which means it
+  no longer works unattended in CI or a script. Rotating without an expiry flag is unaffected and
+  stays headless, as does shortening. If you revive expired secrets from automation, that job
+  needs a terminal now, or should create the secret fresh instead.
+
 ### Changed
 - **`stale --missing` is now `ls --no-rotation`.** It asked a different question from the rest of
   `stale`: which secrets have no rotation policy at all, rather than which are due. It also

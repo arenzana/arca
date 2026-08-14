@@ -76,6 +76,67 @@ func TestRateWindowFallsBackOnGarbage(t *testing.T) {
 	}
 }
 
+// Resolving both spellings to an instant is what turns "is this expiry being extended" from a
+// rule per spelling into one comparison, so the two paths must land on the same kind of value.
+func TestResolveExpiryBothSpellings(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	got, err := ResolveExpiry("7d", "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(7 * 24 * time.Hour); !got.Equal(want) {
+		t.Fatalf("ResolveExpiry(ttl) = %v, want %v", got, want)
+	}
+
+	got, err = ResolveExpiry("", "2026-06-08", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("ResolveExpiry(expires-at) = %v, want %v", got, want)
+	}
+
+	// RFC3339 is accepted alongside the bare date, and normalized to UTC.
+	got, err = ResolveExpiry("", "2026-06-08T06:00:00+02:00", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 6, 8, 4, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("ResolveExpiry(RFC3339) = %v, want %v", got, want)
+	}
+}
+
+// Neither flag carrying a value is not an error. The caller distinguishes "absent" from "given
+// empty", because only it can see which, and clearing an expiry depends on that difference.
+func TestResolveExpiryEmptyIsNilNotAnError(t *testing.T) {
+	got, err := ResolveExpiry("", "", time.Now())
+	if err != nil {
+		t.Fatalf("empty should not be an error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("empty should resolve to nil, got %v", got)
+	}
+}
+
+func TestResolveExpiryRejectsBadInput(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct{ name, ttl, at string }{
+		{"both given", "7d", "2030-01-01"},
+		{"unparseable ttl", "nonsense", ""},
+		{"zero ttl", "0d", ""},
+		{"negative ttl", "-1h", ""},
+		{"unparseable date", "", "next tuesday"},
+		{"wrong date layout", "", "01/02/2030"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ResolveExpiry(tc.ttl, tc.at, now); err == nil {
+				t.Fatalf("ResolveExpiry(%q, %q) = nil error, want an error", tc.ttl, tc.at)
+			}
+		})
+	}
+}
+
 func TestParseRateValid(t *testing.T) {
 	for in, want := range map[string]struct {
 		n   int
