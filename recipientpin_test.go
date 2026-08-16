@@ -196,6 +196,100 @@ func TestDoctorFlagsUnpinnedRecipient(t *testing.T) {
 	}
 }
 
+// The load-time warning only ever goes to stderr, which execArca deliberately leaves alone; the
+// captureStderr helper in sync_test.go is what reads it.
+
+// TestDriftWarningIsOneLineWhateverTheCount is the regression guard for a v0.10.0 defect.
+//
+// The first version printed a full-length warning per drifted recipient. Multi-machine sync makes
+// drift the normal state rather than the exception — every other machine's key is one this machine
+// never added — so a small fleet paid ~1.8 KB of stderr on every single command, forever, growing
+// linearly with the number of machines. An operator scrolls past that and an AI agent's context
+// fills with it, and either way the warning stops being read, which costs it its only job.
+//
+// The size must therefore not depend on the number of drifted keys. Detail belongs to `doctor`,
+// which names every unaccepted key and is asserted separately below.
+func TestDriftWarningIsOneLineWhateverTheCount(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	s, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sizes []int
+	for _, n := range []int{1, 2, 5, 20} {
+		for len(s.Recipients) < n+1 {
+			s.Recipients = append(s.Recipients, newRecipientKey(t))
+		}
+		out := captureStderr(t, func() { warnIfRecipientsChanged(s) })
+
+		lines := strings.Count(strings.TrimSpace(out), "\n") + 1
+		if strings.TrimSpace(out) == "" {
+			t.Fatalf("%d drifted recipients produced no warning at all", n)
+		}
+		if lines != 1 {
+			t.Fatalf("%d drifted recipients produced %d lines; it must stay one:\n%s", n, lines, out)
+		}
+		sizes = append(sizes, len(out))
+	}
+
+	// Constant, not merely small: the failure being guarded against is growth with fleet size.
+	for i, got := range sizes {
+		if got > sizes[0]+90 { // the count renders a couple of digits wider, nothing more
+			t.Fatalf("warning grew with recipient count (%v bytes across 1/2/5/20 keys); "+
+				"it must not scale with the number of machines", sizes)
+		}
+		_ = i
+	}
+	if sizes[len(sizes)-1] > 400 {
+		t.Fatalf("warning is %d bytes; it is printed on every command and must stay compact", sizes[len(sizes)-1])
+	}
+}
+
+// One unexpected recipient is the shape the attack actually takes, so that case still names the
+// key rather than reporting a count the operator would have to go looking up.
+func TestDriftWarningNamesASingleKey(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	s, err := openStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attacker := newRecipientKey(t)
+	s.Recipients = append(s.Recipients, attacker)
+
+	out := captureStderr(t, func() { warnIfRecipientsChanged(s) })
+	if !strings.Contains(out, attacker) {
+		t.Fatalf("a single drifted key should be named:\n%s", out)
+	}
+}
+
+// Shortening the warning is only safe because the detail moved rather than vanished. If doctor
+// ever stops naming every unaccepted key, the compact warning above becomes a silent loss.
+func TestDoctorStillNamesEveryUnpinnedRecipient(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if _, err := openStore(); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for i := 0; i < 4; i++ {
+		k := newRecipientKey(t)
+		keys = append(keys, k)
+		injectRecipient(t, k)
+	}
+	out, _ := execArca("", "doctor")
+	for _, k := range keys {
+		if !strings.Contains(out, k) {
+			t.Fatalf("doctor must still name every unaccepted key; %s is missing:\n%s", k, out)
+		}
+	}
+	if !strings.Contains(out, "HIGH") {
+		t.Fatalf("doctor should still rank unaccepted recipients HIGH:\n%s", out)
+	}
+}
+
 func TestRecipientPinFileIsPrivate(t *testing.T) {
 	// GOOS is a build constant, not an environment variable: os.Getenv("GOOS") is empty
 	// everywhere, so guarding on it would run this POSIX-only check on Windows too.

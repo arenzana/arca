@@ -6,6 +6,23 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-16
+
+### Fixed
+- **The recipient-drift warning no longer floods every command.** 0.10.0 printed a full-length
+  warning per unaccepted recipient, on every load. Multi-machine sync makes drift the *normal*
+  state rather than the exception, because every other machine's key is by definition one this
+  machine never added, so a four-machine fleet paid roughly 1.8 KB of stderr on every single
+  command, forever, growing linearly with the number of machines. It is now one line whatever the
+  count: about 215 bytes, constant, an 88% reduction at five keys and far more beyond that.
+  This is a security fix rather than a cosmetic one. A warning that size on every invocation is
+  one an operator scrolls past and one that fills an AI agent's context, and in both cases it
+  stops being read, which costs it the only job it has. Nothing was weakened to achieve it: a
+  single drifted key is still named in full, since one unexpected recipient is the shape the
+  attack actually takes, and `doctor` still ranks the finding HIGH and still names every
+  unaccepted key. The detail moved to where it can be read deliberately rather than repeated
+  where it cannot.
+
 ## [0.10.0] - 2026-08-14
 
 ### Security
@@ -726,7 +743,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/arenzana/arca/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/arenzana/arca/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/arenzana/arca/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/arenzana/arca/compare/v0.9.0...v0.9.1
