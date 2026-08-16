@@ -137,20 +137,48 @@ func pinRecipientsOnFirstUse(s *store.Store) {
 // It runs on load, so the notice lands before whatever the command was going to do, and it keeps
 // firing until an operator accepts the set with `arca recipients pin`. Nothing here writes the
 // pin: a warning that silenced itself would report each injected key exactly once.
+//
+// It emits ONE line however many recipients drifted, which is a correctness property and not a
+// matter of taste. The first version printed a full-length warning per key, and multi-machine sync
+// makes drift the *normal* state rather than the exception: every other machine's key is, by
+// definition, one this machine never added. A four-machine fleet therefore paid about 1.8 KB of
+// stderr on every single command, forever. That is not merely noisy. It is read by an operator
+// scrolling past it and by an AI agent whose context it fills, and a warning that appears on every
+// invocation at that size is one both of them learn to ignore, which costs it the only job it has.
+//
+// The detail deliberately lives elsewhere: `doctor` raises the readership check to HIGH and names
+// every unaccepted key, and `who-can-read` lists the full set. This line is the attention-getter
+// that points at them. The single-key case still names the key, because one unexpected recipient
+// is the shape the attack actually takes and identifying it immediately is the whole point.
 func warnIfRecipientsChanged(s *store.Store) {
 	added, removed, pinned := recipientDrift(s)
 	if !pinned {
 		pinRecipientsOnFirstUse(s)
 		return
 	}
-	for _, r := range added {
-		label := s.Label(r)
+	if len(added) == 0 && len(removed) == 0 {
+		return
+	}
+
+	var what string
+	switch {
+	case len(added) == 1:
+		label := s.Label(added[0])
 		if label == "" {
 			label = "unlabeled"
 		}
-		fmt.Fprintf(os.Stderr, "arca: warning: %s (%s) can decrypt this store but was never added on this machine — if you did not expect it, it can read every secret here, offline and permanently; review with `arca who-can-read`, then accept with `arca recipients pin` or remove it with `arca recipients rm`\n", r, label)
+		what = fmt.Sprintf("%s (%s) can decrypt this store and was never accepted on this machine", added[0], label)
+	case len(added) > 1:
+		what = fmt.Sprintf("%d recipients can decrypt this store and were never accepted on this machine", len(added))
 	}
-	for _, r := range removed {
-		fmt.Fprintf(os.Stderr, "arca: note: %s no longer appears in the recipient set — accept with `arca recipients pin`; note that removing a recipient is not revocation, since it can still decrypt anything it already copied\n", r)
+	if len(removed) > 0 {
+		gone := fmt.Sprintf("%d pinned recipient(s) are no longer in the store", len(removed))
+		if what == "" {
+			what = gone
+		} else {
+			what += "; " + gone
+		}
 	}
+	fmt.Fprintf(os.Stderr, "arca: warning: %s — review with `arca who-can-read` or `arca doctor`, "+
+		"then `arca recipients pin` to accept or `arca recipients rm` to drop\n", what)
 }
