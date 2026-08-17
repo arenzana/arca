@@ -6,6 +6,19 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-08-17
+
+### Changed
+- **`github.com/mark3labs/mcp-go` 0.57.0 to 0.58.0.** Upstream fixes only. The one worth
+  naming is "preserve schema tags on nested fields", since arca's MCP tool names and their
+  inputs and outputs are a surface `STABILITY.md` promises to keep. Verified rather than
+  assumed: the `tools/list` schemas are byte-identical across the bump, all six tools still
+  register, and live `list_secrets` and `read_secret` calls behave unchanged. The remaining
+  fixes are in the SSE and streamable-HTTP servers, which arca does not use — it speaks MCP
+  over stdio.
+- GitHub Actions pins refreshed: harden-runner 2.20.1 to 2.21.0 and codeql-action 4.37.6 to
+  4.37.7. CI only; neither is compiled into the binary.
+
 ## [0.10.1] - 2026-08-16
 
 ### Fixed
@@ -743,7 +756,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/arenzana/arca/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/arenzana/arca/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/arenzana/arca/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/arenzana/arca/compare/v0.9.1...v0.9.2
