@@ -6,6 +6,26 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-08-17
+
+### Fixed
+- **One unusable secret no longer aborts every `arca exec`.** A bare `exec` sweeps the whole
+  store as a convenience, and a single expired, disabled or ungranted secret anywhere in it
+  failed the run outright: the command never executed, and the error named a secret the caller
+  had not asked for. A credential quietly reaching its expiry was enough to break every `exec`
+  on the machine, which is a denial of service you inflict on yourself and one that is hard to
+  attribute, because nothing about the message points at the sweep.
+  `env` had this same defect and was fixed in 0.6.x by skipping what it cannot release. `exec`
+  kept the old semantics; it now follows the same rule, for the same list of conditions, and
+  says on stderr which secrets it skipped and why.
+  Two limits keep the skip honest. An explicit `--only NAME` still fails, because naming a
+  secret is asking for it and running the command silently without it is worse than failing:
+  the command may well "succeed" unauthenticated. And `gate()` failures are untouched, so an
+  approval denial, a canary trip that cannot be recorded, and a rate-limit refusal all still
+  fail the command, because each is a decision or a fail-closed guarantee rather than a secret
+  that is merely unavailable right now. A `--require-grant` secret with a matching grant is
+  still injected, which is the whole point of the flag.
+
 ## [0.10.2] - 2026-08-17
 
 ### Changed
@@ -756,7 +776,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/arenzana/arca/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/arenzana/arca/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/arenzana/arca/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/arenzana/arca/compare/v0.9.2...v0.10.0
