@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	filippo.io/age v1.3.1
-	github.com/mark3labs/mcp-go v0.57.0
+	github.com/mark3labs/mcp-go v0.58.0
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.45.0
