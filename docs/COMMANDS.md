@@ -31,9 +31,9 @@
 | `signer show` | Print this machine's store-signing public key (headless-safe; generates the key on first use) | — |
 | `signer pin PUBKEY` | Accept a store-signing public key as this machine's expected signer — terminal-anchored | — |
 | `signer rotate` | Generate a new store-signing key and pin it here — terminal-anchored; other machines then need `signer pin` | — |
-| `log [NAME]` | Access history (agent/session/actor); `--verify` checks the log's integrity and emits an anchor token to store off-machine | `--limit N`, `--json`, `--verify`, `--require-signed`, `--anchor TOKEN`, `--remote` |
+| `log [NAME]` | Access history (agent/session/actor); `--verify` checks the log's integrity | `--limit N`, `--json`, `--verify`, `--require-signed`, `--anchor TOKEN`, `--remote`, `--print-anchor` |
 | `canary [NAME]` | Plant a decoy secret (any use trips a signed alert), or list canaries and their trips | `--template`, `--list`, `--tag`, `--desc` |
-| `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window | `--command`, `--uses`, `--ttl`, `--agent` |
+| `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window. `--agent` is advisory (env sniffing), not a containment boundary | `--command`, `--uses`, `--ttl`, `--agent` |
 | `grants` | List active grants and their remaining uses | — |
 | `revoke SECRET` | Remove the active grant for a secret | — |
 | `handle create SECRET` | Mint an opaque capability handle an agent can use (via MCP) without the secret's name/value — operator-only (refused for a detected agent), and refused for a disabled secret | `--ttl`, `--command`, `--as`, `--override` |

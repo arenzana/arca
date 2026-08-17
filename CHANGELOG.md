@@ -7,6 +7,9 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`log --verify --print-anchor`** — minting an off-machine anchor token is now
+  opt-in. `--verify` used to print it on stdout every time, which put a
+  low-secrecy binding on a stream agents capture (audit M2).
 - **`arca signer show` / `pin` / `rotate`** — the operator-held Ed25519 key that will
   authenticate a synced store (audit H1, first slice). Age provides confidentiality,
   not authentication; this key is what a later pull-side check will verify against a
@@ -25,6 +28,22 @@ All notable changes to arca are documented here. The format follows
   is pinned to it automatically; that is not Trust-On-First-Use from the network.
 
 ### Fixed
+- **`reencrypt` now names every recipient in the confirmation and runs the drift
+  check before the operator answers** (audit M9). The payload step of a
+  recipient-injection asked a bare yes/no; the one-line drift warning appeared
+  on stderr after confirmation, before every secret was wrapped to the drifted
+  key.
+- **Unknown store JSON fields survive a load-and-save** (audit M8). An older
+  arca that loaded a store carrying a future policy field and re-saved it
+  silently stripped the field fleet-wide. Unknown keys are now preserved.
+- **Escrow segments are re-chained against their claimed anchor, and a forged
+  `LastID` past the local log is refused** (audit M2). Segments were
+  age-encrypted but not authenticated; `PrevAnchor` continuity plus
+  `CheckAnchor` on the tail was enough for a backend to serve a fabricated
+  history or freeze escrow with a huge LastID.
+- **Grant `--agent` is documented as advisory** (audit M4). It sniffs
+  environment markers any process can set; the uses and expiry checks remain
+  firm.
 - **`exec` and MCP no longer leak sync-backend credentials into child environments**
   (audit finding M7). `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` and the `AWS_*`
   fallbacks were inherited via `os.Environ()` into every child; the redact writer only

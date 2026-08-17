@@ -189,6 +189,22 @@ func TestEscrowRowHelpers(t *testing.T) {
 	if err != nil || n != 2 || string(h) != string(rows[1].Hash) {
 		t.Fatalf("ChainInfoThrough = n%d err %v", n, err)
 	}
+
+	nAll, lastH, err := l.ChainInfoThrough(rows[3].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyEscrowRows(rows, "", FormatAnchor(nAll, lastH)); err != nil {
+		t.Fatalf("honest rows should verify: %v", err)
+	}
+	forged := append([]EscrowRow(nil), rows...)
+	forged[1].Op = "forged"
+	if err := VerifyEscrowRows(forged, "", FormatAnchor(nAll, lastH)); err == nil {
+		t.Fatal("mutated event content must fail VerifyEscrowRows")
+	}
+	if max, err := l.MaxID(); err != nil || max != rows[3].ID {
+		t.Fatalf("MaxID = %d err %v, want %d", max, err, rows[3].ID)
+	}
 }
 
 // TestRecordGenQuotaRefusesAtCap is the sequential half of audit M3: a Max=1

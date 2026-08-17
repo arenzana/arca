@@ -430,7 +430,10 @@ references, and fix order in [audits/2026-08-17-security-audit.md](audits/2026-0
 | ~~M1~~ | ~~Prompt terminal-escape injection~~ | **Fixed** (Unreleased): `approve`, `approverWho`, `requireOperator`, and `grantScope` now pass every attacker-influenced fragment through `sanitize()` before writing to `/dev/tty`. |
 | ~~M3~~ | ~~Grant / rate-limit check-then-record TOCTOU~~ | **Fixed** (Unreleased): use events (`read`/`exec`/`env`/`inject`) count their rate and grant-uses caps inside the same `BEGIN IMMEDIATE` as the append. Concurrent writers against a `--uses 1` grant or a `--rate 1` secret can no longer all observe `used=0`. |
 | ~~M7~~ | ~~Sync credentials inherited by children~~ | **Fixed** (Unreleased): `exec` and MCP strip inherited `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` / `AWS_*` from the child environment. An explicit `--only` injection of those names still wins. |
-| M2, M4, M8, M9 | Unauthenticated escrow segments; spoofable grant `--agent` scoping; unknown-field policy stripping; unenumerated `reencrypt` prompt. | Triaged; fix order in the audit report |
+| ~~M2~~ | ~~Unauthenticated escrow segments~~ | **Fixed** (Unreleased): each segment's rows are rehashed against the claimed chain; a `LastID` past the local log is refused; `--verify` no longer prints the anchor on stdout (`--print-anchor` is opt-in). Escrow segment *signing* with the store key remains a follow-up. |
+| ~~M4~~ | ~~Spoofable grant `--agent`~~ | **Fixed** (Unreleased): the claim that the agent check is "firm" is dropped. `--agent` is documented as advisory (env sniffing); uses and expiry stay firm. |
+| ~~M8~~ | ~~Unknown-field policy stripping~~ | **Fixed** (Unreleased): `Decode`/`Save` preserve unknown JSON fields on the store and on each secret. |
+| ~~M9~~ | ~~Unenumerated `reencrypt` prompt~~ | **Fixed** (Unreleased): the confirmation lists every recipient and the drift warning is part of the prompt, before the operator answers. |
 | L1–L14 + Info | WAL sidecar permissions, state-dir create-only perms, env-shadowing of injected secrets, `--force` bundling, redaction evasion class, and others. | Triaged; hygiene batch |
 
 Earlier open findings (the T12 recipient-pin residual and the T13 expiry residual) remain

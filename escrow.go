@@ -227,6 +227,16 @@ func reconcileEscrowCursor(ctx context.Context, a *audit.Log, b remote.Backend) 
 			return fmt.Errorf("the remote's newest escrow segment (#%d) is not part of this machine's audit log: %w — the escrow identity likely collides with another machine; run `arca sync reset-escrow`", tail.Seq, err)
 		}
 	}
+	// A forged segment whose LastID is huge would freeze escrow forever:
+	// escrowOnce becomes a no-op (EventsSince(huge) is empty) while
+	// CheckAnchor still passes (audit M2). Refuse anything past the local log.
+	maxID, err := a.MaxID()
+	if err != nil {
+		return err
+	}
+	if tail.LastID > maxID {
+		return fmt.Errorf("the remote's newest escrow segment (#%d) claims last_id %d, past this machine's newest event %d — refusing to adopt a forged cursor; run `arca sync reset-escrow` if the identity collided", tail.Seq, tail.LastID, maxID)
+	}
 	return saveEscrowState(escrowState{LastID: tail.LastID, Seq: tail.Seq, PrevAnchor: tail.Anchor})
 }
 
@@ -311,6 +321,12 @@ func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, er
 			}
 		} else if prev := segs[len(segs)-1]; s.Seq != prev.Seq+1 || s.PrevAnchor != prev.Anchor {
 			return nil, fmt.Errorf("escrow continuity broken at segment %d: does not extend segment %d — segments were removed or replaced on the backend", s.Seq, prev.Seq)
+		}
+		// Recompute each row's hash against the claimed chain. Continuity of
+		// PrevAnchor/Anchor alone is not authentication: anyone can encrypt a
+		// self-consistent segment to the public recipients (audit M2).
+		if err := audit.VerifyEscrowRows(s.Events, s.PrevAnchor, s.Anchor); err != nil {
+			return nil, fmt.Errorf("escrow %s: %w", k, err)
 		}
 		segs = append(segs, s)
 	}

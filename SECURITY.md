@@ -77,7 +77,9 @@ With that framing, the controls are:
   anchored. See T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 - **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
   pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
-  log and enforced atomically with the `exec` event), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it
+  log and enforced atomically with the `exec` event) and the expiry are firm. The
+  **`--agent` restriction is advisory** — it sniffs environment markers any process
+  can set (`CLAUDECODE=1 arca exec …` satisfies `--agent claude-code`). The **command match is argv-based**, so it
   enforces *intent* but can be sidestepped by an agent that controls argv — renaming a binary or
   wrapping it in `sh -c`. Treat it as expressing and auditing "this secret is for this job," not as
   a containment boundary; every grant, revoke, and use is recorded.

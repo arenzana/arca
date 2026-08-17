@@ -808,6 +808,63 @@ func (l *Log) EventsSince(sinceID int64) ([]EscrowRow, error) {
 	return out, rows.Err()
 }
 
+// MaxID returns the highest event id in the log, or 0 if the log is empty.
+func (l *Log) MaxID() (int64, error) {
+	var id sql.NullInt64
+	if err := l.db.QueryRow(`SELECT MAX(id) FROM events`).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id.Int64, nil
+}
+
+// VerifyEscrowRows recomputes each row's chain hash from its predecessor and
+// checks that the last row's hash is the one named by the segment's claimed
+// anchor. Without this, a fabricated but self-consistent segment whose
+// PrevAnchor matches a known token would pass CheckAnchor on the tail alone
+// (audit M2): the events themselves were never rehashed.
+func VerifyEscrowRows(rows []EscrowRow, prevAnchor, anchor string) error {
+	if len(rows) == 0 {
+		return fmt.Errorf("escrow segment carries no events")
+	}
+	var expectPrev []byte
+	if prevAnchor == "" {
+		expectPrev = genesis()
+	} else {
+		_, h, err := ParseAnchor(prevAnchor)
+		if err != nil {
+			return fmt.Errorf("escrow prev_anchor: %w", err)
+		}
+		expectPrev = h
+	}
+	for _, r := range rows {
+		if r.Hash == nil {
+			continue // legacy (pre-chain) row: not recomputable
+		}
+		if !bytes.Equal(r.PrevHash, expectPrev) {
+			return fmt.Errorf("escrow segment event %d: prev_hash does not continue the claimed chain", r.ID)
+		}
+		eb := eventBytes(r.TS, r.Op, r.Name, r.Caller, r.Actor, r.Agent, r.Version, r.Session, int(r.PPID))
+		if r.StoreGen > 0 {
+			eb = eventBytesGen(r.TS, r.Op, r.Name, r.Caller, r.Actor, r.Agent, r.Version, r.Session, int(r.PPID), r.StoreGen)
+		}
+		if !bytes.Equal(chainHash(r.PrevHash, eb), r.Hash) {
+			return fmt.Errorf("escrow segment event %d: recomputed hash does not match (events were not chained to the claimed anchor)", r.ID)
+		}
+		expectPrev = r.Hash
+	}
+	if anchor == "" {
+		return nil
+	}
+	_, want, err := ParseAnchor(anchor)
+	if err != nil {
+		return fmt.Errorf("escrow anchor: %w", err)
+	}
+	if !bytes.Equal(expectPrev, want) {
+		return fmt.Errorf("escrow segment tail does not match its claimed anchor")
+	}
+	return nil
+}
+
 // ChainInfoThrough returns the chain coordinates at row maxID: how many chained
 // (non-legacy) events exist with id <= maxID, and the hash of the newest one. This is
 // exactly the material FormatAnchor takes, so a segment's tail doubles as an anchor.

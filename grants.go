@@ -90,7 +90,10 @@ func globMatch(pattern, s string) bool {
 // checkGrant authorizes using a require-grant secret for a given command line, or returns why not.
 // It is the JIT/command-scoped enforcement point, called only from the command-bearing paths
 // (exec, MCP run_with_secrets). Matching is argv-based and therefore a guardrail expressing intent,
-// not a sandbox (an agent controls argv); the agent/uses/expiry checks are firm.
+// not a sandbox (an agent controls argv). The uses and expiry checks are firm. The agent
+// restriction is not: it rests on environment sniffing (detectIdentity), which the rest of
+// arca treats as advisory — any process can set CLAUDECODE=1 and satisfy --agent claude-code
+// (audit M4). Treat --agent as a display/audit hint, not a containment boundary.
 func checkGrant(name, cmdline string) error {
 	grants, err := loadGrants()
 	if err != nil {

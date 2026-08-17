@@ -135,10 +135,13 @@ func TestAnchorDetectsJointRollback(t *testing.T) {
 
 	// … then advance the world and mint an anchor at the new head.
 	runArca(t, "v2", "rotate", "A")
-	out := runArca(t, "", "log", "--verify")
+	if out := runArca(t, "", "log", "--verify"); strings.Contains(out, "arca-anchor:") {
+		t.Fatalf("--verify must not print an anchor on stdout (audit M2): %q", out)
+	}
+	out := runArca(t, "", "log", "--verify", "--print-anchor")
 	anchor := strings.TrimSpace(out)
 	if !strings.HasPrefix(anchor, "arca-anchor:v1:") {
-		t.Fatalf("verify did not emit an anchor token, got %q", out)
+		t.Fatalf("verify --print-anchor did not emit an anchor token, got %q", out)
 	}
 
 	// A grown log still extends the anchor.

@@ -13,7 +13,7 @@ import (
 // newLog prints the access history, including the attributed AI agent and session.
 func newLog() *cobra.Command {
 	var limit int
-	var jsonOut, verify, requireSigned, remoteCheck bool
+	var jsonOut, verify, requireSigned, remoteCheck, printAnchor bool
 	var anchor string
 	c := &cobra.Command{
 		Use:   "log [NAME]",
@@ -30,7 +30,7 @@ func newLog() *cobra.Command {
 			}
 			defer a.Close()
 			if verify {
-				return verifyLog(a, requireSigned, anchor, remoteCheck)
+				return verifyLog(a, requireSigned, anchor, remoteCheck, printAnchor)
 			}
 			if requireSigned {
 				return fmt.Errorf("--require-signed is only valid with --verify")
@@ -79,6 +79,7 @@ func newLog() *cobra.Command {
 	c.Flags().BoolVar(&requireSigned, "require-signed", false, "with --verify, also fail if any chained event is unsigned")
 	c.Flags().StringVar(&anchor, "anchor", "", "with --verify, also require the log to extend this previously-emitted anchor token")
 	c.Flags().BoolVar(&remoteCheck, "remote", false, "with --verify, also require the log to extend its escrowed off-machine history (needs sync configured)")
+	c.Flags().BoolVar(&printAnchor, "print-anchor", false, "with --verify, print a fresh anchor token on stdout (keep it off-machine; do not capture this from an agent session)")
 	return c
 }
 
@@ -89,7 +90,7 @@ func newLog() *cobra.Command {
 // fails unless the chain still extends that head — the defense against the store and the audit DB
 // being rolled back *together* to a consistent older state, which every in-DB check necessarily
 // misses (SEC-14).
-func verifyLog(a *audit.Log, requireSigned bool, anchor string, remoteCheck bool) error {
+func verifyLog(a *audit.Log, requireSigned bool, anchor string, remoteCheck, printAnchor bool) error {
 	r, err := a.Verify()
 	if err != nil {
 		return err
@@ -149,10 +150,10 @@ func verifyLog(a *audit.Log, requireSigned bool, anchor string, remoteCheck bool
 		fmt.Fprintf(os.Stderr, ", anchor extended")
 	}
 	fmt.Fprintln(os.Stderr)
-	// Emit the fresh anchor on stdout so it can be captured and stored OFF this machine (a
-	// password manager, a git note, another host). Passing it back via --anchor on a later
-	// verify detects a joint store+audit rollback — the one rewrite the in-DB chain can't see.
-	if r.Checked > 0 && r.LastHash != nil {
+	// A fresh anchor is opt-in (--print-anchor). Printing it on every --verify
+	// put a low-secrecy token on stdout that agents capture (audit M2). Keep it
+	// off the default path; mint it deliberately and store it off this machine.
+	if printAnchor && r.Checked > 0 && r.LastHash != nil {
 		fmt.Println(audit.FormatAnchor(r.Checked, r.LastHash))
 	}
 	return nil

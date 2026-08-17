@@ -27,6 +27,17 @@ func TestWarnRecipientRevocation(t *testing.T) {
 	}
 }
 
+// TestReencryptQuestionNamesRecipients is audit M9: the confirmation must list
+// every recipient the wrap will include, not a bare yes/no.
+func TestReencryptQuestionNamesRecipients(t *testing.T) {
+	s := store.New("", []string{"age1aaa", "age1bbb"})
+	s.SetLabel("age1aaa", "laptop")
+	q := reencryptQuestion(s)
+	if !strings.Contains(q, "age1aaa") || !strings.Contains(q, "age1bbb") || !strings.Contains(q, "laptop") {
+		t.Fatalf("reencrypt prompt dropped a recipient: %q", q)
+	}
+}
+
 // TestRecipientsRmReencrypts covers SEC-15's auto-re-encryption: removing a recipient re-wraps
 // existing secrets to the remaining key(s) in the same step, so the current store stops depending on
 // the removed one while staying decryptable by us.
