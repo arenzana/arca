@@ -210,18 +210,18 @@ func TestS3BackendSemantics(t *testing.T) {
 	if _, err := s3.Head(ctx); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("empty Head = %v", err)
 	}
-	r1, err := s3.Push(ctx, []byte("gen-one"), 1, Rev{})
+	r1, err := s3.Push(ctx, []byte("gen-one"), 1, Rev{}, StoreAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s3.Push(ctx, []byte("again"), 1, r1); !errors.Is(err, ErrCASMismatch) {
+	if _, err := s3.Push(ctx, []byte("again"), 1, r1, StoreAuth{}); !errors.Is(err, ErrCASMismatch) {
 		t.Fatal("re-pushing an existing generation must fail (immutable revisions)")
 	}
-	r2, err := s3.Push(ctx, []byte("gen-two"), 2, r1)
+	r2, err := s3.Push(ctx, []byte("gen-two"), 2, r1, StoreAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s3.Push(ctx, []byte("stale"), 3, r1); !errors.Is(err, ErrCASMismatch) {
+	if _, err := s3.Push(ctx, []byte("stale"), 3, r1, StoreAuth{}); !errors.Is(err, ErrCASMismatch) {
 		t.Fatal("push from a stale rev must fail")
 	}
 	head, err := s3.Head(ctx)
@@ -295,7 +295,7 @@ func TestS3SignsWithConfigCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s3.Push(context.Background(), []byte("x"), 1, Rev{}); err != nil {
+	if _, err := s3.Push(context.Background(), []byte("x"), 1, Rev{}, StoreAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	srv.mu.Lock()
@@ -331,7 +331,7 @@ func TestS3FetchSizeCap(t *testing.T) {
 	if _, _, err := s3.Fetch(context.Background()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("empty Fetch = %v, want ErrNotFound", err)
 	}
-	if _, err := s3.Push(context.Background(), []byte("hello"), 1, Rev{}); err != nil {
+	if _, err := s3.Push(context.Background(), []byte("hello"), 1, Rev{}, StoreAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	b, rev, err := s3.Fetch(context.Background())
@@ -348,7 +348,7 @@ func TestS3FetchSizeCap(t *testing.T) {
 func TestS3PushDetectsIgnoredConditional(t *testing.T) {
 	s3, srv := newTestS3(t)
 	srv.headETagOverride = "someone-elses-etag" // the head "moved" between our PUT and our HEAD
-	_, err := s3.Push(context.Background(), []byte("mine"), 1, Rev{})
+	_, err := s3.Push(context.Background(), []byte("mine"), 1, Rev{}, StoreAuth{})
 	if !errors.Is(err, ErrCASMismatch) {
 		t.Fatalf("push should detect the head diverged (read-after-write), got: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestS3PushDetectsIgnoredConditional(t *testing.T) {
 // exceeds MaxObjectBytes is refused at Stat, before any large read.
 func TestS3FetchRefusesOversized(t *testing.T) {
 	s3, srv := newTestS3(t)
-	if _, err := s3.Push(context.Background(), []byte("small"), 1, Rev{}); err != nil {
+	if _, err := s3.Push(context.Background(), []byte("small"), 1, Rev{}, StoreAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	srv.sizeOverride = MaxObjectBytes + 1

@@ -27,7 +27,22 @@ const MaxObjectBytes = 128 << 20
 type Rev struct {
 	Generation int    // store generation inside the envelope (client-asserted, re-checked on fetch)
 	Tag        string // backend-native CAS token: S3 ETag, Postgres row id, …
+	// Signature / Signer are the operator store-auth metadata (audit H1),
+	// surfaced from object user-metadata when present. Empty on unsigned heads.
+	Signature string
+	Signer    string
 }
+
+// StoreAuth is the operator signature written onto a Push (audit H1). The
+// zero value is an unsigned push, which is the migration-window default:
+// older clients keep working, and a pull with no local pin still accepts
+// an unsigned head (with a warning, once that slice lands).
+type StoreAuth struct {
+	Signature string // base64 of the Ed25519 signature over the sealed payload
+	Signer    string // base64 of the signer's public key
+}
+
+func (a StoreAuth) Zero() bool { return a.Signature == "" && a.Signer == "" }
 
 // Zero reports whether r is the zero revision ("nothing known").
 func (r Rev) Zero() bool { return r.Generation == 0 && r.Tag == "" }
@@ -55,8 +70,9 @@ type Backend interface {
 	// Push uploads envelope as generation gen. prev is the CAS precondition: the
 	// revision this client last saw (zero for a first-ever push). A concurrent
 	// writer makes Push fail with ErrCASMismatch and nothing is lost — the
-	// conflicting revision objects both survive for inspection.
-	Push(ctx context.Context, envelope []byte, gen int, prev Rev) (Rev, error)
+	// conflicting revision objects both survive for inspection. auth is the
+	// operator signature written into object user-metadata (zero = unsigned).
+	Push(ctx context.Context, envelope []byte, gen int, prev Rev, auth StoreAuth) (Rev, error)
 	// PutIfAbsent writes an auxiliary object (audit segments, escrowed anchors)
 	// create-only: it fails if the key already exists. Keys are namespaced under
 	// the backend's configured prefix.

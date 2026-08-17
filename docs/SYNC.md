@@ -23,6 +23,17 @@ backend; it stores bytes and learns only size and timing. Only a machine holding
 the store's recipient identities can open the envelope — which is exactly the
 multi-machine model.
 
+Age is confidentiality, not authentication. Each push also signs the store bytes
+with an operator-held Ed25519 key (`arca signer show`) and writes `Arca-Signature`
+/ `Arca-Signer` on the object. A pull verifies that signature against a **locally
+pinned** public key (`arca signer pin`). A backend that knows the (public)
+recipients can no longer fabricate a policy-stripped store that every machine
+will adopt. `--force` cannot override a pin mismatch; rotation is
+`arca signer rotate` on the signing machine, then `arca signer pin <new>` on the
+others. A machine with no pin still accepts an unsigned head (migration window,
+with a warning) but will refuse a signed head until the key is pinned
+out-of-band.
+
 ## Adding a machine to the fleet
 
 Each machine has its **own** age identity (there is no shared key). The store is
@@ -181,8 +192,10 @@ go in the URL.
 Sync credentials live *outside* the store on purpose: a new machine needs them before
 it has a store. `--store-credentials` keeps them next to the audit DB with `0600` —
 the same protection class as the age identity file, and what makes automatic sync
-work without any shell environment. A neat bootstrap that keeps the canonical copy in
-arca itself:
+work without any shell environment. Those env vars are **not** inherited by `arca exec`
+or MCP children — a child running `printenv` must not see live backend keys. The one
+exception is an explicit `--only` injection of those names from the store, which is
+how this bootstrap still works:
 
 ```sh
 arca exec --only ARCA_SYNC_ACCESS_KEY,ARCA_SYNC_SECRET_KEY -- \

@@ -72,7 +72,7 @@ func newInject() *cobra.Command {
 					}
 					return m
 				}
-				if err := logAudit("inject", name, ""); err != nil {
+				if err := logUse("inject", name, "", sec); err != nil {
 					if firstErr == nil {
 						firstErr = err
 					}
@@ -160,7 +160,7 @@ func newExec() *cobra.Command {
 
 			caller := filepath.Base(args[0])   // recorded as the audit "caller"
 			cmdline := strings.Join(args, " ") // matched against a require-grant secret's command pattern
-			env := os.Environ()
+			env := scrubChildEnv(os.Environ())
 			var injected []redactPattern
 			for _, name := range names {
 				sec := s.Secrets[name]
@@ -186,7 +186,7 @@ func newExec() *cobra.Command {
 				}
 				env = append(env, name+"="+string(plain))
 				injected = append(injected, redactPattern{name: name, value: plain})
-				if err := logAudit("exec", name, caller); err != nil {
+				if err := logUse("exec", name, caller, sec); err != nil {
 					return err
 				}
 			}
@@ -316,7 +316,7 @@ func newEnv() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("decrypt %s: %w", name, err)
 				}
-				if err := logAudit("env", name, ""); err != nil {
+				if err := logUse("env", name, "", s.Secrets[name]); err != nil {
 					return err
 				}
 				if noExport {
@@ -330,4 +330,40 @@ func newEnv() *cobra.Command {
 	}
 	c.Flags().BoolVar(&noExport, "no-export", false, "omit the leading 'export '")
 	return c
+}
+
+// childCredPrefixes are environment-variable prefixes that carry live sync-backend
+// credentials. They flow into every child via os.Environ(); the redact writer only
+// scans injected secret values, so a child running printenv would otherwise leak
+// them unredacted into an agent's context (audit M7). ARCA_SYNC_URL is not a
+// credential; ARCA_SYNC_AUTO is a mode flag. Both stay.
+var childCredPrefixes = []string{
+	"ARCA_SYNC_ACCESS_KEY=",
+	"ARCA_SYNC_SECRET_KEY=",
+	"AWS_ACCESS_KEY_ID=",
+	"AWS_SECRET_ACCESS_KEY=",
+	"AWS_SESSION_TOKEN=",
+	"AWS_SECURITY_TOKEN=",
+	"AWS_SECRET_KEY=",
+}
+
+// scrubChildEnv drops inherited backend-credential variables from a child
+// environment. Call it on os.Environ() *before* appending injected secrets so
+// an explicit `arca exec --only ARCA_SYNC_ACCESS_KEY` still wins — that is the
+// documented bootstrap for `sync init --store-credentials`.
+func scrubChildEnv(env []string) []string {
+	out := env[:0:0]
+	for _, e := range env {
+		drop := false
+		for _, p := range childCredPrefixes {
+			if strings.HasPrefix(e, p) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, e)
+		}
+	}
+	return out
 }

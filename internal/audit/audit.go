@@ -28,9 +28,11 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo); registers the "sqlite" driver
@@ -253,6 +255,39 @@ func (l *Log) Close() error { return l.db.Close() }
 // UseSigner attaches a session signer so subsequent Records are signed.
 func (l *Log) UseSigner(s *Signer) { l.signer = s }
 
+// Quota is a cap enforced atomically with the event write (audit M3). BEGIN IMMEDIATE
+// already serializes appends so the chain cannot fork; counting inside that same
+// transaction means two concurrent execs against a --uses 1 grant (or a --rate 1
+// secret) cannot both observe "used=0" and both proceed.
+type Quota struct {
+	// Kind labels the refusal so the caller can phrase it ("rate" or "grant").
+	Kind string
+	// Ops are the event ops that consume this quota (e.g. exec, or the use set).
+	Ops []string
+	// Since is the start of the window; events at or after it count.
+	Since time.Time
+	// Max is the inclusive cap: the write is refused when count >= Max.
+	Max int
+}
+
+// ErrQuotaExceeded is the sentinel wrapped by QuotaError.
+var ErrQuotaExceeded = errors.New("audit quota exceeded")
+
+// QuotaError is returned when Record would push a named quota over its cap.
+// The use event is not written; the caller decides whether to record a
+// distinct refusal event (rate-limit) or just surface the error (grant).
+type QuotaError struct {
+	Kind string
+	Used int
+	Max  int
+}
+
+func (e *QuotaError) Error() string {
+	return fmt.Sprintf("%s quota exceeded: %d of %d", e.Kind, e.Used, e.Max)
+}
+
+func (e *QuotaError) Unwrap() error { return ErrQuotaExceeded }
+
 // Record appends one access event, chaining it to the previous event's hash (and signing that
 // hash when a Signer is attached). The head read + append run in one BEGIN IMMEDIATE transaction
 // so concurrent arca processes can't fork the chain. Timestamps are UTC RFC3339.
@@ -265,6 +300,13 @@ func (l *Log) Record(op, name, caller string, id Identity) error {
 // tamper-evident log itself, not just from the local high-water-mark heuristic. A storeGen of 0
 // means "unknown" (no store was loaded) and records NULL with the original event encoding.
 func (l *Log) RecordGen(op, name, caller string, id Identity, storeGen int) error {
+	return l.RecordGenQuota(op, name, caller, id, storeGen, nil)
+}
+
+// RecordGenQuota is RecordGen with one or more caps checked inside the same
+// BEGIN IMMEDIATE transaction as the append. A cap that is already at Max
+// aborts with QuotaError and writes nothing.
+func (l *Log) RecordGenQuota(op, name, caller string, id Identity, storeGen int, quotas []Quota) error {
 	ts := time.Now().UTC().Format(time.RFC3339)
 	ppid := os.Getppid()
 	ctx := context.Background()
@@ -283,6 +325,19 @@ func (l *Log) RecordGen(op, name, caller string, id Identity, storeGen int) erro
 			_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		}
 	}()
+
+	for _, q := range quotas {
+		if q.Max <= 0 || len(q.Ops) == 0 {
+			continue
+		}
+		used, err := countMatching(ctx, conn, name, q.Ops, q.Since)
+		if err != nil {
+			return err
+		}
+		if used >= q.Max {
+			return &QuotaError{Kind: q.Kind, Used: used, Max: q.Max}
+		}
+	}
 
 	// Current chain head: the latest row's hash, or genesis when the chain is empty (or the last
 	// row predates chaining and has a NULL hash).
@@ -612,6 +667,28 @@ func (l *Log) LastOp(name, op string) (time.Time, int, error) {
 	}
 	t, _ := time.Parse(time.RFC3339, ts.String)
 	return t, count, nil
+}
+
+// countMatching counts events for name whose op is in ops and whose ts is at or after since,
+// on the given connection so it can run inside the Record BEGIN IMMEDIATE transaction.
+func countMatching(ctx context.Context, conn *sql.Conn, name string, ops []string, since time.Time) (int, error) {
+	if len(ops) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(ops))
+	args := make([]any, 0, 2+len(ops))
+	args = append(args, name)
+	for i, op := range ops {
+		placeholders[i] = "?"
+		args = append(args, op)
+	}
+	args = append(args, since.UTC().Format(time.RFC3339))
+	q := `SELECT COUNT(*) FROM events WHERE name=? AND op IN (` + strings.Join(placeholders, ",") + `) AND ts>=?`
+	var count int
+	if err := conn.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // CountOpSince counts events for a secret with a given op at or after a time. Used to compute how

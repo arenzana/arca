@@ -36,7 +36,7 @@ an agent accesses secrets through controlled, **audited tools** instead of raw s
 | `run_with_secrets` | Run a command with named secrets injected as env; returns the command's **output** (redacted), not the values |
 | `run_with_handle` | Run a command via an opaque `hdl_…` handle — uses a secret **without its name or value**, enforcing the handle's command scope and expiry. A handle bypasses the grant/approval gates, so it's the operator's pre-authorization: `arca handle create` is operator-only (refused for a detected agent) and needs `--override` to mint one for a `--require-approval`/`--require-grant` secret. What a handle does **not** bypass: a canary still trips, and a disabled or expired secret is still refused — `arca disable` stops handles minted before you disabled it |
 | `read_secret` | Reveal a value (refused for `--no-print`, requires `--require-approval` confirmation, audited) — the escape hatch |
-| `audit_log` | Recent access events (a handle-issued event's secret name is masked to the handle id, so it can't map a handle back to the secret it wraps) |
+| `audit_log` | Recent access events (a handle-issued event's secret name is masked to the handle id, so it can't map a handle back to the secret it wraps; under `--strict`, scoped to exposed secrets only, `limit` capped at 500) |
 
 The intended flow is *use, don't reveal*: an agent calls `run_with_secrets` (or `run_with_handle`)
 so a command can use a secret, reserving `read_secret` for when the value genuinely must enter the
@@ -84,7 +84,11 @@ arca mcp --strict                    # or set ARCA_AGENT_STRICT=1
 ```
 
 Under `--strict`, `list_secrets` hides anything not allowed, and `show_secret`/`read_secret`/
-`run_with_secrets` **refuse** it with a pointer to `arca agent allow NAME`. Revoke with
+`run_with_secrets` **refuse** it with a pointer to `arca agent allow NAME` — the same refusal a
+nonexistent name gets, so the tools can't be used to probe which hidden secrets exist. `audit_log`
+is scoped the same way: it returns only events for exposed secrets (handle-issued events still
+appear, masked to the handle id), and a `name` filter for a hidden or nonexistent secret gets the
+generic refusal rather than a distinguishable error. Revoke with
 `arca agent deny NAME`. Without `--strict` the server stays backwards-compatible but prints a loud
 warning on startup that every secret is reachable — a future major release makes strict the default.
 `arca doctor` also flags a store whose MCP exposure isn't scoped.

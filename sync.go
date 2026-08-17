@@ -795,7 +795,7 @@ func pushStore(ctx context.Context, b remote.Backend, snap localSnapshot, prev r
 	if err != nil {
 		return err
 	}
-	rev, err := b.Push(ctx, env, snap.s.Generation, prev)
+	rev, err := b.Push(ctx, env, snap.s.Generation, prev, signStorePayload(snap.raw))
 	if err != nil {
 		if errors.Is(err, remote.ErrCASMismatch) {
 			return fmt.Errorf("%w — run `arca sync` again to reconcile", err)
@@ -837,6 +837,12 @@ func pullStore(ctx context.Context, b remote.Backend, snap localSnapshot, opts s
 	}
 	payload, rs, err := openEnvelope(env)
 	if err != nil {
+		return err
+	}
+	// Writer-authentication (audit H1). --force must not override a pin mismatch:
+	// a flag that admits a teammate's recipient key must not also admit a
+	// mis-signed store.
+	if err := verifyPulledStore(payload, rev); err != nil {
 		return err
 	}
 	// The envelope's own generation is authoritative over the backend's metadata tag. A backend

@@ -43,33 +43,47 @@ func TestFakeCASSemantics(t *testing.T) {
 		t.Fatalf("empty Head = %v, want ErrNotFound", err)
 	}
 	// First push requires the zero Rev.
-	if _, err := f.Push(ctx, []byte("g1"), 1, Rev{Generation: 9, Tag: "stale"}); !errors.Is(err, ErrCASMismatch) {
+	if _, err := f.Push(ctx, []byte("g1"), 1, Rev{Generation: 9, Tag: "stale"}, StoreAuth{}); !errors.Is(err, ErrCASMismatch) {
 		t.Fatal("push with a stale prev against an empty remote must fail")
 	}
-	r1, err := f.Push(ctx, []byte("g1"), 1, Rev{})
+	r1, err := f.Push(ctx, []byte("g1"), 1, Rev{}, StoreAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A second first-push (another bootstrapping machine) loses the race loudly.
-	if _, err := f.Push(ctx, []byte("g1b"), 2, Rev{}); !errors.Is(err, ErrCASMismatch) {
+	if _, err := f.Push(ctx, []byte("g1b"), 2, Rev{}, StoreAuth{}); !errors.Is(err, ErrCASMismatch) {
 		t.Fatal("second zero-prev push must fail")
 	}
 	// Normal CAS advance.
-	r2, err := f.Push(ctx, []byte("g2"), 2, r1)
+	r2, err := f.Push(ctx, []byte("g2"), 2, r1, StoreAuth{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Pushing from the stale rev fails; nothing is overwritten.
-	if _, err := f.Push(ctx, []byte("g2b"), 3, r1); !errors.Is(err, ErrCASMismatch) {
+	if _, err := f.Push(ctx, []byte("g2b"), 3, r1, StoreAuth{}); !errors.Is(err, ErrCASMismatch) {
 		t.Fatal("push from a stale rev must fail")
 	}
 	// A generation can never be re-pushed (immutable revision objects).
-	if _, err := f.Push(ctx, []byte("again"), 2, r2); !errors.Is(err, ErrCASMismatch) {
+	if _, err := f.Push(ctx, []byte("again"), 2, r2, StoreAuth{}); !errors.Is(err, ErrCASMismatch) {
 		t.Fatal("re-pushing an existing generation must fail")
 	}
 	b, head, err := f.Fetch(ctx)
 	if err != nil || string(b) != "g2" || head.Generation != 2 {
 		t.Fatalf("fetch = %q gen %d err %v", b, head.Generation, err)
+	}
+
+	// A signed push is stored on the head and returned by Head/Fetch.
+	auth := StoreAuth{Signature: "sig-bytes", Signer: "pub-bytes"}
+	r3, err := f.Push(ctx, []byte("g3"), 3, r2, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r3.Signature != auth.Signature || r3.Signer != auth.Signer {
+		t.Fatalf("push returned auth %+v, want %+v", r3, auth)
+	}
+	got, err := f.Head(ctx)
+	if err != nil || got.Signature != auth.Signature || got.Signer != auth.Signer {
+		t.Fatalf("head auth = %+v err %v", got, err)
 	}
 
 	// Auxiliary objects are append-only.

@@ -105,7 +105,11 @@ func requireOperator(cmd, question string) error {
 	if out != in {
 		defer out.Close() // no read is ever pending on out; safe unconditionally
 	}
-	fmt.Fprintf(out, "%s [y/N] ", question)
+	// question is printed to the operator's terminal and may contain
+	// attacker-influenced fragments (grant command/agent, secret names, policy
+	// values). Strip terminal controls before writing so a crafted string
+	// cannot clear or redraw the prompt the human gate relies on (SEC-07 / audit M1).
+	fmt.Fprintf(out, "%s [y/N] ", sanitize(question))
 	// The read carries the operatorTimeout deadline described above. It runs in a goroutine
 	// because a blocked Fscanln cannot be interrupted; on expiry the goroutine stays parked on
 	// the dead handle until process exit, which for this CLI follows the refusal immediately.
@@ -330,5 +334,5 @@ func requirePolicyOperator(cmdName, name string, changed func(string) bool, cur 
 	for _, d := range downgrades {
 		parts = append(parts, d.String())
 	}
-	return requireOperator(cmdName, fmt.Sprintf("Relax the policy on %s (%s)?", name, strings.Join(parts, "; ")))
+	return requireOperator(cmdName, fmt.Sprintf("Relax the policy on %s (%s)?", sanitize(name), strings.Join(parts, "; ")))
 }

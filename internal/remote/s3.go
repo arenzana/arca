@@ -80,7 +80,11 @@ func (s *S3) Head(ctx context.Context) (Rev, error) {
 		return Rev{}, fmt.Errorf("sync head: %w", err)
 	}
 	gen, _ := strconv.Atoi(st.UserMetadata["Arca-Generation"])
-	return Rev{Generation: gen, Tag: st.ETag}, nil
+	return Rev{
+		Generation: gen, Tag: st.ETag,
+		Signature: st.UserMetadata["Arca-Signature"],
+		Signer:    st.UserMetadata["Arca-Signer"],
+	}, nil
 }
 
 func (s *S3) Fetch(ctx context.Context) ([]byte, Rev, error) {
@@ -115,13 +119,27 @@ func (s *S3) Fetch(ctx context.Context) ([]byte, Rev, error) {
 		return nil, Rev{}, fmt.Errorf("sync fetch: remote object exceeds the %d-byte limit", int64(MaxObjectBytes))
 	}
 	gen, _ := strconv.Atoi(st.UserMetadata["Arca-Generation"])
-	return b, Rev{Generation: gen, Tag: st.ETag}, nil
+	return b, Rev{
+		Generation: gen, Tag: st.ETag,
+		Signature: st.UserMetadata["Arca-Signature"],
+		Signer:    st.UserMetadata["Arca-Signer"],
+	}, nil
 }
 
-func (s *S3) Push(ctx context.Context, envelope []byte, gen int, prev Rev) (Rev, error) {
+func storeAuthMeta(gen int, auth StoreAuth) map[string]string {
+	m := map[string]string{"Arca-Generation": strconv.Itoa(gen)}
+	if !auth.Zero() {
+		m["Arca-Signature"] = auth.Signature
+		m["Arca-Signer"] = auth.Signer
+	}
+	return m
+}
+
+func (s *S3) Push(ctx context.Context, envelope []byte, gen int, prev Rev, auth StoreAuth) (Rev, error) {
 	// 1. The immutable revision object, create-only. If another machine already
 	//    pushed this generation, this is the first (and loud) place the race shows.
-	revOpts := minio.PutObjectOptions{ContentType: "application/age"}
+	//    The signature rides on the rev object too — it is permanent evidence.
+	revOpts := minio.PutObjectOptions{ContentType: "application/age", UserMetadata: storeAuthMeta(gen, auth)}
 	revOpts.SetMatchETagExcept("*") // If-None-Match: * — create, never replace
 	if _, err := s.client.PutObject(ctx, s.cfg.Bucket, s.cfg.key(revKey(gen)),
 		bytes.NewReader(envelope), int64(len(envelope)), revOpts); err != nil {
@@ -133,7 +151,7 @@ func (s *S3) Push(ctx context.Context, envelope []byte, gen int, prev Rev) (Rev,
 	// 2. Flip the head, conditional on the revision this client last saw.
 	opts := minio.PutObjectOptions{
 		ContentType:  "application/age",
-		UserMetadata: map[string]string{"Arca-Generation": strconv.Itoa(gen)},
+		UserMetadata: storeAuthMeta(gen, auth),
 	}
 	if prev.Zero() {
 		opts.SetMatchETagExcept("*") // first-ever push: the head must not exist

@@ -2,9 +2,12 @@ package audit
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -185,5 +188,76 @@ func TestEscrowRowHelpers(t *testing.T) {
 	n, h, err := l.ChainInfoThrough(rows[1].ID)
 	if err != nil || n != 2 || string(h) != string(rows[1].Hash) {
 		t.Fatalf("ChainInfoThrough = n%d err %v", n, err)
+	}
+}
+
+// TestRecordGenQuotaRefusesAtCap is the sequential half of audit M3: a Max=1
+// quota admits the first write and refuses the second without appending it.
+func TestRecordGenQuotaRefusesAtCap(t *testing.T) {
+	l, _ := openChained(t)
+	q := []Quota{{Kind: "rate", Ops: []string{"read", "exec"}, Since: time.Now().Add(-time.Hour), Max: 1}}
+	if err := l.RecordGenQuota("read", "S", "", Identity{}, 0, q); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	err := l.RecordGenQuota("read", "S", "", Identity{}, 0, q)
+	var qe *QuotaError
+	if !errors.As(err, &qe) || qe.Used != 1 || qe.Max != 1 || qe.Kind != "rate" {
+		t.Fatalf("second write = %v, want QuotaError used=1 max=1 kind=rate", err)
+	}
+	evs, err := l.Recent("S", 10)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("refused write must not append: %d events, err %v", len(evs), err)
+	}
+	r, err := l.Verify()
+	if err != nil || !r.OK || r.Checked != 1 {
+		t.Fatalf("chain after a refused write: %+v err %v", r, err)
+	}
+}
+
+// TestRecordGenQuotaConcurrentMaxOne is the load-bearing M3 check: N concurrent
+// writers against Max=1 must produce exactly one event. BEGIN IMMEDIATE serializes
+// the count+append so they cannot all observe used=0.
+func TestRecordGenQuotaConcurrentMaxOne(t *testing.T) {
+	l, _ := openChained(t)
+	q := []Quota{{Kind: "grant", Ops: []string{"exec"}, Since: time.Now().Add(-time.Hour), Max: 1}}
+	const workers = 16
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		ok, rej int
+	)
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			err := l.RecordGenQuota("exec", "DEPLOY", "true", Identity{}, 0, q)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				ok++
+				return
+			}
+			var qe *QuotaError
+			if !errors.As(err, &qe) {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			rej++
+		}()
+	}
+	wg.Wait()
+	if ok != 1 {
+		t.Fatalf("admitted %d of %d concurrent writes, want exactly 1", ok, workers)
+	}
+	if rej != workers-1 {
+		t.Fatalf("refused %d, want %d", rej, workers-1)
+	}
+	evs, err := l.Recent("DEPLOY", 20)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("events = %d err %v, want 1", len(evs), err)
+	}
+	r, err := l.Verify()
+	if err != nil || !r.OK || r.Checked != 1 {
+		t.Fatalf("chain after concurrent quota: %+v err %v", r, err)
 	}
 }

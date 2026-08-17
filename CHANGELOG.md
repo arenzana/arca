@@ -6,6 +6,65 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`arca signer show` / `pin` / `rotate`** — the operator-held Ed25519 key that will
+  authenticate a synced store (audit H1, first slice). Age provides confidentiality,
+  not authentication; this key is what a later pull-side check will verify against a
+  locally pinned public key. `show` is headless and public. `pin` and `rotate` are
+  terminal-anchored. A corrupt key file is refused, never silently regenerated.
+- **Pushes now sign the store** (H1, second slice). `sync` writes `Arca-Signature` and
+  `Arca-Signer` user-metadata on the head and the immutable revision object, over the
+  exact store bytes that were sealed. Pulls still ignore the metadata; verification
+  A missing key is minted on first push so an existing fleet starts signing
+  without a ceremony.
+- **Pulls verify the operator signature** (H1, third slice). A machine with a
+  pinned signer refuses an unsigned, mis-signed, or differently-signed head —
+  `--force` cannot override this. A machine with no pin still accepts an
+  unsigned head (migration window, with a warning) but refuses a signed head
+  until the operator pins the key out-of-band. The machine that minted the key
+  is pinned to it automatically; that is not Trust-On-First-Use from the network.
+
+### Fixed
+- **`exec` and MCP no longer leak sync-backend credentials into child environments**
+  (audit finding M7). `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` and the `AWS_*`
+  fallbacks were inherited via `os.Environ()` into every child; the redact writer only
+  scans injected secret values, so a child running `printenv` exfiltrated live backend
+  keys unredacted. Inherited credential variables are now stripped before the child
+  starts. An explicit `arca exec --only ARCA_SYNC_ACCESS_KEY` still injects the store
+  value — that is the documented bootstrap for `sync init --store-credentials`.
+- **Grant `--uses` and per-secret `--rate` are now atomic with the audit write** (audit
+  finding M3). The use count is derived from the tamper-evident log, but the check
+  (`CountOpSince` / `CountUsesSince`) and the after-the-gate `logAudit` were separate
+  SQLite transactions. N concurrent `exec` / `run_with_secrets` calls against a
+  `--uses 1` grant (or a `--rate 1/1h` secret) all observed `used=0`, all passed, all
+  ran. The count now happens inside the same `BEGIN IMMEDIATE` as the append, so only
+  one writer can claim the last slot. The pre-checks in `gate()` stay for the
+  sequential UX (refuse before decrypt); the record is what actually enforces the cap.
+- **Operator prompts no longer accept terminal-escape injection** (audit finding M1). Agent-
+  controlled strings (`$AI_AGENT`, session ids, grant `--command`/`--agent`, `$ARCA_ACTOR`) were
+  printed unsanitized onto `/dev/tty` in the exact prompts the human gate relies on — `approve`,
+  `requireOperator`, and `grantScope` — while the same strings were already stripped everywhere
+  else they reach the terminal (SEC-07). A crafted `AI_AGENT=$'\x1b[2J\x1b[H…'` could clear or
+  redraw the operator's screen so they answered `y` to a prompt they never saw. Every attacker-
+  influenced prompt component now goes through `sanitize()` before it is written.
+- **MCP strict mode now covers `audit_log`, and its oracles are closed** (audit findings H2, M5,
+  M6 — see `docs/audits/2026-08-17-security-audit.md`). The audit log records secret names in
+  cleartext, and the `audit_log` tool applied no exposure check: under `arca mcp --strict`, an
+  agent that could see zero secrets via `list_secrets` could enumerate every secret the operator
+  had ever touched — names, timestamps, actors, sessions — or probe a specific name's existence
+  and history through the `name` filter. Under `--strict`, `audit_log` now returns only events
+  for exposed secrets (handle-issued events still appear, masked to the handle id), and a `name`
+  filter for a hidden or nonexistent secret gets the same generic "not exposed to agents"
+  refusal the other tools use.
+- **`show_secret` / `read_secret` / `run_with_secrets` no longer leak secret existence under
+  `--strict`.** They returned "no such secret" for missing names but "not exposed" for hidden
+  ones — a clean dictionary-probe oracle over the hidden namespace. Both cases now get the same
+  generic refusal (non-strict mode keeps the precise messages; nothing is hidden there anyway).
+- **`audit_log`'s `limit` can no longer overflow into an unbounded dump.** The limit was
+  converted from float to int with only a `> 0` gate; an out-of-range value converts to a
+  negative on amd64, which SQLite reads as `LIMIT -1` — no limit — returning the entire audit
+  database in one tool result. The limit is now clamped to 500 before conversion.
+
 ## [0.10.3] - 2026-08-17
 
 ### Fixed

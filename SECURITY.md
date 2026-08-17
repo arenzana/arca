@@ -56,8 +56,8 @@ With that framing, the controls are:
   headless process can't open `/dev/tty` / `CONIN$`.
 - **The control plane is terminal-anchored too, in the loosening direction.** The anchor above
   covers the commands that *release* a value; the commands that *change the rules* carry the same
-  anchor. `arca grant`, `arca agent allow`, `arca enable`, `arca recipients add`, `arca reencrypt`
-  and `arca handle create` refuse a detected agent outright, and require every other caller to
+  anchor. `arca grant`, `arca agent allow`, `arca enable`, `arca recipients add`, `arca reencrypt`,
+  `arca handle create`, `arca signer pin` and `arca signer rotate` refuse a detected agent outright, and require every other caller to
   confirm on the controlling terminal — so a headless agent cannot issue itself the grant a
   `--require-grant` secret needs, expose a secret to itself under a `--strict` MCP server, or add
   its own age key as a recipient and re-wrap the store. Each prompt names the scope being widened
@@ -77,14 +77,16 @@ With that framing, the controls are:
   anchored. See T13 in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 - **`--require-grant` is a guardrail, not a sandbox.** A grant scopes a secret to a command
   pattern, a use count, and a time window. The use count (drawn from the tamper-evident audit
-  log), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it
+  log and enforced atomically with the `exec` event), the expiry, and the agent restriction are firm. The **command match is argv-based**, so it
   enforces *intent* but can be sidestepped by an agent that controls argv — renaming a binary or
   wrapping it in `sh -c`. Treat it as expressing and auditing "this secret is for this job," not as
   a containment boundary; every grant, revoke, and use is recorded.
 - **`--rate` is a throttle, not a quota guarantee.** It caps uses per rolling window from the
   audit log and records each refusal, which stops a runaway agent hammering a secret and surfaces
-  the burst. It is heuristic: a patient caller can stay under the cap by spreading use out, and the
-  window is best-effort (it trusts the audit timestamps).
+  the burst. Concurrent callers cannot all slip through a `--rate 1` (or a grant `--uses 1`)
+  window: the count and the use event share one `BEGIN IMMEDIATE`. It is still heuristic
+  across time: a patient caller can stay under the cap by spreading use out, and the window
+  trusts the audit timestamps.
 - **Capability handles reduce discovery, not misuse.** An `hdl_…` lets an agent *use* a secret via
   MCP `run_with_handle` without its name or value, and without listing the store — so a leaked
   handle exposes only that one scoped, expiring capability, not the whole store. It does not stop
