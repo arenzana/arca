@@ -12,6 +12,7 @@ import (
 
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/secretname"
+	"github.com/arenzana/arca/internal/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -88,6 +89,38 @@ func newInject() *cobra.Command {
 	}
 }
 
+// sweepSkipReason reports why a secret picked up by a bare `arca exec` sweep cannot be released
+// here, or "" if it should be injected. The reason is phrased for an operator wondering where a
+// variable went.
+//
+// A bare `exec` sweeps the whole store as a convenience, and one unusable secret must not take
+// down a command that never asked for it: a single expired credential used to abort every `exec`
+// on the machine with an error naming a secret the caller had not mentioned, and the command
+// never ran at all. `env` had the same defect and was fixed by skipping what it cannot release;
+// this is that rule, applied to the same list of conditions.
+//
+// Two deliberate limits keep it honest:
+//
+//   - `explicit` (a `--only` request) never skips. Naming a secret is asking for it, and running
+//     the command silently without it is worse than failing, because the command may well
+//     "succeed" unauthenticated.
+//   - Only conditions knowable up front and meaning "not releasable in this context" are listed.
+//     gate() failures are left alone: an approval denial, a canary trip that cannot be recorded,
+//     and a rate-limit refusal each stay fatal, because those are decisions or fail-closed
+//     guarantees rather than a secret that is merely unavailable right now.
+func sweepSkipReason(sec *store.Secret, name, cmdline string, explicit bool) string {
+	if explicit {
+		return ""
+	}
+	switch {
+	case sec.Disabled || sec.Expired(time.Now()):
+		return "disabled/expired"
+	case sec.RequireGrant && checkGrant(name, cmdline) != nil:
+		return "require-grant; no grant authorizes this command"
+	}
+	return ""
+}
+
 // newExec runs a command with selected secrets injected as environment variables. This is the
 // "use without revealing" path: the command can read $NAME, but the value never lands on
 // arca's stdout or in an agent's context. It's also the only way to use a --no-print secret.
@@ -110,8 +143,13 @@ func newExec() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// `--only` is an explicit request for named secrets, so a secret that cannot be
+			// released is an error the caller needs to see. Without it, `exec` sweeps the whole
+			// store as a convenience, and one unusable secret must not take the command down
+			// with it — see the skip block below.
+			explicit := len(only) > 0
 			names := s.Names()
-			if len(only) > 0 { // least privilege: inject just what was asked for
+			if explicit { // least privilege: inject just what was asked for
 				names = only
 			}
 			switch redactMode {
@@ -133,6 +171,10 @@ func newExec() *cobra.Command {
 				// that isn't a valid identifier (e.g. LD_PRELOAD-style or `=`-bearing names).
 				if secretname.Validate(name) != nil {
 					fmt.Fprintf(os.Stderr, "skip %q: not a valid env name\n", name)
+					continue
+				}
+				if reason := sweepSkipReason(sec, name, cmdline, explicit); reason != "" {
+					fmt.Fprintf(os.Stderr, "skip %s (%s)\n", name, reason)
 					continue
 				}
 				if err := gate(sec, name, cmdline); err != nil {
