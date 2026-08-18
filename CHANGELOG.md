@@ -6,6 +6,11 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-18
+
+The 2026-08-17 external-style audit, fully remediated: both High findings, all nine
+Mediums, and the Low/Info hygiene batch. Report: `docs/audits/2026-08-17-security-audit.md`.
+
 ### Added
 - **`sync --admit-recipients`** — scoped override for the one common legitimate use of
   `--force`: accepting a pulled store that ADDS recipients (a teammate's new key).
@@ -896,7 +901,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/arenzana/arca/compare/v0.10.3...v0.11.0
 [0.10.3]: https://github.com/arenzana/arca/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/arenzana/arca/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/arenzana/arca/compare/v0.10.0...v0.10.1
