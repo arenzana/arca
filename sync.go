@@ -349,6 +349,11 @@ var errSyncRestart = errors.New("local store changed during sync")
 // syncOpts is the per-invocation policy for a sync run.
 type syncOpts struct {
 	pullOnly, pushOnly, force bool
+	// admitRecipients overrides ONLY the recipient-broadening refusal (audit L8):
+	// the common legitimate use of --force is admitting a teammate's new key, and
+	// --force bundles that with rollback/tamper/HWM overrides, so one flag silently
+	// accepts a rolled-back store in the same motion. This flag is the safe path.
+	admitRecipients bool
 	// quiet suppresses the informational success lines ("in sync: nothing to do",
 	// "pushed/pulled generation N"); warnings and errors are always emitted. It is set for
 	// opportunistic auto-sync so its chatter never trails another command's output.
@@ -483,7 +488,7 @@ func casLocalUnchanged(snap localSnapshot) error {
 }
 
 func newSync() *cobra.Command {
-	var pullOnly, pushOnly, force bool
+	var pullOnly, pushOnly, force, admitRecipients bool
 	c := &cobra.Command{
 		Use:   "sync",
 		Short: "Replicate the store through a network backend (S3-compatible)",
@@ -499,12 +504,13 @@ func newSync() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runSync(b, pullOnly, pushOnly, force)
+			return runSyncFlags(b, pullOnly, pushOnly, force, admitRecipients)
 		},
 	}
 	c.Flags().BoolVar(&pullOnly, "pull", false, "only pull (adopt the remote if it is ahead)")
 	c.Flags().BoolVar(&pushOnly, "push", false, "only push (upload local changes)")
 	c.Flags().BoolVar(&force, "force", false, "accept a remote that regressed (rolled back) — read the warning first")
+	c.Flags().BoolVar(&admitRecipients, "admit-recipients", false, "scoped override: accept a pulled store that ADDS recipients (e.g. a teammate's new key) without relaxing rollback/tamper checks")
 
 	c.AddCommand(newSyncInit(), newSyncStatus(), newSyncAuto(), newSyncResetEscrow())
 	return c
@@ -542,6 +548,15 @@ func newSyncResetEscrow() *cobra.Command {
 			if berr != nil {
 				fmt.Fprintln(os.Stderr, "run `arca sync` to escrow the audit log under the new identity")
 				return nil
+			}
+			// The prior prefix is orphaned by the reset (audit L13): `--remote` only
+			// lists under the current machine-id, so the old segments stop being a
+			// witness anyone checks. Say so, with the count, rather than leaving the
+			// operator to discover the blind spot later.
+			if oldID != "" {
+				if keys, lerr := b.List(context.Background(), remote.KeyAudit+oldID+"/"); lerr == nil && len(keys) > 0 {
+					fmt.Fprintf(os.Stderr, "note: %d escrow segment(s) remain on the backend under the old identity %q; they are no longer checked by `log --verify --remote` (which follows %q)\n", len(keys), oldID, newID)
+				}
 			}
 			s, _, serr := localStoreForSync()
 			if serr != nil || s == nil {
@@ -662,9 +677,11 @@ func newSyncStatus() *cobra.Command {
 //	L > S  && R == S     → push
 //	L > S  && R > S      → conflict: both sides advanced — report, never merge
 //	L < S                → the LOCAL store rolled back → refuse push; pull repairs it
-func runSync(b remote.Backend, pullOnly, pushOnly, force bool) error {
+//
+// runSyncFlags runs a sync with the scoped --admit-recipients override (audit L8).
+func runSyncFlags(b remote.Backend, pullOnly, pushOnly, force, admitRecipients bool) error {
 	return runSyncCtx(context.Background(), b, syncOpts{
-		pullOnly: pullOnly, pushOnly: pushOnly, force: force,
+		pullOnly: pullOnly, pushOnly: pushOnly, force: force, admitRecipients: admitRecipients,
 	})
 }
 
@@ -873,9 +890,9 @@ func pullStore(ctx context.Context, b remote.Backend, snap localSnapshot, opts s
 	// Refuse a SILENT broadening of read access: a pulled store that ADDS recipients (e.g. a
 	// replayed pre-removal copy resurrecting a cut key, or a forged one injecting the attacker)
 	// must be an explicit operator choice. Narrowing/unchanged sets pull freely.
-	if local != nil && !force {
+	if local != nil && !force && !opts.admitRecipients {
 		if added := addedRecipients(local.Recipients, rs.Recipients); len(added) > 0 {
-			return fmt.Errorf("pull would ADD %d recipient(s) not in the local store (%s) — refusing to broaden read access from an untrusted backend; if this is intended (a teammate's new key), re-run with --force", len(added), strings.Join(added, ", "))
+			return fmt.Errorf("pull would ADD %d recipient(s) not in the local store (%s) — refusing to broaden read access from an untrusted backend; if this is intended (a teammate's new key), re-run with --admit-recipients (or --force, which also relaxes rollback checks)", len(added), strings.Join(added, ", "))
 		}
 	}
 

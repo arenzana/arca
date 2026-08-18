@@ -27,11 +27,21 @@ func auditSigner() (*audit.Signer, error) {
 		return nil, err
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
+	zeroize(seed) // NewKeyFromSeed copies; the seed buffer is done (audit L14)
 	return &audit.Signer{
 		SessionID: sid,
 		Priv:      priv,
 		Pub:       priv.Public().(ed25519.PublicKey),
 	}, nil
+}
+
+// zeroize overwrites a buffer in place. Go makes real memory hygiene impossible
+// (the GC copies at will), so this is best-effort for the long-lived, easy
+// buffers only — session seeds — not a claim of secrecy-in-RAM (audit L14).
+func zeroize(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // sessionKeyPath derives the key file path from a hash of the session id, so an arbitrary session

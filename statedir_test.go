@@ -10,6 +10,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,6 +34,72 @@ import (
 // Note the difference from the existing sync tests: switchMachine() moves ARCA_STORE and
 // XDG_STATE_HOME together, which models a second MACHINE. This models a second STORE on the SAME
 // machine — the configuration the suite never exercised.
+// TestTightenStateDirMode covers L2: a pre-existing 0755 state dir is tightened
+// to 0700 the next time a path helper resolves it.
+func TestTightenStateDirMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ACLs, not mode bits")
+	}
+	sandbox(t)
+	dir := storeStateDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storeStateDir() // resolving the dir tightens it
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Fatalf("state dir mode = %o, want 0700", fi.Mode().Perm())
+	}
+}
+
+// TestLockAdoptionStaleReclaim covers L12's rename-steal: a dead adoption lock
+// is reclaimed (and a live one is not).
+func TestLockAdoptionStaleReclaim(t *testing.T) {
+	sandbox(t)
+	if err := os.MkdirAll(xdg.StateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Live lock: fresh mtime — reclaim must refuse.
+	if err := os.WriteFile(adoptLockPath(), []byte("pid-live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockAdoption(); !errors.Is(err, errAdoptionInProgress) {
+		t.Fatalf("live lock = %v, want errAdoptionInProgress", err)
+	}
+	// Stale lock: backdated past staleLockAge — reclaimed, and our token owns it.
+	old := time.Now().Add(-2 * staleLockAge)
+	if err := os.Chtimes(adoptLockPath(), old, old); err != nil {
+		t.Fatal(err)
+	}
+	release, err := lockAdoption()
+	if err != nil {
+		t.Fatalf("stale lock should be reclaimed: %v", err)
+	}
+	release()
+	if _, err := os.Stat(adoptLockPath()); !os.IsNotExist(err) {
+		t.Fatal("release did not remove the lock")
+	}
+	// A release must not remove a lock someone else recreated meanwhile.
+	release2, err := lockAdoption()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adoptLockPath(), []byte("other-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release2() // our token no longer matches: the successor's lock survives
+	if _, err := os.Stat(adoptLockPath()); err != nil {
+		t.Fatal("release removed a lock we no longer owned")
+	}
+	_ = os.Remove(adoptLockPath())
+}
+
 func TestQA_SecondStoreOnSameMachineIsClobberedBySync(t *testing.T) {
 	dir := sandbox(t)
 	withFakeBackend(t)

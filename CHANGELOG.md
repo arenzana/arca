@@ -7,6 +7,10 @@ All notable changes to arca are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`sync --admit-recipients`** — scoped override for the one common legitimate use of
+  `--force`: accepting a pulled store that ADDS recipients (a teammate's new key).
+  `--force` bundled that with the rollback / tamper / high-water-mark overrides, so
+  admitting a key also silently accepted a rolled-back store (audit L8).
 - **`log --verify --print-anchor`** — minting an off-machine anchor token is now
   opt-in. `--verify` used to print it on stdout every time, which put a
   low-secrecy binding on a stream agents capture (audit M2).
@@ -21,9 +25,8 @@ All notable changes to arca are documented here. The format follows
   bad signature is a hard refusal.
 - **Pushes now sign the store** (H1, second slice). `sync` writes `Arca-Signature` and
   `Arca-Signer` user-metadata on the head and the immutable revision object, over the
-  exact store bytes that were sealed. Pulls still ignore the metadata; verification
-  A missing key is minted on first push so an existing fleet starts signing
-  without a ceremony.
+  exact store bytes that were sealed. A missing key is minted on first push so an
+  existing fleet starts signing without a ceremony.
 - **Pulls verify the operator signature** (H1, third slice). A machine with a
   pinned signer refuses an unsigned, mis-signed, or differently-signed head —
   `--force` cannot override this. A machine with no pin still accepts an
@@ -32,6 +35,30 @@ All notable changes to arca are documented here. The format follows
   is pinned to it automatically; that is not Trust-On-First-Use from the network.
 
 ### Fixed
+- **Injected secrets replace, not shadow, inherited env vars** (audit L4). `exec` and
+  MCP appended `NAME=value` to `os.Environ()`; a pre-existing `NAME` stayed first, and
+  glibc `getenv` returns the first match — so the child used the inherited value while
+  the audit log claimed a release. Injection now removes the inherited entry.
+- **A pre-existing 0755 state dir is tightened to 0700** (audit L2). `MkdirAll` is a
+  no-op on an existing dir, so a hand-created state dir kept its loose mode and exposed
+  every 0600 file inside (grants, handles, `sync.json` credentials).
+- **The state-dir adoption lock reclaims by rename-steal, and the `adopted-by` claim
+  is written atomically** (audit L12) — the same races `lock.go` already fixed.
+- **`sync reset-escrow` warns about orphaned segments** (audit L13). The reset leaves
+  the old identity's segments on the backend, but `--remote` only follows the new
+  identity; the command now says so, with the count.
+- **dotenv import is total-size capped, quote-stripping is pair-aware, and JSON import
+  keeps number precision** (audit L10). Previously: no total cap, `Trim(v, "\"'")`
+  corrupted values that legitimately began/ended with a quote, and numbers went through
+  float64.
+- **Session seeds are zeroized after key derivation** (audit L14, best-effort — Go's
+  GC makes full memory hygiene impossible).
+- **MCP: refused runs no longer consume rate/grant budget, inbound stdio is
+  message-size capped, and `read_secret` refuses non-UTF-8 values** (audit Info).
+  A run refused for an un-redactable value was logged as a use before the refusal;
+  `mcp-go`'s `ReadString` had no per-message bound; and raw bytes broke client JSON.
+- **`sync` warns when `insecure=1`** (audit Info) and **refuses a head object with no
+  generation metadata** instead of reporting a false ROLLBACK (audit Info).
 - **Audit DB WAL/SHM sidecars are chmod'd 0600** (audit L1). They were left at
   the process umask after `PRAGMA journal_mode=WAL`.
 - **A corrupt session signing key is refused, not regenerated** (audit L3).

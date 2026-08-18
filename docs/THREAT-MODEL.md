@@ -435,7 +435,8 @@ references, and fix order in [audits/2026-08-17-security-audit.md](audits/2026-0
 | ~~M8~~ | ~~Unknown-field policy stripping~~ | **Fixed** (Unreleased): `Decode`/`Save` preserve unknown JSON fields on the store and on each secret. |
 | ~~M9~~ | ~~Unenumerated `reencrypt` prompt~~ | **Fixed** (Unreleased): the confirmation lists every recipient and the drift warning is part of the prompt, before the operator answers. |
 | ~~L1, L3, L5, L7, L9~~ | ~~WAL perms; corrupt session seed regen; HOME/SHELL/XDG reserved; approve timeout; lexical escrow sort~~ | **Fixed** (Unreleased). |
-| L2, L4, L6, L8, L10–L14 + Info | State-dir create-only perms, env-shadowing of injected secrets, `--force` bundling, redaction evasion class, and others. | Triaged; hygiene batch |
+| ~~L2, L4, L6, L8, L10–L14~~ | ~~State-dir create-only perms; env-shadowing; redaction evasion class; --force bundling; import hardening; session-binding docs; adoption lock; reset-escrow orphaning; seed zeroization~~ | **Fixed** (Unreleased): L2/L4/L8/L10/L12/L13/L14 in code; L6/L11 documented. |
+| Info | MCP exec accounting, stdin bound, UTF-8 read_secret, insecure=1 notice, stripped-metadata Head error, --only double-count. | **Fixed** (Unreleased). Remaining Info items (caller argv, handle use-count, symlink semantics, edit temp-file) are documented boundaries, not defects. |
 
 Earlier open findings (the T12 recipient-pin residual and the T13 expiry residual) remain
 addressed as described in their sections above.

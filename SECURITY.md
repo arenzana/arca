@@ -100,8 +100,11 @@ With that framing, the controls are:
   an injected value, `arca exec` **redacts it from the captured output** (replacing it with
   `«arca:NAME»` and auditing the catch), so a leak into an agent's context is caught at the
   boundary rather than relied on not to happen. Redaction is best-effort defense in depth — it
-  matches the literal value, so a command that transforms the secret (encodes, splits, hashes it)
-  before printing can still emit it; `--redact` controls the behavior. The value itself is never
+  matches the literal bytes of the value, so **any transformation evades it**: a command that
+  base64- or URL-encodes, JSON-escapes, splits, or hashes the secret before printing emits it
+  unredacted (audit L6). That is an inherent boundary of stream redaction, not a bug to patch
+  piecemeal — treat `--redact` as catching accidents and unsophisticated leaks, not as
+  containment. `--redact` controls the behavior. The value itself is never
   returned by arca; the command's output is.
 - **Secret names** are restricted to `[A-Za-z_][A-Za-z0-9_]*` on write, and invalid names in a
   hand-edited / synced store are skipped by `env`/`exec`, to prevent shell-injection via
@@ -116,6 +119,11 @@ With that framing, the controls are:
 - **Identity *input* is still advisory.** The agent name/version/session and `ARCA_ACTOR` are
   read from the environment, so the log records the *claimed* identity; signing binds each event
   to a session key but doesn't independently verify that the environment's claim was truthful.
+  Stated precisely (audit L11): session signatures bind events to **this unix user**, not to a
+  cryptographically-distinct session. All session keys are same-UID-readable, and an agent that
+  scrubs its environment markers signs as `local` — indistinguishable from the operator. The
+  signature proves "recorded by a process running as this user with access to that key file",
+  nothing more.
 
 ## Supply-chain integrity
 

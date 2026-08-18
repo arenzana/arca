@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -43,6 +44,13 @@ func NewS3(cfg Config) (*S3, error) {
 	if endpoint == "" {
 		endpoint = "s3.amazonaws.com"
 	}
+	if cfg.Insecure {
+		// SigV4 credentials travel over plaintext HTTP with insecure=1. Warn once per
+		// process so a URL pinned with it long ago is not silently trusted forever.
+		insecureWarnOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "arca sync: warning: insecure=1 — credentials and envelopes travel over PLAINTEXT HTTP to %s\n", endpoint)
+		})
+	}
 	cl, err := minio.New(endpoint, &minio.Options{
 		Creds:        credentials.NewStaticV4(access, secret, ""),
 		Secure:       !cfg.Insecure,
@@ -62,6 +70,8 @@ func lookupStyle(cfg Config) minio.BucketLookupType {
 	return minio.BucketLookupAuto
 }
 
+var insecureWarnOnce sync.Once
+
 func firstEnv(names ...string) string {
 	for _, n := range names {
 		if v := os.Getenv(n); v != "" {
@@ -79,7 +89,13 @@ func (s *S3) Head(ctx context.Context) (Rev, error) {
 		}
 		return Rev{}, fmt.Errorf("sync head: %w", err)
 	}
-	gen, _ := strconv.Atoi(st.UserMetadata["Arca-Generation"])
+	gen, err := strconv.Atoi(st.UserMetadata["Arca-Generation"])
+	if _, ok := st.UserMetadata["Arca-Generation"]; !ok || err != nil {
+		// A head object without generation metadata means the backend STRIPPED
+		// user-metadata (or the object was placed out-of-band). Returning gen 0 here
+		// wedges sync with a false "ROLLBACK detected" (audit Info); say what happened.
+		return Rev{}, fmt.Errorf("sync head: the remote object carries no Arca-Generation metadata — the backend may be stripping user-metadata; refusing to guess")
+	}
 	return Rev{
 		Generation: gen, Tag: st.ETag,
 		Signature: st.UserMetadata["Arca-Signature"],

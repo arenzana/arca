@@ -27,7 +27,7 @@
 | `inject` | Resolve `arca://NAME` references on stdin → stdout | — |
 | `exec -- CMD` | Run CMD with secrets injected as env (audited); injected values are redacted from its output | `--only a,b`, `--redact auto\|on\|off`, `--reveal` |
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
-| `sync` | Replicate the store through an S3-compatible backend (see [SYNC.md](SYNC.md)); envelope-encrypted, CAS-safe | `--pull`, `--push`, `--force`; `sync init URL`, `sync status`, `sync auto on\|off`, `sync reset-escrow` |
+| `sync` | Replicate the store through an S3-compatible backend (see [SYNC.md](SYNC.md)); envelope-encrypted, CAS-safe | `--pull`, `--push`, `--force`, `--admit-recipients`; `sync init URL`, `sync status`, `sync auto on\|off`, `sync reset-escrow` |
 | `signer show` | Print this machine's store-signing public key (headless-safe; generates the key on first use) | — |
 | `signer pin PUBKEY` | Accept a store-signing public key as this machine's expected signer — terminal-anchored | — |
 | `signer rotate` | Generate a new store-signing key and pin it here — terminal-anchored; other machines then need `signer pin` | — |

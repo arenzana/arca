@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -42,7 +44,12 @@ func newMCP() *cobra.Command {
 			warnAgentExposure()
 			s := server.NewMCPServer("arca", appVersion())
 			registerMCPTools(s)
-			return server.ServeStdio(s)
+			// NewStdioServer+Listen rather than ServeStdio so stdin goes through
+			// cappedLineReader: mcp-go's ReadString has no per-message bound, and
+			// one multi-GB JSON-RPC line would grow the heap without limit.
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer cancel()
+			return server.NewStdioServer(s).Listen(ctx, &cappedLineReader{r: os.Stdin}, os.Stdout)
 		},
 	}
 	c.Flags().BoolVar(&mcpStrictFlag, "strict", false, "deny-by-default: agents only see secrets marked `arca agent allow` (recommended)")
@@ -236,6 +243,11 @@ func mcpReadSecret(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+	// The value rides into the client's JSON: invalid UTF-8 breaks the encoding.
+	// Redirect binary values to run_with_secrets, which never serializes the value.
+	if !utf8.Valid(plain) {
+		return mcp.NewToolResultError(name + " is not valid UTF-8 and cannot ride the MCP JSON channel; use run_with_secrets (which never serializes the value)"), nil
+	}
 	if err := logUse("read", name, "mcp", sec); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -262,7 +274,7 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	cmdline := strings.TrimSpace(command + " " + strings.Join(argStrings(req, "args"), " "))
 	env := scrubChildEnv(os.Environ())
 	var pats []redactPattern
-	for _, name := range names {
+	for _, name := range dedupeNames(names) {
 		sec := s.Secrets[name]
 		// See mcpShowSecret: nil counts as unexposed so strict mode has no existence oracle.
 		if agentDenied(sec != nil && sec.AgentExposed) {
@@ -282,14 +294,18 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		env = append(env, name+"="+string(plain))
+		env = envWith(env, name, string(plain))
 		pats = append(pats, redactPattern{name: name, value: plain})
-		if err := logUse("exec", name, command, sec); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 	}
+	// The redactability refusal runs BEFORE the use is recorded: a run that never
+	// executes must not consume grant/rate budget (audit Info: MCP exec accounting).
 	if n := tooShortToRedact(pats); n != "" {
 		return mcp.NewToolResultError(fmt.Sprintf("refusing to run: %s is too short (<%d chars) to reliably redact from the command's output", n, minRedactLen)), nil
+	}
+	for _, p := range pats {
+		if err := logUse("exec", p.name, command, s.Secrets[p.name]); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 	}
 	out, exitCode, err := runRedacted(ctx, command, argStrings(req, "args"), env,
 		buildRedactPatterns(pats, false, os.Stderr))
@@ -420,13 +436,15 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	env := append(scrubChildEnv(os.Environ()), h.EnvName+"="+string(plain))
-	if err := logUseNoGrant("exec", h.Secret, id, sec); err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
+	env := envWith(scrubChildEnv(os.Environ()), h.EnvName, string(plain))
 	pats := []redactPattern{{name: h.EnvName, value: plain}}
+	// The redactability refusal runs BEFORE the use is recorded: a run that never
+	// executes must not consume rate budget (audit Info: MCP exec accounting).
 	if n := tooShortToRedact(pats); n != "" {
 		return mcp.NewToolResultError(fmt.Sprintf("refusing to run: the secret is too short (<%d chars) to reliably redact from the command's output", minRedactLen)), nil
+	}
+	if err := logUseNoGrant("exec", h.Secret, id, sec); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 	out, exitCode, err := runRedacted(ctx, command, args, env,
 		buildRedactPatterns(pats, false, os.Stderr))

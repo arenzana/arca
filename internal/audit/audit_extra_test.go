@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -275,5 +276,59 @@ func TestRecordGenQuotaConcurrentMaxOne(t *testing.T) {
 	r, err := l.Verify()
 	if err != nil || !r.OK || r.Checked != 1 {
 		t.Fatalf("chain after concurrent quota: %+v err %v", r, err)
+	}
+}
+
+// TestQuotaErrorShape covers the sentinel + message of the quota refusal.
+func TestQuotaErrorShape(t *testing.T) {
+	err := &QuotaError{Kind: "rate", Used: 3, Max: 3}
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatal("QuotaError must wrap ErrQuotaExceeded")
+	}
+	if !strings.Contains(err.Error(), "rate") || !strings.Contains(err.Error(), "3 of 3") {
+		t.Fatalf("message lost its detail: %v", err)
+	}
+}
+
+// TestVerifyEscrowRowsErrorBranches covers the refusal paths: empty rows, a bad
+// prev_anchor token, a broken prev link, a recomputed-hash mismatch, and a tail
+// that does not match the claimed anchor.
+func TestVerifyEscrowRowsErrorBranches(t *testing.T) {
+	l, _ := openChained(t)
+	recordN(t, l, 2)
+	rows, err := l.EventsSince(0)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("EventsSince: %v (%d rows)", err, len(rows))
+	}
+	n, h, err := l.ChainInfoThrough(rows[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := FormatAnchor(n, h)
+
+	if err := VerifyEscrowRows(nil, "", anchor); err == nil {
+		t.Fatal("empty segment must be refused")
+	}
+	if err := VerifyEscrowRows(rows, "not-a-token", anchor); err == nil {
+		t.Fatal("garbage prev_anchor must be refused")
+	}
+	if err := VerifyEscrowRows(rows, "", "not-a-token"); err == nil {
+		t.Fatal("garbage anchor must be refused")
+	}
+	// Broken prev link: row 2 claims a predecessor that isn't row 1's hash.
+	broken := append([]EscrowRow(nil), rows...)
+	broken[1].PrevHash = make([]byte, 32)
+	if err := VerifyEscrowRows(broken, "", anchor); err == nil {
+		t.Fatal("a broken prev link must be refused")
+	}
+	// Tail mismatch: the claimed anchor names a different hash.
+	wrong := make([]byte, 32)
+	wrong[0] = 0xff
+	if err := VerifyEscrowRows(rows, "", FormatAnchor(n, wrong)); err == nil {
+		t.Fatal("a tail that does not match the claimed anchor must be refused")
+	}
+	// Empty anchor skips the tail check entirely (legacy segments).
+	if err := VerifyEscrowRows(rows, "", ""); err != nil {
+		t.Fatalf("empty anchor should pass on honest rows: %v", err)
 	}
 }
