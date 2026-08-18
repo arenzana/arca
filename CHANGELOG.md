@@ -15,6 +15,10 @@ All notable changes to arca are documented here. The format follows
   not authentication; this key is what a later pull-side check will verify against a
   locally pinned public key. `show` is headless and public. `pin` and `rotate` are
   terminal-anchored. A corrupt key file is refused, never silently regenerated.
+- **Escrow segments are signed with the store key** (H1 follow-up). Each segment
+  carries `signature`/`signer`; fetch verifies them when a pin exists. Unsigned
+  (legacy) segments still pass — they are bound by the M2 rehash. A present-but-
+  bad signature is a hard refusal.
 - **Pushes now sign the store** (H1, second slice). `sync` writes `Arca-Signature` and
   `Arca-Signer` user-metadata on the head and the immutable revision object, over the
   exact store bytes that were sealed. Pulls still ignore the metadata; verification

@@ -239,7 +239,7 @@ in the prompt and run the drift check before `requireOperator` returns success.
    → [remediation plan](2026-08-remediation-plan-H1-H2.md)
 3. ~~**M3** — atomic grant/rate check-and-record~~ **Fixed** (Unreleased): use events count their rate and grant-uses caps inside the same `BEGIN IMMEDIATE` as the append.
 4. ~~**M7** — scrub backend credentials from child environments~~ **Fixed** (Unreleased): inherited `ARCA_SYNC_*` / `AWS_*` credential vars are stripped from `exec` and MCP children; an explicit `--only` injection still wins.
-5. ~~**H1** — operator store signatures~~ **Fixed** (Unreleased): push signs; pull verifies against a locally pinned key. Escrow segment signing remains as a follow-up.
+5. ~~**H1** — operator store signatures~~ **Fixed** (Unreleased): push signs; pull verifies against a locally pinned key; escrow segments are signed and verified when a pin exists.
    → [remediation plan](2026-08-remediation-plan-H1-H2.md)
 6. ~~**M2, M8, M9** — escrow authentication, unknown-field policy, reencrypt prompt~~ **Fixed** (Unreleased), except escrow *signing* (H1 follow-up).
 7. Low/Info hygiene batch (L1–L14 as time permits).

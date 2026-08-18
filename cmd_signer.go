@@ -1,7 +1,6 @@
 // Operator store-signing key (audit H1). Distinct from the per-session audit
-// signers in sign.go: this key authenticates the synced store, is operator-
-// anchored, and is pinned per machine. This file is the command surface only;
-// push/pull verification lands in a later slice and is not wired yet.
+// signers in sign.go: this key authenticates the synced store and escrow
+// segments, is operator-anchored, and is pinned per machine.
 package main
 
 import (

@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -81,4 +82,32 @@ func checkPinnedSignature(payload []byte, rev remote.Rev, pin ed25519.PublicKey)
 		return fmt.Errorf("remote store signature does not verify under the pinned signer — refusing the pull")
 	}
 	return nil
+}
+
+// verifyEscrowSegment checks an operator signature on an escrow segment when
+// this machine has a pin. Unsigned (legacy) segments are accepted — they
+// predate signing and are still bound by VerifyEscrowRows. A present-but-bad
+// signature is a hard refusal: the backend forged a segment to the public
+// recipients.
+func verifyEscrowSegment(s segment) error {
+	pin, err := storesign.LoadPin(storeSignerPinPath())
+	if err != nil {
+		if errors.Is(err, storesign.ErrCorrupt) {
+			return fmt.Errorf("store-signer pin is corrupt; refusing escrow: %w", err)
+		}
+		if os.IsNotExist(err) {
+			return nil // no pin: M2 rehash is the only check
+		}
+		return err
+	}
+	if s.Signature == "" && s.Signer == "" {
+		return nil // legacy unsigned segment
+	}
+	unsigned := s
+	unsigned.Signature, unsigned.Signer = "", ""
+	raw, err := json.Marshal(unsigned)
+	if err != nil {
+		return err
+	}
+	return checkPinnedSignature(raw, remote.Rev{Signature: s.Signature, Signer: s.Signer}, pin)
 }

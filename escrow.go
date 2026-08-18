@@ -40,6 +40,10 @@ type segment struct {
 	Anchor     string            `json:"anchor"`                // chain coordinates at LastID (arca-anchor:v1:…)
 	PrevAnchor string            `json:"prev_anchor,omitempty"` // tail of the previous segment ("" for the first)
 	Events     []audit.EscrowRow `json:"events"`
+	// Signature / Signer authenticate the segment with the operator store
+	// key (H1 follow-up). Omitted on legacy unsigned segments.
+	Signature string `json:"signature,omitempty"`
+	Signer    string `json:"signer,omitempty"`
 }
 
 // escrowState is the local cursor: what has already been escrowed (state dir).
@@ -180,6 +184,13 @@ func escrowOnce(ctx context.Context, a *audit.Log, b remote.Backend, recipients 
 	payload, err := json.Marshal(seg)
 	if err != nil {
 		return err
+	}
+	if auth := signStorePayload(payload); !auth.Zero() {
+		seg.Signature, seg.Signer = auth.Signature, auth.Signer
+		payload, err = json.Marshal(seg)
+		if err != nil {
+			return err
+		}
 	}
 	sealed, err := sealEnvelope(payload, recipients)
 	if err != nil {
@@ -326,6 +337,9 @@ func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, er
 		// PrevAnchor/Anchor alone is not authentication: anyone can encrypt a
 		// self-consistent segment to the public recipients (audit M2).
 		if err := audit.VerifyEscrowRows(s.Events, s.PrevAnchor, s.Anchor); err != nil {
+			return nil, fmt.Errorf("escrow %s: %w", k, err)
+		}
+		if err := verifyEscrowSegment(s); err != nil {
 			return nil, fmt.Errorf("escrow %s: %w", k, err)
 		}
 		segs = append(segs, s)

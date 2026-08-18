@@ -88,12 +88,12 @@ warning).
   envelope older than the head it advertises, or a store that *adds* a recipient not already
   local, is refused (use `--force` to adopt a legitimately-broader store, e.g. a teammate's new
   key). Immutable `store/revs/<generation>.age` objects are the forensic trail.
-- **The escrowed audit trail is truncation-checked.** `log --verify --remote` refuses if the
-  backend has fewer segments than this machine escrowed. **Caveat — authenticity:** age gives the
-  backend *confidentiality* (it sees only ciphertext), not *authentication*. A backend that both
-  knows the recipients and serves a strictly-newer forged store can still substitute content;
-  the complete defense is an operator signature over the store, planned. Treat the backend as
-  honest-but-curious today; the refusals above close the replay/rollback class.
+- **The escrowed audit trail is truncation-checked and signed.** `log --verify --remote`
+  refuses if the backend has fewer segments than this machine escrowed. Each segment is
+  signed with the operator store key and verified on fetch when a pin exists (unsigned
+  legacy segments are still bound by the row-rehash). Combined with the store signature
+  on push/pull, a backend that knows the (public) recipients can no longer fabricate
+  store content or a self-consistent escrow history.
 - **A sync cannot lose a concurrent local change.** The CAS above arbitrates between
   *machines*; this one arbitrates between *processes on one machine*. A sync does its network
   work without holding the store lock, then takes the lock and re-checks that the local store
