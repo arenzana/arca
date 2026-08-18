@@ -40,6 +40,10 @@ type segment struct {
 	Anchor     string            `json:"anchor"`                // chain coordinates at LastID (arca-anchor:v1:…)
 	PrevAnchor string            `json:"prev_anchor,omitempty"` // tail of the previous segment ("" for the first)
 	Events     []audit.EscrowRow `json:"events"`
+	// Signature / Signer authenticate the segment with the operator store
+	// key (H1 follow-up). Omitted on legacy unsigned segments.
+	Signature string `json:"signature,omitempty"`
+	Signer    string `json:"signer,omitempty"`
 }
 
 // escrowState is the local cursor: what has already been escrowed (state dir).
@@ -181,6 +185,13 @@ func escrowOnce(ctx context.Context, a *audit.Log, b remote.Backend, recipients 
 	if err != nil {
 		return err
 	}
+	if auth := signStorePayload(payload); !auth.Zero() {
+		seg.Signature, seg.Signer = auth.Signature, auth.Signer
+		payload, err = json.Marshal(seg)
+		if err != nil {
+			return err
+		}
+	}
 	sealed, err := sealEnvelope(payload, recipients)
 	if err != nil {
 		return err
@@ -227,6 +238,16 @@ func reconcileEscrowCursor(ctx context.Context, a *audit.Log, b remote.Backend) 
 			return fmt.Errorf("the remote's newest escrow segment (#%d) is not part of this machine's audit log: %w — the escrow identity likely collides with another machine; run `arca sync reset-escrow`", tail.Seq, err)
 		}
 	}
+	// A forged segment whose LastID is huge would freeze escrow forever:
+	// escrowOnce becomes a no-op (EventsSince(huge) is empty) while
+	// CheckAnchor still passes (audit M2). Refuse anything past the local log.
+	maxID, err := a.MaxID()
+	if err != nil {
+		return err
+	}
+	if tail.LastID > maxID {
+		return fmt.Errorf("the remote's newest escrow segment (#%d) claims last_id %d, past this machine's newest event %d — refusing to adopt a forged cursor; run `arca sync reset-escrow` if the identity collided", tail.Seq, tail.LastID, maxID)
+	}
 	return saveEscrowState(escrowState{LastID: tail.LastID, Seq: tail.Seq, PrevAnchor: tail.Anchor})
 }
 
@@ -265,6 +286,25 @@ func escrowKeyRegexp(machine string) *regexp.Regexp {
 	return regexp.MustCompile(`^` + regexp.QuoteMeta(remote.KeyAudit+machine+"/") + `\d{6,}\.age$`)
 }
 
+// escrowSeq is the numeric sequence in an escrow object key. Used to sort
+// segments by Seq rather than lexically, so "1000000.age" follows "999999.age"
+// instead of sorting before it (audit L9).
+func escrowSeq(key string) int {
+	base := key
+	if i := strings.LastIndex(key, "/"); i >= 0 {
+		base = key[i+1:]
+	}
+	base = strings.TrimSuffix(base, ".age")
+	n := 0
+	for _, c := range base {
+		if c < '0' || c > '9' {
+			return n
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
 // fetchEscrowedSegments pulls and decrypts this machine's segments, oldest first, and
 // checks their continuity (each segment's prev_anchor must equal its predecessor's
 // anchor). Returns the parsed segments.
@@ -277,7 +317,9 @@ func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, er
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		return escrowSeq(keys[i]) < escrowSeq(keys[j])
+	})
 	ids, err := loadIDs()
 	if err != nil {
 		return nil, err
@@ -311,6 +353,15 @@ func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, er
 			}
 		} else if prev := segs[len(segs)-1]; s.Seq != prev.Seq+1 || s.PrevAnchor != prev.Anchor {
 			return nil, fmt.Errorf("escrow continuity broken at segment %d: does not extend segment %d — segments were removed or replaced on the backend", s.Seq, prev.Seq)
+		}
+		// Recompute each row's hash against the claimed chain. Continuity of
+		// PrevAnchor/Anchor alone is not authentication: anyone can encrypt a
+		// self-consistent segment to the public recipients (audit M2).
+		if err := audit.VerifyEscrowRows(s.Events, s.PrevAnchor, s.Anchor); err != nil {
+			return nil, fmt.Errorf("escrow %s: %w", k, err)
+		}
+		if err := verifyEscrowSegment(s); err != nil {
+			return nil, fmt.Errorf("escrow %s: %w", k, err)
 		}
 		segs = append(segs, s)
 	}

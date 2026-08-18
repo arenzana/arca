@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/arenzana/arca/internal/crypto"
+	"github.com/arenzana/arca/internal/storesign"
 )
 
 // controlPlaneCommands are the six mutations that change the rules governing agents (T11/T12/R27).
@@ -33,6 +34,8 @@ func controlPlaneCommands(rogueKey string) []struct {
 		{"recipients add", []string{"recipients", "add", rogueKey}},
 		{"reencrypt", []string{"reencrypt"}},
 		{"handle create", []string{"handle", "create", "LOCKED", "--ttl", "1h", "--override"}},
+		{"signer pin", []string{"signer", "pin", signerPubForTest()}},
+		{"signer rotate", []string{"signer", "rotate"}},
 	}
 }
 
@@ -49,6 +52,16 @@ func anchorFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return rogue
+}
+
+// signerPubForTest is a well-formed store-signer public key so `signer pin` fails the
+// anchor rather than the decoder. Generated per call; the value is not persisted.
+func signerPubForTest() string {
+	k, err := storesign.Generate()
+	if err != nil {
+		panic(err)
+	}
+	return storesign.EncodePub(k.Pub)
 }
 
 // TestControlPlaneRefusesDetectedAgent covers the cooperating case: an agent that advertises itself

@@ -328,8 +328,16 @@ func newReencrypt() *cobra.Command {
 			// The second half of T12: `recipients add` stages a key, `reencrypt` is what actually
 			// re-wraps every value to it. Anchoring only the add would leave the payload step open to
 			// an agent racing a legitimate pending change.
-			if err := requireOperator("reencrypt",
-				"Re-encrypt every secret to the store's current recipient set?"); err != nil {
+			//
+			// Load first so the prompt can name the recipient set and so the drift
+			// warning fires before the operator answers (audit M9). The lock comes
+			// after confirmation: the prompt is a decision about *these* keys, and
+			// a concurrent add between confirm and lock is a separate operator action.
+			s, err := openStore()
+			if err != nil {
+				return err
+			}
+			if err := requireOperator("reencrypt", reencryptQuestion(s)); err != nil {
 				return err
 			}
 			unlock, err := lockStore()
@@ -337,7 +345,7 @@ func newReencrypt() *cobra.Command {
 				return err
 			}
 			defer unlock()
-			s, err := openStore()
+			s, err = openStore()
 			if err != nil {
 				return err
 			}
@@ -355,4 +363,27 @@ func newReencrypt() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// reencryptQuestion names every recipient the wrap will include, and calls out
+// any that this machine has never accepted. The payload step of a recipient-
+// injection is this confirmation; a bare yes/no is not enough (audit M9).
+func reencryptQuestion(s *store.Store) string {
+	var b strings.Builder
+	b.WriteString("Re-encrypt every secret to these recipients?")
+	for _, r := range s.Recipients {
+		label := s.Label(r)
+		if label == "" {
+			label = "unlabeled"
+		}
+		fmt.Fprintf(&b, "\n  %s (%s)", r, label)
+	}
+	added, _, pinned := recipientDrift(s)
+	if pinned && len(added) > 0 {
+		b.WriteString("\n  — not yet accepted on this machine:")
+		for _, r := range added {
+			fmt.Fprintf(&b, "\n    %s", r)
+		}
+	}
+	return b.String()
 }

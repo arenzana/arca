@@ -41,11 +41,11 @@ func (h *hookBackend) Fetch(ctx context.Context) ([]byte, remote.Rev, error) {
 	return h.Backend.Fetch(ctx)
 }
 
-func (h *hookBackend) Push(ctx context.Context, env []byte, gen int, prev remote.Rev) (remote.Rev, error) {
+func (h *hookBackend) Push(ctx context.Context, env []byte, gen int, prev remote.Rev, auth remote.StoreAuth) (remote.Rev, error) {
 	if h.beforePush != nil {
 		h.beforePush()
 	}
-	return h.Backend.Push(ctx, env, gen, prev)
+	return h.Backend.Push(ctx, env, gen, prev, auth)
 }
 
 // countingBackend records how many backend methods were called. It is how a test proves the
@@ -65,9 +65,9 @@ func (c *countingBackend) Fetch(ctx context.Context) ([]byte, remote.Rev, error)
 	return c.Backend.Fetch(ctx)
 }
 
-func (c *countingBackend) Push(ctx context.Context, env []byte, gen int, prev remote.Rev) (remote.Rev, error) {
+func (c *countingBackend) Push(ctx context.Context, env []byte, gen int, prev remote.Rev, auth remote.StoreAuth) (remote.Rev, error) {
 	c.calls++
-	return c.Backend.Push(ctx, env, gen, prev)
+	return c.Backend.Push(ctx, env, gen, prev, auth)
 }
 
 // lockAssertingBackend fails the test if the store lock is held when any backend method runs.
@@ -95,9 +95,9 @@ func (l *lockAssertingBackend) Fetch(ctx context.Context) ([]byte, remote.Rev, e
 	return l.Backend.Fetch(ctx)
 }
 
-func (l *lockAssertingBackend) Push(ctx context.Context, env []byte, gen int, prev remote.Rev) (remote.Rev, error) {
+func (l *lockAssertingBackend) Push(ctx context.Context, env []byte, gen int, prev remote.Rev, auth remote.StoreAuth) (remote.Rev, error) {
 	l.check("Push")
-	return l.Backend.Push(ctx, env, gen, prev)
+	return l.Backend.Push(ctx, env, gen, prev, auth)
 }
 
 func (l *lockAssertingBackend) PutIfAbsent(ctx context.Context, key string, data []byte) error {

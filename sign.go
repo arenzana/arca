@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/audit"
 )
 
@@ -25,11 +27,21 @@ func auditSigner() (*audit.Signer, error) {
 		return nil, err
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
+	zeroize(seed) // NewKeyFromSeed copies; the seed buffer is done (audit L14)
 	return &audit.Signer{
 		SessionID: sid,
 		Priv:      priv,
 		Pub:       priv.Public().(ed25519.PublicKey),
 	}, nil
+}
+
+// zeroize overwrites a buffer in place. Go makes real memory hygiene impossible
+// (the GC copies at will), so this is best-effort for the long-lived, easy
+// buffers only — session seeds — not a claim of secrecy-in-RAM (audit L14).
+func zeroize(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // sessionKeyPath derives the key file path from a hash of the session id, so an arbitrary session
@@ -46,17 +58,23 @@ func sessionKeyPath(sid string) string {
 // loadOrCreateSeed reads an existing 32-byte Ed25519 seed, or generates and writes one.
 func loadOrCreateSeed(path string) ([]byte, error) {
 	b, err := os.ReadFile(path) //#nosec G304 -- path derives from the operator's state dir, not untrusted input
-	if err == nil && len(b) == ed25519.SeedSize {
-		return b, nil
+	if err == nil {
+		if len(b) == ed25519.SeedSize {
+			return b, nil
+		}
+		// A truncated/corrupt seed must not be silently replaced: regenerating
+		// would make every prior event for this session fail verification — a
+		// permanent false tamper alarm (audit L3).
+		return nil, fmt.Errorf("session signing key %s is corrupt (%d bytes); refusing to regenerate it (that would invalidate every prior signature for this session)", path, len(b))
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if !os.IsNotExist(err) {
 		return nil, err
 	}
 	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, seed, 0o600); err != nil {
+	if err := atomicfile.Write(path, seed, 0o600); err != nil {
 		return nil, err
 	}
 	return seed, nil

@@ -72,7 +72,7 @@ func newInject() *cobra.Command {
 					}
 					return m
 				}
-				if err := logAudit("inject", name, ""); err != nil {
+				if err := logUse("inject", name, "", sec); err != nil {
 					if firstErr == nil {
 						firstErr = err
 					}
@@ -160,8 +160,11 @@ func newExec() *cobra.Command {
 
 			caller := filepath.Base(args[0])   // recorded as the audit "caller"
 			cmdline := strings.Join(args, " ") // matched against a require-grant secret's command pattern
-			env := os.Environ()
+			env := scrubChildEnv(os.Environ())
 			var injected []redactPattern
+			// --only names are deduped: asking for the same secret twice must not
+			// consume the rate/grant budget twice (audit: bare-sweep Info).
+			names = dedupeNames(names)
 			for _, name := range names {
 				sec := s.Secrets[name]
 				if sec == nil {
@@ -184,9 +187,9 @@ func newExec() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("decrypt %s: %w", name, err)
 				}
-				env = append(env, name+"="+string(plain))
+				env = envWith(env, name, string(plain))
 				injected = append(injected, redactPattern{name: name, value: plain})
-				if err := logAudit("exec", name, caller); err != nil {
+				if err := logUse("exec", name, caller, sec); err != nil {
 					return err
 				}
 			}
@@ -316,7 +319,7 @@ func newEnv() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("decrypt %s: %w", name, err)
 				}
-				if err := logAudit("env", name, ""); err != nil {
+				if err := logUse("env", name, "", s.Secrets[name]); err != nil {
 					return err
 				}
 				if noExport {
@@ -330,4 +333,70 @@ func newEnv() *cobra.Command {
 	}
 	c.Flags().BoolVar(&noExport, "no-export", false, "omit the leading 'export '")
 	return c
+}
+
+// dedupeNames removes duplicate names, preserving first-seen order.
+func dedupeNames(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := in[:0:0]
+	for _, n := range in {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// envWith returns env with every existing NAME= entry removed and the new one
+// appended (audit L4). Plain append would leave a pre-existing same-name
+// variable in place, and glibc getenv returns the FIRST match — so the child
+// would use the inherited value while the audit log claims the secret was
+// released. (Python keeps the last; the runtime decides the deputy's answer.)
+// Secret names never contain '=', validated before injection.
+func envWith(env []string, name, value string) []string {
+	prefix := name + "="
+	out := env[:0:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return append(out, prefix+value)
+}
+
+// childCredPrefixes are environment-variable prefixes that carry live sync-backend
+// credentials. They flow into every child via os.Environ(); the redact writer only
+// scans injected secret values, so a child running printenv would otherwise leak
+// them unredacted into an agent's context (audit M7). ARCA_SYNC_URL is not a
+// credential; ARCA_SYNC_AUTO is a mode flag. Both stay.
+var childCredPrefixes = []string{
+	"ARCA_SYNC_ACCESS_KEY=",
+	"ARCA_SYNC_SECRET_KEY=",
+	"AWS_ACCESS_KEY_ID=",
+	"AWS_SECRET_ACCESS_KEY=",
+	"AWS_SESSION_TOKEN=",
+	"AWS_SECURITY_TOKEN=",
+	"AWS_SECRET_KEY=",
+}
+
+// scrubChildEnv drops inherited backend-credential variables from a child
+// environment. Call it on os.Environ() *before* appending injected secrets so
+// an explicit `arca exec --only ARCA_SYNC_ACCESS_KEY` still wins — that is the
+// documented bootstrap for `sync init --store-credentials`.
+func scrubChildEnv(env []string) []string {
+	out := env[:0:0]
+	for _, e := range env {
+		drop := false
+		for _, p := range childCredPrefixes {
+			if strings.HasPrefix(e, p) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, e)
+		}
+	}
+	return out
 }

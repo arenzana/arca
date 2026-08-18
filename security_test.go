@@ -1,13 +1,83 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
 	"github.com/arenzana/arca/internal/xdg"
 )
+
+// TestScrubChildEnv drops inherited backend credentials and leaves everything
+// else, including an appended same-name injection (audit M7).
+func TestScrubChildEnv(t *testing.T) {
+	in := []string{
+		"PATH=/bin",
+		"ARCA_SYNC_ACCESS_KEY=inherited-ak",
+		"ARCA_SYNC_SECRET_KEY=inherited-sk",
+		"ARCA_SYNC_URL=s3://b/p",
+		"ARCA_SYNC_AUTO=1",
+		"AWS_ACCESS_KEY_ID=inherited-aws",
+		"AWS_SECRET_ACCESS_KEY=inherited-aws-secret",
+		"AWS_SESSION_TOKEN=inherited-tok",
+		"HOME=/tmp",
+	}
+	got := scrubChildEnv(in)
+	joined := strings.Join(got, "\n")
+	for _, leak := range []string{
+		"ARCA_SYNC_ACCESS_KEY=", "ARCA_SYNC_SECRET_KEY=",
+		"AWS_ACCESS_KEY_ID=", "AWS_SECRET_ACCESS_KEY=", "AWS_SESSION_TOKEN=",
+	} {
+		if strings.Contains(joined, leak) {
+			t.Fatalf("scrubChildEnv left %s: %q", leak, got)
+		}
+	}
+	if !strings.Contains(joined, "PATH=/bin") || !strings.Contains(joined, "HOME=/tmp") {
+		t.Fatalf("scrubChildEnv dropped a non-credential: %q", got)
+	}
+	if !strings.Contains(joined, "ARCA_SYNC_URL=") || !strings.Contains(joined, "ARCA_SYNC_AUTO=") {
+		t.Fatalf("scrubChildEnv dropped a non-secret sync flag: %q", got)
+	}
+
+	// An explicit injection appended after the scrub must survive — that is the
+	// documented `exec --only ARCA_SYNC_ACCESS_KEY` bootstrap.
+	kept := append(scrubChildEnv(in), "ARCA_SYNC_ACCESS_KEY=from-store")
+	if !strings.Contains(strings.Join(kept, "\n"), "ARCA_SYNC_ACCESS_KEY=from-store") {
+		t.Fatalf("explicit injection was lost: %q", kept)
+	}
+}
+
+// TestExecScrubsInheritedBackendCreds is the end-to-end M7 check: a child of
+// `arca exec` must not see the operator's ARCA_SYNC_* / AWS_* credentials,
+// unless the operator explicitly injected that name from the store.
+func TestExecScrubsInheritedBackendCreds(t *testing.T) {
+	sandbox(t)
+	t.Setenv("ARCA_SYNC_ACCESS_KEY", "inherited-ak")
+	t.Setenv("ARCA_SYNC_SECRET_KEY", "inherited-sk")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "inherited-aws")
+	runArca(t, "", "init")
+	runArca(t, "from-store", "set", "ARCA_SYNC_ACCESS_KEY")
+	runArca(t, " innocuous", "set", "OK")
+
+	out := runArca(t, "", "exec", "--redact", "off", "--only", "OK", "--", "sh", "-c",
+		`printf 'ak=%s\nsk=%s\naws=%s\n' "$ARCA_SYNC_ACCESS_KEY" "$ARCA_SYNC_SECRET_KEY" "$AWS_SECRET_ACCESS_KEY"`)
+	if strings.Contains(out, "inherited-") {
+		t.Fatalf("exec leaked inherited backend credentials: %q", out)
+	}
+
+	out = runArca(t, "", "exec", "--redact", "off", "--only", "ARCA_SYNC_ACCESS_KEY", "--", "sh", "-c",
+		`printf 'ak=%s\n' "$ARCA_SYNC_ACCESS_KEY"`)
+	if !strings.Contains(out, "ak=from-store") {
+		t.Fatalf("explicit --only injection of ARCA_SYNC_ACCESS_KEY was lost: %q", out)
+	}
+	if strings.Contains(out, "inherited-") {
+		t.Fatalf("explicit injection still carried the inherited value: %q", out)
+	}
+}
 
 // --- H1: secret-name validation -------------------------------------------------------------
 
@@ -34,6 +104,7 @@ func TestValidNameRejectsReserved(t *testing.T) {
 		"PATH", "path", "Path", "LD_PRELOAD", "ld_preload", "LD_LIBRARY_PATH",
 		"DYLD_INSERT_LIBRARIES", "IFS", "BASH_ENV", "ENV", "SHELLOPTS", "PROMPT_COMMAND",
 		"PS1", "PYTHONPATH", "NODE_OPTIONS", "PERL5LIB", "GIT_SSH_COMMAND", "EDITOR",
+		"HOME", "SHELL", "TMPDIR", "XDG_CONFIG_HOME",
 	}
 	for _, n := range reserved {
 		if err := secretname.Validate(n); err == nil {
@@ -165,5 +236,46 @@ func TestApproveRequiresTerminal(t *testing.T) {
 	withTTYResponse(t, "n")
 	if approve("X", "who") == nil {
 		t.Fatal("an 'n' at the terminal should decline")
+	}
+}
+
+// TestApproveTimesOut is audit L7: a silent terminal must fail closed, not hang.
+func TestApproveTimesOut(t *testing.T) {
+	sandbox(t)
+	old := operatorTimeout
+	operatorTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { operatorTimeout = old })
+	// A pipe that never answers: openTTY returns a reader with no data.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	prev := openTTY
+	t.Cleanup(func() { openTTY = prev })
+	openTTY = func() (in, out *os.File, err error) {
+		devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			return nil, nil, err
+		}
+		return r, devnull, nil
+	}
+	err = approve("X", "who")
+	if err == nil || !strings.Contains(err.Error(), "within") {
+		t.Fatalf("silent terminal = %v, want a timeout refusal", err)
+	}
+}
+
+// TestSessionSeedRefusesCorrupt is audit L3: a truncated session key must not
+// be silently regenerated (that would make every prior event fail verify).
+func TestSessionSeedRefusesCorrupt(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "sess.key")
+	if err := os.WriteFile(p, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadOrCreateSeed(p)
+	if err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("corrupt session seed = %v, want a refusal", err)
 	}
 }

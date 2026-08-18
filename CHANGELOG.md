@@ -6,6 +6,126 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`sync --admit-recipients`** — scoped override for the one common legitimate use of
+  `--force`: accepting a pulled store that ADDS recipients (a teammate's new key).
+  `--force` bundled that with the rollback / tamper / high-water-mark overrides, so
+  admitting a key also silently accepted a rolled-back store (audit L8).
+- **`log --verify --print-anchor`** — minting an off-machine anchor token is now
+  opt-in. `--verify` used to print it on stdout every time, which put a
+  low-secrecy binding on a stream agents capture (audit M2).
+- **`arca signer show` / `pin` / `rotate`** — the operator-held Ed25519 key that will
+  authenticate a synced store (audit H1, first slice). Age provides confidentiality,
+  not authentication; this key is what a later pull-side check will verify against a
+  locally pinned public key. `show` is headless and public. `pin` and `rotate` are
+  terminal-anchored. A corrupt key file is refused, never silently regenerated.
+- **Escrow segments are signed with the store key** (H1 follow-up). Each segment
+  carries `signature`/`signer`; fetch verifies them when a pin exists. Unsigned
+  (legacy) segments still pass — they are bound by the M2 rehash. A present-but-
+  bad signature is a hard refusal.
+- **Pushes now sign the store** (H1, second slice). `sync` writes `Arca-Signature` and
+  `Arca-Signer` user-metadata on the head and the immutable revision object, over the
+  exact store bytes that were sealed. A missing key is minted on first push so an
+  existing fleet starts signing without a ceremony.
+- **Pulls verify the operator signature** (H1, third slice). A machine with a
+  pinned signer refuses an unsigned, mis-signed, or differently-signed head —
+  `--force` cannot override this. A machine with no pin still accepts an
+  unsigned head (migration window, with a warning) but refuses a signed head
+  until the operator pins the key out-of-band. The machine that minted the key
+  is pinned to it automatically; that is not Trust-On-First-Use from the network.
+
+### Fixed
+- **Injected secrets replace, not shadow, inherited env vars** (audit L4). `exec` and
+  MCP appended `NAME=value` to `os.Environ()`; a pre-existing `NAME` stayed first, and
+  glibc `getenv` returns the first match — so the child used the inherited value while
+  the audit log claimed a release. Injection now removes the inherited entry.
+- **A pre-existing 0755 state dir is tightened to 0700** (audit L2). `MkdirAll` is a
+  no-op on an existing dir, so a hand-created state dir kept its loose mode and exposed
+  every 0600 file inside (grants, handles, `sync.json` credentials).
+- **The state-dir adoption lock reclaims by rename-steal, and the `adopted-by` claim
+  is written atomically** (audit L12) — the same races `lock.go` already fixed.
+- **`sync reset-escrow` warns about orphaned segments** (audit L13). The reset leaves
+  the old identity's segments on the backend, but `--remote` only follows the new
+  identity; the command now says so, with the count.
+- **dotenv import is total-size capped, quote-stripping is pair-aware, and JSON import
+  keeps number precision** (audit L10). Previously: no total cap, `Trim(v, "\"'")`
+  corrupted values that legitimately began/ended with a quote, and numbers went through
+  float64.
+- **Session seeds are zeroized after key derivation** (audit L14, best-effort — Go's
+  GC makes full memory hygiene impossible).
+- **MCP: refused runs no longer consume rate/grant budget, inbound stdio is
+  message-size capped, and `read_secret` refuses non-UTF-8 values** (audit Info).
+  A run refused for an un-redactable value was logged as a use before the refusal;
+  `mcp-go`'s `ReadString` had no per-message bound; and raw bytes broke client JSON.
+- **`sync` warns when `insecure=1`** (audit Info) and **refuses a head object with no
+  generation metadata** instead of reporting a false ROLLBACK (audit Info).
+- **Audit DB WAL/SHM sidecars are chmod'd 0600** (audit L1). They were left at
+  the process umask after `PRAGMA journal_mode=WAL`.
+- **A corrupt session signing key is refused, not regenerated** (audit L3).
+  Silent regeneration made every prior event for that session fail verify — a
+  permanent false tamper alarm. The write is now atomic too.
+- **`HOME`, `SHELL`, `TMPDIR`, and `XDG_*` cannot be used as secret names**
+  (audit L5). Same hijack class as the already-blocked `PATH` / `LD_*` set.
+- **`approve()` now shares `requireOperator`'s 5s input timeout** (audit L7).
+  A held-open pty no longer wedges `--require-approval` execs forever.
+- **Escrow segments sort numerically** (audit L9). Past seq 999999, lexical
+  sort put `"1000000.age"` before `"999999.age"` and broke continuity forever.
+- **`reencrypt` now names every recipient in the confirmation and runs the drift
+  check before the operator answers** (audit M9). The payload step of a
+  recipient-injection asked a bare yes/no; the one-line drift warning appeared
+  on stderr after confirmation, before every secret was wrapped to the drifted
+  key.
+- **Unknown store JSON fields survive a load-and-save** (audit M8). An older
+  arca that loaded a store carrying a future policy field and re-saved it
+  silently stripped the field fleet-wide. Unknown keys are now preserved.
+- **Escrow segments are re-chained against their claimed anchor, and a forged
+  `LastID` past the local log is refused** (audit M2). Segments were
+  age-encrypted but not authenticated; `PrevAnchor` continuity plus
+  `CheckAnchor` on the tail was enough for a backend to serve a fabricated
+  history or freeze escrow with a huge LastID.
+- **Grant `--agent` is documented as advisory** (audit M4). It sniffs
+  environment markers any process can set; the uses and expiry checks remain
+  firm.
+- **`exec` and MCP no longer leak sync-backend credentials into child environments**
+  (audit finding M7). `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` and the `AWS_*`
+  fallbacks were inherited via `os.Environ()` into every child; the redact writer only
+  scans injected secret values, so a child running `printenv` exfiltrated live backend
+  keys unredacted. Inherited credential variables are now stripped before the child
+  starts. An explicit `arca exec --only ARCA_SYNC_ACCESS_KEY` still injects the store
+  value — that is the documented bootstrap for `sync init --store-credentials`.
+- **Grant `--uses` and per-secret `--rate` are now atomic with the audit write** (audit
+  finding M3). The use count is derived from the tamper-evident log, but the check
+  (`CountOpSince` / `CountUsesSince`) and the after-the-gate `logAudit` were separate
+  SQLite transactions. N concurrent `exec` / `run_with_secrets` calls against a
+  `--uses 1` grant (or a `--rate 1/1h` secret) all observed `used=0`, all passed, all
+  ran. The count now happens inside the same `BEGIN IMMEDIATE` as the append, so only
+  one writer can claim the last slot. The pre-checks in `gate()` stay for the
+  sequential UX (refuse before decrypt); the record is what actually enforces the cap.
+- **Operator prompts no longer accept terminal-escape injection** (audit finding M1). Agent-
+  controlled strings (`$AI_AGENT`, session ids, grant `--command`/`--agent`, `$ARCA_ACTOR`) were
+  printed unsanitized onto `/dev/tty` in the exact prompts the human gate relies on — `approve`,
+  `requireOperator`, and `grantScope` — while the same strings were already stripped everywhere
+  else they reach the terminal (SEC-07). A crafted `AI_AGENT=$'\x1b[2J\x1b[H…'` could clear or
+  redraw the operator's screen so they answered `y` to a prompt they never saw. Every attacker-
+  influenced prompt component now goes through `sanitize()` before it is written.
+- **MCP strict mode now covers `audit_log`, and its oracles are closed** (audit findings H2, M5,
+  M6 — see `docs/audits/2026-08-17-security-audit.md`). The audit log records secret names in
+  cleartext, and the `audit_log` tool applied no exposure check: under `arca mcp --strict`, an
+  agent that could see zero secrets via `list_secrets` could enumerate every secret the operator
+  had ever touched — names, timestamps, actors, sessions — or probe a specific name's existence
+  and history through the `name` filter. Under `--strict`, `audit_log` now returns only events
+  for exposed secrets (handle-issued events still appear, masked to the handle id), and a `name`
+  filter for a hidden or nonexistent secret gets the same generic "not exposed to agents"
+  refusal the other tools use.
+- **`show_secret` / `read_secret` / `run_with_secrets` no longer leak secret existence under
+  `--strict`.** They returned "no such secret" for missing names but "not exposed" for hidden
+  ones — a clean dictionary-probe oracle over the hidden namespace. Both cases now get the same
+  generic refusal (non-strict mode keeps the precise messages; nothing is hidden there anyway).
+- **`audit_log`'s `limit` can no longer overflow into an unbounded dump.** The limit was
+  converted from float to int with only a `> 0` gate; an out-of-range value converts to a
+  negative on amd64, which SQLite reads as `LIMIT -1` — no limit — returning the entire audit
+  database in one tool result. The limit is now clamped to 500 before conversion.
+
 ## [0.10.3] - 2026-08-17
 
 ### Fixed

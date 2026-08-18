@@ -114,7 +114,7 @@ func newRoot() *cobra.Command {
 		newInit(), newSet(), newGet(), newRotate(), newLs(), newShow(), newStale(),
 		newRm(), newDisable(), newEnable(), newImport(), newInject(), newExec(), newEnv(), newLog(), newMCP(),
 		newRecipients(), newReencrypt(), newGenerate(), newEdit(), newRename(), newAnnotate(), newCanary(),
-		newGrant(), newGrants(), newRevoke(), newHandle(), newSync(), newVersion(),
+		newGrant(), newGrants(), newRevoke(), newHandle(), newSync(), newSigner(), newVersion(),
 		newWhoCanRead(), newExposure(), newAgent(), newDoctor(),
 	}
 	root.AddCommand(cmds...)
@@ -299,7 +299,86 @@ func loadIDs() ([]age.Identity, error) { return crypto.LoadIdentities(xdg.Identi
 // where a failed audit write is swallowed and never breaks the operation. The override is
 // honored only for a human at a controlling terminal (SEC-06).
 func logAudit(op, name, caller string) error {
-	if err := recordAudit(op, name, caller); err != nil {
+	return logAuditQuota(op, name, caller, nil)
+}
+
+// logUse records a use event (read/exec/env/inject) and enforces any rate-limit or
+// grant-uses cap in the same BEGIN IMMEDIATE transaction as the append (audit M3).
+// A quota refusal is not an audit failure: the use is not written, and a rate-limit
+// refusal is recorded as its own op so the throttle stays visible.
+func logUse(op, name, caller string, sec *store.Secret) error {
+	return logUseQuotas(op, name, caller, sec, useQuotas(sec, name, true))
+}
+
+// logUseNoGrant is logUse for paths that replace the grant (handles): rate
+// still applies, grant-uses do not.
+func logUseNoGrant(op, name, caller string, sec *store.Secret) error {
+	return logUseQuotas(op, name, caller, sec, useQuotas(sec, name, false))
+}
+
+func logUseQuotas(op, name, caller string, sec *store.Secret, quotas []audit.Quota) error {
+	err := logAuditQuota(op, name, caller, quotas)
+	if err == nil {
+		return nil
+	}
+	var qe *audit.QuotaError
+	if !errors.As(err, &qe) {
+		return err
+	}
+	switch qe.Kind {
+	case "rate":
+		_ = logAudit("ratelimit", name, "")
+		_, winStr := policy.RateWindow("")
+		if sec != nil {
+			_, winStr = policy.RateWindow(sec.RateWindow)
+		}
+		return fmt.Errorf("%s rate limit reached: %d use(s) in the last %s (max %d)", name, qe.Used, winStr, qe.Max)
+	case "grant":
+		return fmt.Errorf("the grant for %s is exhausted (%d of %d uses)", name, qe.Used, qe.Max)
+	}
+	return err
+}
+
+// useQuotas is the set of caps that consume a use event. Empty when the secret
+// has no rate limit and no use-bounded grant. The same counts are pre-checked
+// in gate() so a refusal usually happens before decrypt; these are the
+// load-bearing half that closes the check-then-record race.
+func useQuotas(sec *store.Secret, name string, enforceGrant bool) []audit.Quota {
+	if sec == nil {
+		return nil
+	}
+	var qs []audit.Quota
+	if sec.RateLimit > 0 {
+		win, _ := policy.RateWindow(sec.RateWindow)
+		qs = append(qs, audit.Quota{
+			Kind:  "rate",
+			Ops:   []string{"read", "exec", "env", "inject"},
+			Since: time.Now().Add(-win),
+			Max:   sec.RateLimit,
+		})
+	}
+	if enforceGrant && sec.RequireGrant {
+		grants, err := loadGrants()
+		if err == nil {
+			if g, ok := grants[name]; ok && g.MaxUses > 0 {
+				qs = append(qs, audit.Quota{
+					Kind:  "grant",
+					Ops:   []string{"exec"},
+					Since: g.CreatedAt,
+					Max:   g.MaxUses,
+				})
+			}
+		}
+	}
+	return qs
+}
+
+func logAuditQuota(op, name, caller string, quotas []audit.Quota) error {
+	if err := recordAuditQuota(op, name, caller, quotas); err != nil {
+		var qe *audit.QuotaError
+		if errors.As(err, &qe) {
+			return err // a cap, not an audit-write failure — never swallow
+		}
 		if strictAudit() {
 			return fmt.Errorf("audit failed (fail-closed; a human at a terminal may set ARCA_STRICT_AUDIT=0 to override): %w", err)
 		}
@@ -308,8 +387,9 @@ func logAudit(op, name, caller string) error {
 	return nil
 }
 
-// recordAudit opens the audit log and writes one event with the auto-detected identity.
-func recordAudit(op, name, caller string) error {
+// recordAuditQuota opens the audit log and writes one event with the auto-detected identity,
+// enforcing any quotas atomically with the append.
+func recordAuditQuota(op, name, caller string, quotas []audit.Quota) error {
 	// When the caller isn't set explicitly (exec/run_with_secrets pass the command), record the
 	// process that invoked arca — so `log` shows who ran a get/set, not a blank.
 	if caller == "" {
@@ -333,7 +413,7 @@ func recordAudit(op, name, caller string) error {
 	if curStore != nil {
 		gen = curStore.Generation
 	}
-	return a.RecordGen(op, name, caller, detectIdentity(), gen)
+	return a.RecordGenQuota(op, name, caller, detectIdentity(), gen, quotas)
 }
 
 // strictAudit reports whether fail-closed auditing is in effect. It is the DEFAULT; set
@@ -660,13 +740,28 @@ func approve(name, who string) error {
 	if out != in {
 		defer out.Close()
 	}
-	fmt.Fprintf(out, "Release %q to %s? [y/N] ", name, who)
-	var resp string
-	_, _ = fmt.Fscanln(in, &resp)
-	if strings.EqualFold(strings.TrimSpace(resp), "y") {
-		return nil
+	// name is already %q-escaped; who is assembled from the environment the agent
+	// controls ($AI_AGENT, session, $ARCA_ACTOR). Sanitize both so a crafted
+	// value cannot clear or redraw the prompt that is the load-bearing human
+	// gate (SEC-07 / audit M1).
+	fmt.Fprintf(out, "Release %q to %s? [y/N] ", sanitize(name), sanitize(who))
+	// Same bounded read as requireOperator (audit L7): a held-open pty must
+	// not wedge --require-approval execs forever.
+	answered := make(chan string, 1)
+	go func() {
+		var resp string
+		_, _ = fmt.Fscanln(in, &resp)
+		answered <- resp
+	}()
+	select {
+	case resp := <-answered:
+		if strings.EqualFold(strings.TrimSpace(resp), "y") {
+			return nil
+		}
+		return fmt.Errorf("approval declined for %s", name)
+	case <-time.After(operatorTimeout):
+		return fmt.Errorf("%s was not approved on the terminal within %s — no answer was received, so it was refused", name, operatorTimeout)
 	}
-	return fmt.Errorf("approval declined for %s", name)
 }
 
 // approverWho returns a short human-readable descriptor of the requester for the prompt.
@@ -674,16 +769,18 @@ func approverWho() string {
 	id := detectIdentity()
 	switch {
 	case id.Agent != "":
-		w := id.Agent
+		// Agent / version / session are attacker-controlled for a detected
+		// agent; strip terminal controls before they reach the prompt (SEC-07).
+		w := sanitize(id.Agent)
 		if id.Version != "" {
-			w += "/" + id.Version
+			w += "/" + sanitize(id.Version)
 		}
 		if id.Session != "" {
-			w += " (" + shortID(id.Session) + ")"
+			w += " (" + sanitize(shortID(id.Session)) + ")"
 		}
 		return w
 	case id.Actor != "":
-		return id.Actor
+		return sanitize(id.Actor)
 	}
 	return "this process"
 }
@@ -740,9 +837,10 @@ func gate(sec *store.Secret, name, cmdline string) error {
 	return nil
 }
 
-// checkRateLimit enforces a per-secret "N uses per window" cap using the audit log. The current
-// access hasn't been recorded yet, so it is allowed iff the prior uses within the window are below
-// the cap. A refusal is itself recorded (op=ratelimit) as a throttle signal.
+// checkRateLimit is the sequential pre-check for a per-secret "N uses per window" cap.
+// It refuses (and records op=ratelimit) before decrypt when the window is already full.
+// The load-bearing half is logUse, which recounts inside the same BEGIN IMMEDIATE as
+// the use event so concurrent callers cannot all slip through (audit M3).
 func checkRateLimit(sec *store.Secret, name string) error {
 	win, winStr := policy.RateWindow(sec.RateWindow)
 	a, err := audit.Open(auditPath())

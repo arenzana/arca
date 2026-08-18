@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -42,7 +44,12 @@ func newMCP() *cobra.Command {
 			warnAgentExposure()
 			s := server.NewMCPServer("arca", appVersion())
 			registerMCPTools(s)
-			return server.ServeStdio(s)
+			// NewStdioServer+Listen rather than ServeStdio so stdin goes through
+			// cappedLineReader: mcp-go's ReadString has no per-message bound, and
+			// one multi-GB JSON-RPC line would grow the heap without limit.
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer cancel()
+			return server.NewStdioServer(s).Listen(ctx, &cappedLineReader{r: os.Stdin}, os.Stdout)
 		},
 	}
 	c.Flags().BoolVar(&mcpStrictFlag, "strict", false, "deny-by-default: agents only see secrets marked `arca agent allow` (recommended)")
@@ -189,11 +196,16 @@ func mcpShowSecret(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	sec := s.Secrets[name]
+	// Strict mode must not distinguish "no such secret" from "not exposed": the pair of
+	// messages is an existence oracle over the hidden namespace (an agent could dictionary-
+	// probe names it isn't allowed to see). A nil secret counts as unexposed, so under
+	// --strict both cases return the same generic refusal; non-strict keeps the precise
+	// messages (nothing is hidden there anyway).
+	if agentDenied(sec != nil && sec.AgentExposed) {
+		return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
+	}
 	if sec == nil {
 		return mcp.NewToolResultError("no such secret: " + name), nil
-	}
-	if agentDenied(sec.AgentExposed) {
-		return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
 	}
 	return jsonResult(map[string]any{
 		"name": name, "tags": sec.Tags, "description": sec.Description,
@@ -210,11 +222,12 @@ func mcpReadSecret(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	sec := s.Secrets[name]
+	// See mcpShowSecret: nil counts as unexposed so strict mode has no existence oracle.
+	if agentDenied(sec != nil && sec.AgentExposed) {
+		return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
+	}
 	if sec == nil {
 		return mcp.NewToolResultError("no such secret: " + name), nil
-	}
-	if agentDenied(sec.AgentExposed) {
-		return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
 	}
 	if sec.NoPrint {
 		return mcp.NewToolResultError(name + " is marked --no-print; use run_with_secrets"), nil
@@ -230,7 +243,12 @@ func mcpReadSecret(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if err := logAudit("read", name, "mcp"); err != nil {
+	// The value rides into the client's JSON: invalid UTF-8 breaks the encoding.
+	// Redirect binary values to run_with_secrets, which never serializes the value.
+	if !utf8.Valid(plain) {
+		return mcp.NewToolResultError(name + " is not valid UTF-8 and cannot ride the MCP JSON channel; use run_with_secrets (which never serializes the value)"), nil
+	}
+	if err := logUse("read", name, "mcp", sec); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(string(plain)), nil
@@ -254,15 +272,16 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	cmdline := strings.TrimSpace(command + " " + strings.Join(argStrings(req, "args"), " "))
-	env := os.Environ()
+	env := scrubChildEnv(os.Environ())
 	var pats []redactPattern
-	for _, name := range names {
+	for _, name := range dedupeNames(names) {
 		sec := s.Secrets[name]
+		// See mcpShowSecret: nil counts as unexposed so strict mode has no existence oracle.
+		if agentDenied(sec != nil && sec.AgentExposed) {
+			return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
+		}
 		if sec == nil {
 			return mcp.NewToolResultError("no such secret: " + name), nil
-		}
-		if agentDenied(sec.AgentExposed) {
-			return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
 		}
 		// Defense in depth: refuse to inject a name that isn't a valid identifier (poisoned store).
 		if err := secretname.Validate(name); err != nil {
@@ -275,14 +294,18 @@ func mcpRunWithSecrets(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		env = append(env, name+"="+string(plain))
+		env = envWith(env, name, string(plain))
 		pats = append(pats, redactPattern{name: name, value: plain})
-		if err := logAudit("exec", name, command); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 	}
+	// The redactability refusal runs BEFORE the use is recorded: a run that never
+	// executes must not consume grant/rate budget (audit Info: MCP exec accounting).
 	if n := tooShortToRedact(pats); n != "" {
 		return mcp.NewToolResultError(fmt.Sprintf("refusing to run: %s is too short (<%d chars) to reliably redact from the command's output", n, minRedactLen)), nil
+	}
+	for _, p := range pats {
+		if err := logUse("exec", p.name, command, s.Secrets[p.name]); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 	}
 	out, exitCode, err := runRedacted(ctx, command, argStrings(req, "args"), env,
 		buildRedactPatterns(pats, false, os.Stderr))
@@ -413,13 +436,15 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	env := append(os.Environ(), h.EnvName+"="+string(plain))
-	if err := logAudit("exec", h.Secret, id); err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
+	env := envWith(scrubChildEnv(os.Environ()), h.EnvName, string(plain))
 	pats := []redactPattern{{name: h.EnvName, value: plain}}
+	// The redactability refusal runs BEFORE the use is recorded: a run that never
+	// executes must not consume rate budget (audit Info: MCP exec accounting).
 	if n := tooShortToRedact(pats); n != "" {
 		return mcp.NewToolResultError(fmt.Sprintf("refusing to run: the secret is too short (<%d chars) to reliably redact from the command's output", minRedactLen)), nil
+	}
+	if err := logUseNoGrant("exec", h.Secret, id, sec); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 	out, exitCode, err := runRedacted(ctx, command, args, env,
 		buildRedactPatterns(pats, false, os.Stderr))
@@ -432,6 +457,13 @@ func mcpRunWithHandle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 func mcpAuditLog(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	limit := 20
 	if v, ok := req.GetArguments()["limit"].(float64); ok && v > 0 {
+		// Clamp as a float BEFORE the int conversion: an out-of-range float→int conversion is
+		// implementation-defined (math.MinInt64 on amd64), and SQLite treats LIMIT -1 as no
+		// limit at all — audit_log {limit: 1e18} would otherwise dump the entire audit
+		// database into one tool result.
+		if v > 500 {
+			v = 500
+		}
 		limit = int(v)
 	}
 	a, err := audit.Open(auditPath())
@@ -439,7 +471,29 @@ func mcpAuditLog(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	defer a.Close()
-	evs, err := a.Recent(argString(req, "name"), limit)
+	name := argString(req, "name")
+	// Strict mode: the audit log records secret names in cleartext for every op, so an
+	// unfiltered audit_log lets an agent enumerate secrets it isn't exposed to — defeating
+	// deny-by-default for metadata. Scope the tool to exposed secrets only, and answer a
+	// name filter for a hidden (or nonexistent) secret with the same generic refusal as the
+	// other tools so the filter can't be used as an existence oracle either.
+	var exposed map[string]bool // nil in non-strict mode: no filtering (legacy behavior)
+	if agentStrict() {
+		s, err := openStore()
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		exposed = make(map[string]bool, len(s.Secrets))
+		for n, sec := range s.Secrets {
+			if sec.AgentExposed {
+				exposed[n] = true
+			}
+		}
+		if name != "" && !strings.HasPrefix(name, "hdl_") && !exposed[name] {
+			return mcp.NewToolResultError(fmt.Sprintf(agentDenyHint, name)), nil
+		}
+	}
+	evs, err := a.Recent(name, limit)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -452,6 +506,8 @@ func mcpAuditLog(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		name := e.Name
 		if strings.HasPrefix(e.Caller, "hdl_") {
 			name = e.Caller
+		} else if exposed != nil && e.Name != "" && !exposed[e.Name] {
+			continue // strict: never name a secret the agent isn't exposed to
 		}
 		views = append(views, eventView{
 			Time: e.TS, Op: e.Op, Name: name, Agent: e.Agent,

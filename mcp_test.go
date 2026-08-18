@@ -250,6 +250,112 @@ func TestMCPTools(t *testing.T) {
 	registerMCPTools(server.NewMCPServer("arca", "test"))
 }
 
+// TestMCPAuditLogStrictFiltersHidden covers the strict-mode scope of audit_log: an agent that
+// isn't exposed to a secret must not learn its name, its history, or even its existence from the
+// audit tool — the log records names in cleartext, so unfiltered output enumerates the hidden
+// store. The name filter gets the same generic refusal as the other tools (no oracle).
+func TestMCPAuditLogStrictFiltersHidden(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "publicval", "set", "PUBLIC_API")
+	runArca(t, "hiddenval", "set", "HIDDEN_KEY")
+	runArca(t, "", "agent", "allow", "PUBLIC_API")
+
+	t.Setenv("ARCA_AGENT_STRICT", "1")
+
+	out := text(t, call(t, mcpAuditLog, map[string]any{"limit": 50.0}))
+	if strings.Contains(out, "HIDDEN_KEY") {
+		t.Fatalf("strict audit_log leaked a non-exposed secret's name:\n%s", out)
+	}
+	if !strings.Contains(out, "PUBLIC_API") {
+		t.Fatalf("strict audit_log should still show exposed secrets, got:\n%s", out)
+	}
+
+	// The name filter is not an existence oracle: hidden and nonexistent names get the same
+	// generic refusal the other tools use. The message echoes the probe itself, so compare
+	// with the probed name normalized out — what must not differ is anything about the store.
+	hidden := text(t, call(t, mcpAuditLog, map[string]any{"name": "HIDDEN_KEY"}))
+	ghost := text(t, call(t, mcpAuditLog, map[string]any{"name": "NO_SUCH_SECRET"}))
+	if !strings.Contains(hidden, "not exposed to agents") || !strings.Contains(ghost, "not exposed to agents") {
+		t.Fatalf("name filter should refuse with the generic hint: %q / %q", hidden, ghost)
+	}
+	if strings.ReplaceAll(hidden, "HIDDEN_KEY", "X") != strings.ReplaceAll(ghost, "NO_SUCH_SECRET", "X") {
+		t.Fatalf("name filter distinguishes hidden from nonexistent: %q vs %q", hidden, ghost)
+	}
+	// An exposed name still filters normally under strict.
+	if out := text(t, call(t, mcpAuditLog, map[string]any{"name": "PUBLIC_API"})); !strings.Contains(out, "PUBLIC_API") {
+		t.Fatalf("strict audit_log name filter on an exposed secret = %q", out)
+	}
+
+	// Non-strict: no filtering (legacy behavior) — the hidden name is visible again.
+	t.Setenv("ARCA_AGENT_STRICT", "")
+	if out := text(t, call(t, mcpAuditLog, map[string]any{"limit": 50.0})); !strings.Contains(out, "HIDDEN_KEY") {
+		t.Fatalf("non-strict audit_log should show everything, got:\n%s", out)
+	}
+}
+
+// TestMCPStrictNoExistenceOracle: under --strict, show/read/run must return the same generic
+// refusal for a hidden secret and a nonexistent one — distinguishable message shapes would let
+// an agent map the hidden namespace by dictionary-probing names. (The refusal echoes the probed
+// name, so assertions normalize it out; the probe is the agent's own input and reveals nothing.)
+func TestMCPStrictNoExistenceOracle(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "hiddenval", "set", "HIDDEN_KEY")
+	t.Setenv("ARCA_AGENT_STRICT", "1")
+
+	pairs := [][2]*mcp.CallToolResult{
+		{call(t, mcpShowSecret, map[string]any{"name": "HIDDEN_KEY"}),
+			call(t, mcpShowSecret, map[string]any{"name": "NO_SUCH_SECRET"})},
+		{call(t, mcpReadSecret, map[string]any{"name": "HIDDEN_KEY"}),
+			call(t, mcpReadSecret, map[string]any{"name": "NO_SUCH_SECRET"})},
+		{call(t, mcpRunWithSecrets, map[string]any{"command": "true", "secrets": []any{"HIDDEN_KEY"}}),
+			call(t, mcpRunWithSecrets, map[string]any{"command": "true", "secrets": []any{"NO_SUCH_SECRET"}})},
+	}
+	for i, p := range pairs {
+		if !p[0].IsError || !p[1].IsError {
+			t.Fatalf("pair %d: both should error (hidden=%v, ghost=%v)", i, p[0].IsError, p[1].IsError)
+		}
+		a := strings.ReplaceAll(text(t, p[0]), "HIDDEN_KEY", "X")
+		b := strings.ReplaceAll(text(t, p[1]), "NO_SUCH_SECRET", "X")
+		if a != b {
+			t.Fatalf("pair %d: existence oracle: hidden=%q ghost=%q", i, text(t, p[0]), text(t, p[1]))
+		}
+	}
+}
+
+// TestMCPAuditLogLimitClamped: an out-of-range limit must not become an unbounded query —
+// float→int overflow yields a negative on amd64, and SQLite treats LIMIT -1 as no limit.
+func TestMCPAuditLogLimitClamped(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "CLAMP")
+	for i := 0; i < 600; i++ {
+		if err := logAudit("read", "CLAMP", "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := text(t, call(t, mcpAuditLog, map[string]any{"limit": 1e18}))
+	var evs []map[string]any
+	if err := json.Unmarshal([]byte(out), &evs); err != nil {
+		t.Fatalf("audit_log output is not JSON: %v", err)
+	}
+	if len(evs) > 500 {
+		t.Fatalf("limit 1e18 returned %d events; want the 500-event clamp", len(evs))
+	}
+
+	// The default page size still applies when no limit is given.
+	out = text(t, call(t, mcpAuditLog, map[string]any{}))
+	evs = evs[:0]
+	if err := json.Unmarshal([]byte(out), &evs); err != nil {
+		t.Fatalf("audit_log output is not JSON: %v", err)
+	}
+	if len(evs) != 20 {
+		t.Fatalf("default limit returned %d events, want 20", len(evs))
+	}
+}
+
 // TestMCPApprovalAndStore covers the policy/error paths: an approval-gated secret is denied,
 // and tools error cleanly when there is no store.
 func TestMCPApprovalAndStore(t *testing.T) {

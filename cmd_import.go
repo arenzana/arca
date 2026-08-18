@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,7 +28,13 @@ type kvPair struct{ key, val string }
 // names that aren't valid secret identifiers (which could inject downstream). dotenv is
 // line-oriented, so values are single-line; use `set NAME < file` or --json for multi-line ones.
 func parseDotenvSecrets(r io.Reader) ([]kvPair, error) {
-	sc := bufio.NewScanner(r)
+	// Total-size cap, same as the JSON path (audit L10): per-line capping alone lets an
+	// unbounded number of lines exhaust memory.
+	data, err := readAllLimited(r, maxInputBytes)
+	if err != nil {
+		return nil, err
+	}
+	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 1<<20), 1<<20) // allow long values (up to 1 MiB/line)
 	var out []kvPair
 	for sc.Scan() {
@@ -45,10 +52,23 @@ func parseDotenvSecrets(r io.Reader) ([]kvPair, error) {
 			fmt.Fprintf(os.Stderr, "skip %q: not a valid secret name\n", k)
 			continue
 		}
-		v = strings.Trim(strings.TrimSpace(v), `"'`) // drop surrounding quotes
-		out = append(out, kvPair{k, v})
+		out = append(out, kvPair{k, stripDotenvQuotes(v)})
 	}
 	return out, sc.Err()
+}
+
+// stripDotenvQuotes removes ONE pair of matching surrounding quotes, and only a pair:
+// a value that legitimately begins or ends with a quote must round-trip unaltered
+// (audit L10). `strings.Trim(v, "\"'")` would corrupt `"quoted"inside` → `quoted"inside`.
+func stripDotenvQuotes(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 2 {
+		first, last := v[0], v[len(v)-1]
+		if first == last && (first == '"' || first == '\'') {
+			return v[1 : len(v)-1]
+		}
+	}
+	return v
 }
 
 // parseJSONSecrets reads a single flat JSON object of name→value — the shape most secret stores
@@ -81,10 +101,13 @@ func parseJSONSecrets(r io.Reader) ([]kvPair, error) {
 }
 
 // jsonScalar renders a JSON value as the string arca will store, or reports ok=false for
-// null/object/array, which aren't scalar secrets.
+// null/object/array, which aren't scalar secrets. Numbers are decoded as json.Number so
+// large integers and high-precision decimals don't lose precision through float64 (audit L10).
 func jsonScalar(rv json.RawMessage) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(rv))
+	dec.UseNumber()
 	var v any
-	if err := json.Unmarshal(rv, &v); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		return "", false
 	}
 	switch t := v.(type) {
@@ -92,8 +115,8 @@ func jsonScalar(rv json.RawMessage) (string, bool) {
 		return t, true
 	case bool:
 		return strconv.FormatBool(t), true
-	case float64:
-		return strconv.FormatFloat(t, 'f', -1, 64), true // -1 avoids scientific notation for ints
+	case json.Number:
+		return t.String(), true // the literal, precision intact
 	default:
 		return "", false
 	}

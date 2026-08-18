@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -17,6 +18,18 @@ func TestSaveGrantsError(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", blocker)
 	if err := saveGrants(map[string]Grant{"S": {Secret: "S", ExpiresAt: time.Now()}}); err == nil {
 		t.Fatal("saveGrants should fail when the state dir can't be created")
+	}
+}
+
+// TestGrantScopeStripsEscapes covers audit M1 on the grant prompt: --command and --agent are
+// attacker-influenced and interpolated into the operator confirmation before they are validated.
+func TestGrantScopeStripsEscapes(t *testing.T) {
+	got := grantScope("15m\x1b[2J", 1, "terraform\x1b[2J apply", "claude\x07")
+	if strings.ContainsRune(got, 0x1b) || strings.ContainsRune(got, 0x07) {
+		t.Fatalf("grantScope leaked a terminal control: %q", got)
+	}
+	if !strings.Contains(got, "terraform") || !strings.Contains(got, "apply") || !strings.Contains(got, "claude") {
+		t.Fatalf("grantScope dropped legitimate text: %q", got)
 	}
 }
 

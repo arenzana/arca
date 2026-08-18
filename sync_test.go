@@ -12,6 +12,7 @@ import (
 
 	"github.com/arenzana/arca/internal/crypto"
 	"github.com/arenzana/arca/internal/remote"
+	"github.com/arenzana/arca/internal/storesign"
 	"github.com/arenzana/arca/internal/xdg"
 )
 
@@ -27,8 +28,22 @@ func withFakeBackend(t *testing.T) *remote.Fake {
 
 // switchMachine points the store/audit/state dirs at a fresh directory while KEEPING the
 // age identity — simulating a second machine owned by the same operator (a recipient).
+// The store-signer pin is copied too: joining a fleet requires pinning the operator
+// key out-of-band (`arca signer pin`), and these tests model that completed step,
+// not the unsigned-migration window.
 func switchMachine(t *testing.T, base string) string {
 	t.Helper()
+	var pinPub []byte
+	if p, err := storesign.LoadPin(storeSignerPinPath()); err == nil {
+		pinPub = p
+	}
+	// Same operator: the signing private key travels with the age identity.
+	// A machine that only pinned the pubkey (and does not hold the seed)
+	// can pull but cannot produce a signature the rest of the fleet accepts.
+	var keySeed []byte
+	if k, err := storesign.Load(storeSigningKeyPath()); err == nil {
+		keySeed = append([]byte(nil), k.Seed...)
+	}
 	dir := filepath.Join(base, "machine-b")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -36,6 +51,20 @@ func switchMachine(t *testing.T, base string) string {
 	t.Setenv("ARCA_STORE", filepath.Join(dir, "store.json"))
 	t.Setenv("ARCA_AUDIT", filepath.Join(dir, "audit.db"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
+	if pinPub != nil {
+		if err := storesign.SavePin(storeSignerPinPath(), pinPub); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if keySeed != nil {
+		if err := storesign.Save(storeSigningKeyPath(), &storesign.Key{
+			Seed: keySeed,
+			Priv: nil, // Save only writes Seed
+			Pub:  nil,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return dir
 }
 
@@ -246,7 +275,7 @@ func TestPushStoreCASRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Another writer advances the head after we captured it.
-	if _, err := fake.Push(context.Background(), []byte("interloper"), head.Generation+1, head); err != nil {
+	if _, err := fake.Push(context.Background(), []byte("interloper"), head.Generation+1, head, remote.StoreAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := readLocalSnapshot()
@@ -329,7 +358,7 @@ func TestSyncFlagGuards(t *testing.T) {
 	runArca(t, "", "sync") // bootstrap push
 	// Remote ahead + --push: refused with a pull hint.
 	head, _ := fake.Head(context.Background())
-	if _, err := fake.Push(context.Background(), []byte("other"), head.Generation+1, head); err != nil {
+	if _, err := fake.Push(context.Background(), []byte("other"), head.Generation+1, head, remote.StoreAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	// (remote object is garbage, but --push must refuse before ever fetching it)
@@ -640,6 +669,9 @@ func TestPullDurableFloorRefusesRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.Corrupt(old, oldRev.Generation) // backend replays the old envelope (generation 2)
+	// A real replay carries the old envelope's own signature. Without it the
+	// H1 check refuses first and this test would not reach the durable floor.
+	fake.SetAuth(remote.StoreAuth{Signature: oldRev.Signature, Signer: oldRev.Signer})
 
 	err := runArcaErr("", "sync", "--pull")
 	if err == nil || !strings.Contains(err.Error(), "ROLLBACK") {
@@ -774,7 +806,7 @@ func TestPushStoreCASReconcileHint(t *testing.T) {
 	runArca(t, "", "sync")
 	// Another writer advances the head; our stale-prev push must mismatch with a hint.
 	head, _ := fake.Head(context.Background())
-	if _, err := fake.Push(context.Background(), []byte("other"), head.Generation+1, head); err != nil {
+	if _, err := fake.Push(context.Background(), []byte("other"), head.Generation+1, head, remote.StoreAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	snap, _ := readLocalSnapshot()
@@ -803,7 +835,7 @@ func TestRunSyncDecisionTableErrors(t *testing.T) {
 	runArca(t, "", "sync") // bootstrap push
 	// Remote ahead + --push refuses.
 	head, _ := fake.Head(context.Background())
-	if _, err := fake.Push(context.Background(), []byte("x"), head.Generation+1, head); err != nil {
+	if _, err := fake.Push(context.Background(), []byte("x"), head.Generation+1, head, remote.StoreAuth{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := runArcaErr("", "sync", "--push"); err == nil || !strings.Contains(err.Error(), "ahead") {

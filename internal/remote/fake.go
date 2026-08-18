@@ -16,12 +16,13 @@ type Fake struct {
 	objects map[string][]byte
 	etags   map[string]string
 	gens    map[string]int // generation metadata for keyCurrent
+	auths   map[string]StoreAuth
 	seq     int
 }
 
 // NewFake returns an empty in-memory backend.
 func NewFake() *Fake {
-	return &Fake{objects: map[string][]byte{}, etags: map[string]string{}, gens: map[string]int{}}
+	return &Fake{objects: map[string][]byte{}, etags: map[string]string{}, gens: map[string]int{}, auths: map[string]StoreAuth{}}
 }
 
 func (f *Fake) nextTag() string { f.seq++; return fmt.Sprintf("etag-%d", f.seq) }
@@ -32,7 +33,8 @@ func (f *Fake) Head(_ context.Context) (Rev, error) {
 	if _, ok := f.objects[keyCurrent]; !ok {
 		return Rev{}, ErrNotFound
 	}
-	return Rev{Generation: f.gens[keyCurrent], Tag: f.etags[keyCurrent]}, nil
+	a := f.auths[keyCurrent]
+	return Rev{Generation: f.gens[keyCurrent], Tag: f.etags[keyCurrent], Signature: a.Signature, Signer: a.Signer}, nil
 }
 
 func (f *Fake) Fetch(_ context.Context) ([]byte, Rev, error) {
@@ -42,10 +44,11 @@ func (f *Fake) Fetch(_ context.Context) ([]byte, Rev, error) {
 	if !ok {
 		return nil, Rev{}, ErrNotFound
 	}
-	return append([]byte(nil), b...), Rev{Generation: f.gens[keyCurrent], Tag: f.etags[keyCurrent]}, nil
+	a := f.auths[keyCurrent]
+	return append([]byte(nil), b...), Rev{Generation: f.gens[keyCurrent], Tag: f.etags[keyCurrent], Signature: a.Signature, Signer: a.Signer}, nil
 }
 
-func (f *Fake) Push(_ context.Context, envelope []byte, gen int, prev Rev) (Rev, error) {
+func (f *Fake) Push(_ context.Context, envelope []byte, gen int, prev Rev, auth StoreAuth) (Rev, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	rk := revKey(gen)
@@ -62,10 +65,12 @@ func (f *Fake) Push(_ context.Context, envelope []byte, gen int, prev Rev) (Rev,
 	}
 	f.objects[rk] = append([]byte(nil), envelope...)
 	f.etags[rk] = f.nextTag()
+	f.auths[rk] = auth
 	f.objects[keyCurrent] = append([]byte(nil), envelope...)
 	f.etags[keyCurrent] = f.nextTag()
 	f.gens[keyCurrent] = gen
-	return Rev{Generation: gen, Tag: f.etags[keyCurrent]}, nil
+	f.auths[keyCurrent] = auth
+	return Rev{Generation: gen, Tag: f.etags[keyCurrent], Signature: auth.Signature, Signer: auth.Signer}, nil
 }
 
 func (f *Fake) PutIfAbsent(_ context.Context, key string, data []byte) error {
@@ -119,4 +124,20 @@ func (f *Fake) Corrupt(envelope []byte, gen int) {
 	f.objects[keyCurrent] = append([]byte(nil), envelope...)
 	f.etags[keyCurrent] = f.nextTag()
 	f.gens[keyCurrent] = gen
+}
+
+// StripAuth removes store-auth metadata from the head, simulating a backend
+// that dropped user-metadata or an unsigned legacy object. Tests only.
+func (f *Fake) StripAuth() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.auths, keyCurrent)
+}
+
+// SetAuth replaces the head's store-auth metadata without touching the
+// envelope. Tests only (forged signer / bad signature).
+func (f *Fake) SetAuth(auth StoreAuth) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auths[keyCurrent] = auth
 }

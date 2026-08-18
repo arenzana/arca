@@ -2,9 +2,13 @@ package audit
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -185,5 +189,146 @@ func TestEscrowRowHelpers(t *testing.T) {
 	n, h, err := l.ChainInfoThrough(rows[1].ID)
 	if err != nil || n != 2 || string(h) != string(rows[1].Hash) {
 		t.Fatalf("ChainInfoThrough = n%d err %v", n, err)
+	}
+
+	nAll, lastH, err := l.ChainInfoThrough(rows[3].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyEscrowRows(rows, "", FormatAnchor(nAll, lastH)); err != nil {
+		t.Fatalf("honest rows should verify: %v", err)
+	}
+	forged := append([]EscrowRow(nil), rows...)
+	forged[1].Op = "forged"
+	if err := VerifyEscrowRows(forged, "", FormatAnchor(nAll, lastH)); err == nil {
+		t.Fatal("mutated event content must fail VerifyEscrowRows")
+	}
+	if max, err := l.MaxID(); err != nil || max != rows[3].ID {
+		t.Fatalf("MaxID = %d err %v, want %d", max, err, rows[3].ID)
+	}
+}
+
+// TestRecordGenQuotaRefusesAtCap is the sequential half of audit M3: a Max=1
+// quota admits the first write and refuses the second without appending it.
+func TestRecordGenQuotaRefusesAtCap(t *testing.T) {
+	l, _ := openChained(t)
+	q := []Quota{{Kind: "rate", Ops: []string{"read", "exec"}, Since: time.Now().Add(-time.Hour), Max: 1}}
+	if err := l.RecordGenQuota("read", "S", "", Identity{}, 0, q); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	err := l.RecordGenQuota("read", "S", "", Identity{}, 0, q)
+	var qe *QuotaError
+	if !errors.As(err, &qe) || qe.Used != 1 || qe.Max != 1 || qe.Kind != "rate" {
+		t.Fatalf("second write = %v, want QuotaError used=1 max=1 kind=rate", err)
+	}
+	evs, err := l.Recent("S", 10)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("refused write must not append: %d events, err %v", len(evs), err)
+	}
+	r, err := l.Verify()
+	if err != nil || !r.OK || r.Checked != 1 {
+		t.Fatalf("chain after a refused write: %+v err %v", r, err)
+	}
+}
+
+// TestRecordGenQuotaConcurrentMaxOne is the load-bearing M3 check: N concurrent
+// writers against Max=1 must produce exactly one event. BEGIN IMMEDIATE serializes
+// the count+append so they cannot all observe used=0.
+func TestRecordGenQuotaConcurrentMaxOne(t *testing.T) {
+	l, _ := openChained(t)
+	q := []Quota{{Kind: "grant", Ops: []string{"exec"}, Since: time.Now().Add(-time.Hour), Max: 1}}
+	const workers = 16
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		ok, rej int
+	)
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			err := l.RecordGenQuota("exec", "DEPLOY", "true", Identity{}, 0, q)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				ok++
+				return
+			}
+			var qe *QuotaError
+			if !errors.As(err, &qe) {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			rej++
+		}()
+	}
+	wg.Wait()
+	if ok != 1 {
+		t.Fatalf("admitted %d of %d concurrent writes, want exactly 1", ok, workers)
+	}
+	if rej != workers-1 {
+		t.Fatalf("refused %d, want %d", rej, workers-1)
+	}
+	evs, err := l.Recent("DEPLOY", 20)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("events = %d err %v, want 1", len(evs), err)
+	}
+	r, err := l.Verify()
+	if err != nil || !r.OK || r.Checked != 1 {
+		t.Fatalf("chain after concurrent quota: %+v err %v", r, err)
+	}
+}
+
+// TestQuotaErrorShape covers the sentinel + message of the quota refusal.
+func TestQuotaErrorShape(t *testing.T) {
+	err := &QuotaError{Kind: "rate", Used: 3, Max: 3}
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatal("QuotaError must wrap ErrQuotaExceeded")
+	}
+	if !strings.Contains(err.Error(), "rate") || !strings.Contains(err.Error(), "3 of 3") {
+		t.Fatalf("message lost its detail: %v", err)
+	}
+}
+
+// TestVerifyEscrowRowsErrorBranches covers the refusal paths: empty rows, a bad
+// prev_anchor token, a broken prev link, a recomputed-hash mismatch, and a tail
+// that does not match the claimed anchor.
+func TestVerifyEscrowRowsErrorBranches(t *testing.T) {
+	l, _ := openChained(t)
+	recordN(t, l, 2)
+	rows, err := l.EventsSince(0)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("EventsSince: %v (%d rows)", err, len(rows))
+	}
+	n, h, err := l.ChainInfoThrough(rows[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := FormatAnchor(n, h)
+
+	if err := VerifyEscrowRows(nil, "", anchor); err == nil {
+		t.Fatal("empty segment must be refused")
+	}
+	if err := VerifyEscrowRows(rows, "not-a-token", anchor); err == nil {
+		t.Fatal("garbage prev_anchor must be refused")
+	}
+	if err := VerifyEscrowRows(rows, "", "not-a-token"); err == nil {
+		t.Fatal("garbage anchor must be refused")
+	}
+	// Broken prev link: row 2 claims a predecessor that isn't row 1's hash.
+	broken := append([]EscrowRow(nil), rows...)
+	broken[1].PrevHash = make([]byte, 32)
+	if err := VerifyEscrowRows(broken, "", anchor); err == nil {
+		t.Fatal("a broken prev link must be refused")
+	}
+	// Tail mismatch: the claimed anchor names a different hash.
+	wrong := make([]byte, 32)
+	wrong[0] = 0xff
+	if err := VerifyEscrowRows(rows, "", FormatAnchor(n, wrong)); err == nil {
+		t.Fatal("a tail that does not match the claimed anchor must be refused")
+	}
+	// Empty anchor skips the tail check entirely (legacy segments).
+	if err := VerifyEscrowRows(rows, "", ""); err != nil {
+		t.Fatalf("empty anchor should pass on honest rows: %v", err)
 	}
 }

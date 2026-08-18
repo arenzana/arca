@@ -142,7 +142,7 @@ func newGet() *cobra.Command {
 				} else if noLog && !human {
 					fmt.Fprintf(os.Stderr, "note: --no-log ignored for %s (no interactive terminal)\n", name)
 				}
-				if err := logAudit("read", name, ""); err != nil {
+				if err := logUse("read", name, "", sec); err != nil {
 					return err
 				}
 			}

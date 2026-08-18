@@ -111,8 +111,10 @@ arca revoke DEPLOY_KEY                                   # remove the grant
 ```
 
 *Boundary:* the command match is argv-based — a guardrail expressing intent, not a sandbox (an
-agent controls argv and can rename a binary or wrap it in `sh -c`). The uses / expiry / agent
-checks are firm; every grant, revoke, and use is recorded.
+agent controls argv and can rename a binary or wrap it in `sh -c`). The uses and expiry
+checks are firm. The `--agent` restriction is **advisory**: it sniffs environment markers
+any process can set (`CLAUDECODE=1` satisfies `--agent claude-code`). Treat it as a
+display/audit hint, not a containment boundary. Every grant, revoke, and use is recorded.
 
 ## Rate limiting (`--rate`)
 

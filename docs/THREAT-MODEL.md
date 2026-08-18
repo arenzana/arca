@@ -419,14 +419,24 @@ trust boundary arca is designed to enforce.
 Recorded here so this document does not read as an all-clear. A threat model that
 describes intended behaviour rather than current behaviour is worse than none.
 
-**None currently open.** The last two were the T12 residual (the recipient set was not
-pinned in local state, so a key added on another machine and synced in was never
-surfaced) and the T13 residual (an expiry could be extended, and could not be cleared at
-all). Both are now addressed and described in full in their own sections above.
+As of the 2026-08-17 external-style audit — full report with severities, file:line
+references, and fix order in [audits/2026-08-17-security-audit.md](audits/2026-08-17-security-audit.md)
+— the following are open:
 
-An empty table here is a statement about this moment, not a claim about the design. It
-should be read alongside *Residual risks (accepted)* below, which lists what arca
-deliberately does not defend against and which is the more useful section for deciding
-whether arca fits a given threat model. If you are adding a finding, add the row back
-rather than editing this paragraph away: the table existing and being empty carries
-different information from the table being gone.
+| Finding | Summary | Status |
+|---|---|---|
+| ~~H1~~ | ~~Pulled stores have no writer-authentication~~ | **Fixed** (Unreleased): push signs the store bytes; pull verifies against a locally pinned operator key. `--force` cannot override a pin mismatch. Unsigned heads are accepted only on machines with no pin (migration window). Escrow segments are signed with the same key and verified on fetch when a pin exists. |
+| ~~H2~~ | ~~MCP `audit_log` bypasses `--strict`~~ | **Fixed** (Unreleased): `audit_log` is scoped to exposed secrets under `--strict`, its `name` filter returns the generic refusal for hidden/nonexistent names, and `limit` is clamped. M5 (existence oracles in `show`/`read`/`run_with_secrets`) and M6 (`limit` overflow) fixed in the same change. |
+| ~~M1~~ | ~~Prompt terminal-escape injection~~ | **Fixed** (Unreleased): `approve`, `approverWho`, `requireOperator`, and `grantScope` now pass every attacker-influenced fragment through `sanitize()` before writing to `/dev/tty`. |
+| ~~M3~~ | ~~Grant / rate-limit check-then-record TOCTOU~~ | **Fixed** (Unreleased): use events (`read`/`exec`/`env`/`inject`) count their rate and grant-uses caps inside the same `BEGIN IMMEDIATE` as the append. Concurrent writers against a `--uses 1` grant or a `--rate 1` secret can no longer all observe `used=0`. |
+| ~~M7~~ | ~~Sync credentials inherited by children~~ | **Fixed** (Unreleased): `exec` and MCP strip inherited `ARCA_SYNC_ACCESS_KEY` / `ARCA_SYNC_SECRET_KEY` / `AWS_*` from the child environment. An explicit `--only` injection of those names still wins. |
+| ~~M2~~ | ~~Unauthenticated escrow segments~~ | **Fixed** (Unreleased): each segment's rows are rehashed against the claimed chain; a `LastID` past the local log is refused; `--verify` no longer prints the anchor on stdout (`--print-anchor` is opt-in). Escrow segments are also signed with the store key (H1). |
+| ~~M4~~ | ~~Spoofable grant `--agent`~~ | **Fixed** (Unreleased): the claim that the agent check is "firm" is dropped. `--agent` is documented as advisory (env sniffing); uses and expiry stay firm. |
+| ~~M8~~ | ~~Unknown-field policy stripping~~ | **Fixed** (Unreleased): `Decode`/`Save` preserve unknown JSON fields on the store and on each secret. |
+| ~~M9~~ | ~~Unenumerated `reencrypt` prompt~~ | **Fixed** (Unreleased): the confirmation lists every recipient and the drift warning is part of the prompt, before the operator answers. |
+| ~~L1, L3, L5, L7, L9~~ | ~~WAL perms; corrupt session seed regen; HOME/SHELL/XDG reserved; approve timeout; lexical escrow sort~~ | **Fixed** (Unreleased). |
+| ~~L2, L4, L6, L8, L10–L14~~ | ~~State-dir create-only perms; env-shadowing; redaction evasion class; --force bundling; import hardening; session-binding docs; adoption lock; reset-escrow orphaning; seed zeroization~~ | **Fixed** (Unreleased): L2/L4/L8/L10/L12/L13/L14 in code; L6/L11 documented. |
+| Info | MCP exec accounting, stdin bound, UTF-8 read_secret, insecure=1 notice, stripped-metadata Head error, --only double-count. | **Fixed** (Unreleased). Remaining Info items (caller argv, handle use-count, symlink semantics, edit temp-file) are documented boundaries, not defects. |
+
+Earlier open findings (the T12 recipient-pin residual and the T13 expiry residual) remain
+addressed as described in their sections above.

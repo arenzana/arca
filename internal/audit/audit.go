@@ -28,9 +28,11 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo); registers the "sqlite" driver
@@ -162,7 +164,11 @@ func Open(path string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	_ = os.Chmod(path, 0o600) // best-effort tighten in case the file pre-existed
+	// Tighten after WAL is created so the sidecars (which carry the event
+	// rows) are not left at the process umask (audit L1).
+	_ = os.Chmod(path, 0o600)
+	_ = os.Chmod(path+"-wal", 0o600)
+	_ = os.Chmod(path+"-shm", 0o600)
 	return &Log{db: db}, nil
 }
 
@@ -253,6 +259,39 @@ func (l *Log) Close() error { return l.db.Close() }
 // UseSigner attaches a session signer so subsequent Records are signed.
 func (l *Log) UseSigner(s *Signer) { l.signer = s }
 
+// Quota is a cap enforced atomically with the event write (audit M3). BEGIN IMMEDIATE
+// already serializes appends so the chain cannot fork; counting inside that same
+// transaction means two concurrent execs against a --uses 1 grant (or a --rate 1
+// secret) cannot both observe "used=0" and both proceed.
+type Quota struct {
+	// Kind labels the refusal so the caller can phrase it ("rate" or "grant").
+	Kind string
+	// Ops are the event ops that consume this quota (e.g. exec, or the use set).
+	Ops []string
+	// Since is the start of the window; events at or after it count.
+	Since time.Time
+	// Max is the inclusive cap: the write is refused when count >= Max.
+	Max int
+}
+
+// ErrQuotaExceeded is the sentinel wrapped by QuotaError.
+var ErrQuotaExceeded = errors.New("audit quota exceeded")
+
+// QuotaError is returned when Record would push a named quota over its cap.
+// The use event is not written; the caller decides whether to record a
+// distinct refusal event (rate-limit) or just surface the error (grant).
+type QuotaError struct {
+	Kind string
+	Used int
+	Max  int
+}
+
+func (e *QuotaError) Error() string {
+	return fmt.Sprintf("%s quota exceeded: %d of %d", e.Kind, e.Used, e.Max)
+}
+
+func (e *QuotaError) Unwrap() error { return ErrQuotaExceeded }
+
 // Record appends one access event, chaining it to the previous event's hash (and signing that
 // hash when a Signer is attached). The head read + append run in one BEGIN IMMEDIATE transaction
 // so concurrent arca processes can't fork the chain. Timestamps are UTC RFC3339.
@@ -265,6 +304,13 @@ func (l *Log) Record(op, name, caller string, id Identity) error {
 // tamper-evident log itself, not just from the local high-water-mark heuristic. A storeGen of 0
 // means "unknown" (no store was loaded) and records NULL with the original event encoding.
 func (l *Log) RecordGen(op, name, caller string, id Identity, storeGen int) error {
+	return l.RecordGenQuota(op, name, caller, id, storeGen, nil)
+}
+
+// RecordGenQuota is RecordGen with one or more caps checked inside the same
+// BEGIN IMMEDIATE transaction as the append. A cap that is already at Max
+// aborts with QuotaError and writes nothing.
+func (l *Log) RecordGenQuota(op, name, caller string, id Identity, storeGen int, quotas []Quota) error {
 	ts := time.Now().UTC().Format(time.RFC3339)
 	ppid := os.Getppid()
 	ctx := context.Background()
@@ -283,6 +329,19 @@ func (l *Log) RecordGen(op, name, caller string, id Identity, storeGen int) erro
 			_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		}
 	}()
+
+	for _, q := range quotas {
+		if q.Max <= 0 || len(q.Ops) == 0 {
+			continue
+		}
+		used, err := countMatching(ctx, conn, name, q.Ops, q.Since)
+		if err != nil {
+			return err
+		}
+		if used >= q.Max {
+			return &QuotaError{Kind: q.Kind, Used: used, Max: q.Max}
+		}
+	}
 
 	// Current chain head: the latest row's hash, or genesis when the chain is empty (or the last
 	// row predates chaining and has a NULL hash).
@@ -614,6 +673,28 @@ func (l *Log) LastOp(name, op string) (time.Time, int, error) {
 	return t, count, nil
 }
 
+// countMatching counts events for name whose op is in ops and whose ts is at or after since,
+// on the given connection so it can run inside the Record BEGIN IMMEDIATE transaction.
+func countMatching(ctx context.Context, conn *sql.Conn, name string, ops []string, since time.Time) (int, error) {
+	if len(ops) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(ops))
+	args := make([]any, 0, 2+len(ops))
+	args = append(args, name)
+	for i, op := range ops {
+		placeholders[i] = "?"
+		args = append(args, op)
+	}
+	args = append(args, since.UTC().Format(time.RFC3339))
+	q := `SELECT COUNT(*) FROM events WHERE name=? AND op IN (` + strings.Join(placeholders, ",") + `) AND ts>=?`
+	var count int
+	if err := conn.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // CountOpSince counts events for a secret with a given op at or after a time. Used to compute how
 // many times a just-in-time grant has been used (op="exec") since it was issued.
 func (l *Log) CountOpSince(name, op string, since time.Time) (int, error) {
@@ -729,6 +810,63 @@ func (l *Log) EventsSince(sinceID int64) ([]EscrowRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// MaxID returns the highest event id in the log, or 0 if the log is empty.
+func (l *Log) MaxID() (int64, error) {
+	var id sql.NullInt64
+	if err := l.db.QueryRow(`SELECT MAX(id) FROM events`).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id.Int64, nil
+}
+
+// VerifyEscrowRows recomputes each row's chain hash from its predecessor and
+// checks that the last row's hash is the one named by the segment's claimed
+// anchor. Without this, a fabricated but self-consistent segment whose
+// PrevAnchor matches a known token would pass CheckAnchor on the tail alone
+// (audit M2): the events themselves were never rehashed.
+func VerifyEscrowRows(rows []EscrowRow, prevAnchor, anchor string) error {
+	if len(rows) == 0 {
+		return fmt.Errorf("escrow segment carries no events")
+	}
+	var expectPrev []byte
+	if prevAnchor == "" {
+		expectPrev = genesis()
+	} else {
+		_, h, err := ParseAnchor(prevAnchor)
+		if err != nil {
+			return fmt.Errorf("escrow prev_anchor: %w", err)
+		}
+		expectPrev = h
+	}
+	for _, r := range rows {
+		if r.Hash == nil {
+			continue // legacy (pre-chain) row: not recomputable
+		}
+		if !bytes.Equal(r.PrevHash, expectPrev) {
+			return fmt.Errorf("escrow segment event %d: prev_hash does not continue the claimed chain", r.ID)
+		}
+		eb := eventBytes(r.TS, r.Op, r.Name, r.Caller, r.Actor, r.Agent, r.Version, r.Session, int(r.PPID))
+		if r.StoreGen > 0 {
+			eb = eventBytesGen(r.TS, r.Op, r.Name, r.Caller, r.Actor, r.Agent, r.Version, r.Session, int(r.PPID), r.StoreGen)
+		}
+		if !bytes.Equal(chainHash(r.PrevHash, eb), r.Hash) {
+			return fmt.Errorf("escrow segment event %d: recomputed hash does not match (events were not chained to the claimed anchor)", r.ID)
+		}
+		expectPrev = r.Hash
+	}
+	if anchor == "" {
+		return nil
+	}
+	_, want, err := ParseAnchor(anchor)
+	if err != nil {
+		return fmt.Errorf("escrow anchor: %w", err)
+	}
+	if !bytes.Equal(expectPrev, want) {
+		return fmt.Errorf("escrow segment tail does not match its claimed anchor")
+	}
+	return nil
 }
 
 // ChainInfoThrough returns the chain coordinates at row maxID: how many chained

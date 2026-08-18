@@ -36,17 +36,19 @@ var reserved = map[string]bool{
 	"NODE_OPTIONS": true, "RUBYOPT": true, "RUBYLIB": true, "GEM_PATH": true,
 	"GIT_SSH": true, "GIT_SSH_COMMAND": true, "GIT_EXTERNAL_DIFF": true, "GIT_PAGER": true,
 	"HOSTALIASES": true, "TERMINFO": true, "TERMCAP": true, "PAGER": true, "EDITOR": true,
+	"HOME": true, "SHELL": true, "TMPDIR": true, "TEMP": true, "TMP": true,
 }
 
 // Reserved reports whether name would hijack a child process if injected as an environment
 // variable. It matches the reserved table case-insensitively plus the dynamic-linker prefixes
-// LD_* and DYLD_* (which cover LD_PRELOAD, LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES, and kin).
+// LD_*, DYLD_*, and XDG_* (HOME/SHELL/TMPDIR hijack the child's working environment;
+// XDG_* relocates config/state the way PATH relocates binaries — audit L5).
 func Reserved(name string) bool {
 	u := strings.ToUpper(name)
 	if reserved[u] {
 		return true
 	}
-	return strings.HasPrefix(u, "LD_") || strings.HasPrefix(u, "DYLD_")
+	return strings.HasPrefix(u, "LD_") || strings.HasPrefix(u, "DYLD_") || strings.HasPrefix(u, "XDG_")
 }
 
 // Validate rejects names that aren't safe identifiers, or that would hijack a child process's

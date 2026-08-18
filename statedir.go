@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/arenzana/arca/internal/atomicfile"
 	"github.com/arenzana/arca/internal/xdg"
 )
 
@@ -131,7 +133,23 @@ func storesRoot() string { return filepath.Join(xdg.StateDir(), "stores") }
 func storeStateDir() string {
 	dir := filepath.Join(storesRoot(), storeStateKey())
 	adoptLegacyState(dir)
+	tightenStateDirMode(dir)
 	return dir
+}
+
+// tightenStateDirMode best-effort tightens a pre-existing state dir to 0700 (audit L2).
+// MkdirAll(0700) is a no-op on a directory that already exists, so a state dir created
+// by hand at 0755 would stay that way — and every 0600 file inside (grants, handles,
+// sync.json credentials) would be listable by anyone on the machine.
+func tightenStateDirMode(dir string) {
+	if runtime.GOOS == "windows" {
+		return // ACLs, not mode bits
+	}
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o077 == 0 {
+		return
+	}
+	_ = os.Chmod(dir, 0o700) //#nosec G302 -- a directory needs the execute bit; 0700 is the correct (and tightening) mode here, G302's 0600 expectation is for files
 }
 
 // adoptedByPath records which store adopted this machine's pre-D4 flat state. Its contents are the
@@ -211,7 +229,7 @@ func claimAndMoveLegacyState(dst string) {
 	// run interrupted mid-move leaves entries behind that a *different* store would sweep into its
 	// own dir on its next command — silently handing one store's grants and sync cursor to another,
 	// which is the failure this whole slice exists to prevent.
-	if err := os.WriteFile(adoptedByPath(), []byte(absStorePath()+"\n"), 0o600); err != nil {
+	if err := atomicfile.Write(adoptedByPath(), []byte(absStorePath()+"\n"), 0o600); err != nil {
 		warnAdoption(fmt.Errorf("claim the shared state: %w", err))
 		return
 	}
@@ -255,6 +273,9 @@ var errAdoptionInProgress = errors.New("another process is adopting the shared s
 
 // lockAdoption takes the adoption lock, reclaiming one left behind by a crash. Adoption is a
 // handful of renames, so anything older than staleLockAge (shared with lock.go) is dead.
+// The reclaim is a rename-steal, not a blind unlink — the same races lock.go fixed apply here
+// (audit L12): two processes must not both "reclaim", and an unlink must not delete a lock
+// that was re-created in the meantime.
 func lockAdoption() (func(), error) {
 	if err := os.MkdirAll(xdg.StateDir(), 0o700); err != nil {
 		return nil, err
@@ -262,8 +283,26 @@ func lockAdoption() (func(), error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		f, err := os.OpenFile(adoptLockPath(), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //#nosec G304 -- our own state dir
 		if err == nil {
+			token, terr := lockToken()
+			if terr != nil {
+				_ = f.Close()
+				_ = os.Remove(adoptLockPath())
+				return nil, terr
+			}
+			if _, werr := f.WriteString(token); werr != nil {
+				_ = f.Close()
+				_ = os.Remove(adoptLockPath())
+				return nil, werr
+			}
 			_ = f.Close()
-			return func() { _ = os.Remove(adoptLockPath()) }, nil
+			lock, tok := adoptLockPath(), token
+			return func() {
+				// Remove only if we still own it: a reclaimed/recreated lock carries
+				// someone else's token (lock.go's release discipline).
+				if b, rerr := os.ReadFile(lock); rerr == nil && string(b) == tok { //#nosec G304 -- our own lock path
+					_ = os.Remove(lock)
+				}
+			}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, err // not contention: an unwritable state dir, most likely
@@ -272,7 +311,16 @@ func lockAdoption() (func(), error) {
 		if serr != nil || time.Since(fi.ModTime()) < staleLockAge {
 			return nil, errAdoptionInProgress
 		}
-		_ = os.Remove(adoptLockPath()) // stale: the holder died mid-adoption
+		// Stale: reclaim by winning an atomic rename, exactly as lockStoreFor does.
+		token, terr := lockToken()
+		if terr != nil {
+			return nil, terr
+		}
+		if os.Rename(adoptLockPath(), adoptLockPath()+".steal."+token) == nil {
+			_ = os.Remove(adoptLockPath() + ".steal." + token) // we won: drop it, re-create ours next iteration
+			continue
+		}
+		return nil, errAdoptionInProgress // lost the race; a live reclaimer is adopting
 	}
 	return nil, fmt.Errorf("could not acquire %s", adoptLockPath())
 }

@@ -90,7 +90,10 @@ func globMatch(pattern, s string) bool {
 // checkGrant authorizes using a require-grant secret for a given command line, or returns why not.
 // It is the JIT/command-scoped enforcement point, called only from the command-bearing paths
 // (exec, MCP run_with_secrets). Matching is argv-based and therefore a guardrail expressing intent,
-// not a sandbox (an agent controls argv); the agent/uses/expiry checks are firm.
+// not a sandbox (an agent controls argv). The uses and expiry checks are firm. The agent
+// restriction is not: it rests on environment sniffing (detectIdentity), which the rest of
+// arca treats as advisory — any process can set CLAUDECODE=1 and satisfy --agent claude-code
+// (audit M4). Treat --agent as a display/audit hint, not a containment boundary.
 func checkGrant(name, cmdline string) error {
 	grants, err := loadGrants()
 	if err != nil {
@@ -112,6 +115,9 @@ func checkGrant(name, cmdline string) error {
 		return fmt.Errorf("the grant for %s does not authorize this command (allowed pattern: %q)", name, g.Command)
 	}
 	if g.MaxUses > 0 {
+		// Sequential pre-check so a spent grant is refused before decrypt.
+		// Concurrent callers are stopped by logUse, which recounts inside the
+		// same BEGIN IMMEDIATE as the exec event (audit M3).
 		used, err := grantUses(name, g.CreatedAt)
 		if err != nil {
 			return err
@@ -138,19 +144,22 @@ func grantUses(name string, since time.Time) (int, error) {
 // --ttl are what a self-issued grant looks like, and both are indistinguishable from a narrow grant
 // if the prompt only says "a grant".
 func grantScope(ttl string, uses int, command, agent string) string {
-	parts := []string{"ttl " + ttl}
+	// ttl / command / agent are attacker-influenced (the prompt fires before
+	// they are validated) and land on the operator's terminal. Strip controls
+	// so a crafted --command or $AI_AGENT cannot redraw the grant prompt (SEC-07).
+	parts := []string{"ttl " + sanitize(ttl)}
 	if uses > 0 {
 		parts = append(parts, fmt.Sprintf("%d uses", uses))
 	} else {
 		parts = append(parts, "unlimited uses")
 	}
 	if command != "" {
-		parts = append(parts, "command "+command)
+		parts = append(parts, "command "+sanitize(command))
 	} else {
 		parts = append(parts, "any command")
 	}
 	if agent != "" {
-		parts = append(parts, "agent "+agent)
+		parts = append(parts, "agent "+sanitize(agent))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -174,7 +183,7 @@ func newGrant() *cobra.Command {
 			// The prompt names the scope, because that is the part being widened: an unbounded --ttl
 			// and --uses 0 both parse, so "a grant was issued" is not the interesting fact.
 			if err := requireOperator("grant", fmt.Sprintf("Issue a grant for %s (%s)?",
-				name, grantScope(ttl, uses, command, agent))); err != nil {
+				sanitize(name), grantScope(ttl, uses, command, agent))); err != nil {
 				return err
 			}
 			if err := secretname.Validate(name); err != nil {

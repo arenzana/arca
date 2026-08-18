@@ -185,6 +185,50 @@ func TestLoadNullEntry(t *testing.T) {
 	}
 }
 
+// TestUnknownFieldsSurviveSave is audit M8: a future policy field (or any unknown
+// JSON key) must round-trip through Load + Save, or an older arca silently
+// strips it fleet-wide.
+func TestUnknownFieldsSurviveSave(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	body := `{
+		"version": 1,
+		"recipients": ["age1xyz"],
+		"future_policy": true,
+		"secrets": {
+			"FOO": {
+				"value": "ciphertext",
+				"created_at": "2026-01-01T00:00:00Z",
+				"updated_at": "2026-01-01T00:00:00Z",
+				"require_hardware_key": true
+			}
+		}
+	}`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Extra["future_policy"]; !ok {
+		t.Fatal("top-level unknown field was dropped on load")
+	}
+	if sec := s.Secrets["FOO"]; sec == nil || sec.Extra["require_hardware_key"] == nil {
+		t.Fatal("per-secret unknown field was dropped on load")
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	if !strings.Contains(got, `"future_policy"`) || !strings.Contains(got, `"require_hardware_key"`) {
+		t.Fatalf("Save stripped unknown fields:\n%s", got)
+	}
+}
+
 // TestLoadNewerVersion refuses a store written by a newer arca.
 func TestLoadNewerVersion(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "s.json")

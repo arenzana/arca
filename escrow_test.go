@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/remote"
+	"github.com/arenzana/arca/internal/storesign"
 )
 
 // TestEscrowOnSync: every sync ships the audit increment as an append-only encrypted
@@ -104,6 +106,44 @@ func TestEscrowContinuityTamper(t *testing.T) {
 	fake.Delete(keys[0]) // storage-side removal of the first segment
 	if _, err := fetchEscrowedSegments(context.Background(), fake); err == nil {
 		t.Fatal("continuity check passed with a missing first segment")
+	}
+}
+
+// TestEscrowSegmentIsSigned is the H1 follow-up: a freshly escrowed segment
+// carries an operator signature that verifies against the local pin.
+func TestEscrowSegmentIsSigned(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	segs, err := fetchEscrowedSegments(context.Background(), fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) == 0 {
+		t.Fatal("no escrow segments after sync")
+	}
+	if segs[0].Signature == "" || segs[0].Signer == "" {
+		t.Fatalf("escrow segment was not signed: %+v", segs[0])
+	}
+}
+
+// TestEscrowRefusesATamperedSignature: flipping the signature field on a
+// fetched segment must fail verifyEscrowSegment when a pin exists.
+func TestEscrowRefusesATamperedSignature(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	runArca(t, "v1", "set", "A")
+	runArca(t, "", "sync")
+	segs, err := fetchEscrowedSegments(context.Background(), fake)
+	if err != nil || len(segs) == 0 {
+		t.Fatalf("fetch: %v segs %d", err, len(segs))
+	}
+	segs[0].Signature = storesign.Encode([]byte("not-a-real-signature-pad-to-len!!"))
+	if err := verifyEscrowSegment(segs[0]); err == nil {
+		t.Fatal("tampered escrow signature was accepted")
 	}
 }
 
@@ -477,6 +517,25 @@ func TestSyncResetEscrowFreshNoStore(t *testing.T) {
 
 // TestReseatEscrowIdentity unit-covers the reset helper: it rotates the id, clears the
 // cursor, and reports the change; a second call rotates again (fresh suffix each time).
+func TestEscrowSeqSortsNumerically(t *testing.T) {
+	keys := []string{
+		"audit/m/1000000.age",
+		"audit/m/000002.age",
+		"audit/m/999999.age",
+		"audit/m/000001.age",
+	}
+	sort.Slice(keys, func(i, j int) bool { return escrowSeq(keys[i]) < escrowSeq(keys[j]) })
+	want := []string{
+		"audit/m/000001.age",
+		"audit/m/000002.age",
+		"audit/m/999999.age",
+		"audit/m/1000000.age",
+	}
+	if strings.Join(keys, ",") != strings.Join(want, ",") {
+		t.Fatalf("numeric sort = %v, want %v", keys, want)
+	}
+}
+
 func TestReseatEscrowIdentity(t *testing.T) {
 	sandbox(t)
 	orig, err := machineID() // materialize an identity + a cursor

@@ -114,8 +114,33 @@ func mcpExecTimeout() time.Duration {
 	return d
 }
 
-// capWriter passes at most limit bytes through to dst and counts what it discarded beyond that.
-//
+// maxMCPMessageBytes caps one inbound JSON-RPC line (audit Info: mcp-go's
+// ReadString is uncapped). A real request is a few KiB of names and args;
+// 16 MiB matches maxMCPMaxOutput and is far past any legitimate call.
+const maxMCPMessageBytes = 16 << 20
+
+// cappedLineReader wraps stdin so a single over-long line (no newline within
+// the cap) fails the read instead of growing the server's heap unboundedly.
+type cappedLineReader struct {
+	r   io.Reader
+	cur int // bytes seen since the last newline
+}
+
+func (c *cappedLineReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	for _, b := range p[:n] {
+		if b == '\n' {
+			c.cur = 0
+			continue
+		}
+		c.cur++
+		if c.cur > maxMCPMessageBytes {
+			return 0, fmt.Errorf("mcp: inbound message exceeds the %d-byte limit", maxMCPMessageBytes)
+		}
+	}
+	return n, err
+}
+
 // It must sit DOWNSTREAM of the redactWriter, never upstream. redactWriter deliberately holds
 // back a tail of up to maxLen-1 bytes so a secret split across two Writes is still matched
 // (see redact.go); truncating its *input* would defeat that hold-back and could emit a partial

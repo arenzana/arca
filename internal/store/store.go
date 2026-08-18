@@ -48,6 +48,11 @@ type Secret struct {
 	RateLimit       int               `json:"rate_limit,omitempty"`       // max uses per RateWindow (0 = unlimited)
 	RateWindow      string            `json:"rate_window,omitempty"`      // the window for RateLimit (e.g. "1h"); empty defaults to 1h
 	Meta            map[string]string `json:"meta,omitempty"`             // open-ended extensibility bag
+
+	// Extra holds unknown JSON fields so a newer arca's policy bits survive an
+	// older arca's load-and-save (audit M8). Without this, json.Unmarshal
+	// silently drops them and the next Save strips the policy fleet-wide.
+	Extra map[string]json.RawMessage `json:"-"`
 }
 
 // Expired reports whether the secret has a hard expiry that has already passed as of now.
@@ -67,6 +72,10 @@ type Store struct {
 	// printing bare age1… keys. Cleartext metadata, optional; a missing entry just means unlabeled.
 	RecipientLabels map[string]string  `json:"recipient_labels,omitempty"`
 	Secrets         map[string]*Secret `json:"secrets"`
+
+	// Extra holds unknown top-level JSON fields across a load/save cycle
+	// (audit M8). Same shape as Secret.Extra.
+	Extra map[string]json.RawMessage `json:"-"`
 
 	path string
 }
@@ -231,4 +240,85 @@ func (s *Store) Names() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Known top-level and per-secret JSON keys. Anything else is parked in Extra
+// and written back on Save so a newer schema's policy fields survive an older
+// arca (audit M8).
+var storeKnown = map[string]bool{
+	"version": true, "generation": true, "recipients": true,
+	"recipient_labels": true, "secrets": true,
+}
+var secretKnown = map[string]bool{
+	"value": true, "created_at": true, "updated_at": true, "tags": true,
+	"description": true, "rotate_after": true, "expires_at": true,
+	"disabled": true, "no_print": true, "require_approval": true,
+	"canary": true, "require_grant": true, "agent_exposed": true,
+	"rate_limit": true, "rate_window": true, "meta": true,
+}
+
+func (s *Store) UnmarshalJSON(b []byte) error {
+	type alias Store
+	var aux alias
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*s = Store(aux)
+	s.Extra = unknownFields(b, storeKnown)
+	return nil
+}
+
+func (s Store) MarshalJSON() ([]byte, error) {
+	type alias Store
+	return marshalWithExtra(alias(s), s.Extra)
+}
+
+func (sec *Secret) UnmarshalJSON(b []byte) error {
+	type alias Secret
+	var aux alias
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*sec = Secret(aux)
+	sec.Extra = unknownFields(b, secretKnown)
+	return nil
+}
+
+func (sec Secret) MarshalJSON() ([]byte, error) {
+	type alias Secret
+	return marshalWithExtra(alias(sec), sec.Extra)
+}
+
+func unknownFields(b []byte, known map[string]bool) map[string]json.RawMessage {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil
+	}
+	var extra map[string]json.RawMessage
+	for k, v := range raw {
+		if !known[k] {
+			if extra == nil {
+				extra = map[string]json.RawMessage{}
+			}
+			extra[k] = v
+		}
+	}
+	return extra
+}
+
+func marshalWithExtra(v any, extra map[string]json.RawMessage) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil || len(extra) == 0 {
+		return b, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	for k, raw := range extra {
+		if _, exists := m[k]; !exists {
+			m[k] = raw
+		}
+	}
+	return json.Marshal(m)
 }
