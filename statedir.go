@@ -149,7 +149,7 @@ func tightenStateDirMode(dir string) {
 	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o077 == 0 {
 		return
 	}
-	_ = os.Chmod(dir, 0o700)
+	_ = os.Chmod(dir, 0o700) //#nosec G302 -- a directory needs the execute bit; 0700 is the correct (and tightening) mode here, G302's 0600 expectation is for files
 }
 
 // adoptedByPath records which store adopted this machine's pre-D4 flat state. Its contents are the
