@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -41,7 +42,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // Windows: ACLs, not 0600
 		t.Fatalf("key mode = %o, want 0600", st.Mode().Perm())
 	}
 	got, err := Load(p)
@@ -84,7 +85,7 @@ func TestPinRoundTripAndCorrupt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // Windows: ACLs, not 0600
 		t.Fatalf("pin mode = %o, want 0600", st.Mode().Perm())
 	}
 	got, err := LoadPin(p)
@@ -106,6 +107,29 @@ func TestPinRoundTripAndCorrupt(t *testing.T) {
 	}
 	if _, err := LoadPin(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing pin = %v, want ErrNotExist", err)
+	}
+}
+
+func TestSaveRejectsIncompleteKey(t *testing.T) {
+	if err := Save(filepath.Join(t.TempDir(), "k"), nil); err == nil {
+		t.Fatal("Save(nil) should refuse")
+	}
+	if err := Save(filepath.Join(t.TempDir(), "k"), &Key{Seed: make([]byte, 4)}); err == nil {
+		t.Fatal("Save(short seed) should refuse")
+	}
+	if err := SavePin(filepath.Join(t.TempDir(), "p"), make([]byte, 4)); err == nil {
+		t.Fatal("SavePin(short pub) should refuse")
+	}
+}
+
+func TestVerifyRejectsWrongSizes(t *testing.T) {
+	k, _ := Generate()
+	sig := Sign(k.Priv, []byte("x"))
+	if Verify(k.Pub[:8], []byte("x"), sig) {
+		t.Fatal("Verify accepted a short public key")
+	}
+	if Verify(k.Pub, []byte("x"), sig[:8]) {
+		t.Fatal("Verify accepted a short signature")
 	}
 }
 

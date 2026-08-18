@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/arenzana/arca/internal/audit"
 	"github.com/arenzana/arca/internal/remote"
+	"github.com/arenzana/arca/internal/store"
 	"github.com/arenzana/arca/internal/storesign"
 	"github.com/arenzana/arca/internal/xdg"
 )
@@ -25,8 +30,10 @@ func TestSignerShowIsHeadlessAndPublic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o600 {
-		t.Fatalf("store-signing.key mode = %o, want 0600", st.Mode().Perm())
+	if runtime.GOOS != "windows" { // Windows governs access by ACL, not 0600
+		if st.Mode().Perm() != 0o600 {
+			t.Fatalf("store-signing.key mode = %o, want 0600", st.Mode().Perm())
+		}
 	}
 	// Second show is the same key.
 	if again := strings.TrimSpace(runArca(t, "", "signer", "show")); again != out {
@@ -51,6 +58,103 @@ func TestSignerShowRefusesACorruptKey(t *testing.T) {
 	}
 }
 
+// TestVerifyPulledStoreCorruptPin: a garbage pin is a hard refusal, never auto-healed.
+func TestVerifyPulledStoreCorruptPin(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storeSignerPinPath(), []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := verifyPulledStore([]byte("payload"), remote.Rev{})
+	if err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("corrupt pin = %v, want a corrupt refusal", err)
+	}
+}
+
+// TestSignStorePayloadCorruptKey: the push-side warning path when the key file is bad.
+func TestSignStorePayloadCorruptKey(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storeSigningKeyPath(), []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if a := signStorePayload([]byte("x")); !a.Zero() {
+		t.Fatalf("corrupt key should produce zero auth (unsigned push with warning), got %+v", a)
+	}
+}
+
+// TestVerifyEscrowSegmentPaths: no pin accepts everything; a pin accepts legacy
+// unsigned segments and rejects mismatched signers; a corrupt pin refuses.
+func TestVerifyEscrowSegmentPaths(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	seg := segment{Seq: 1}
+	// No pin: anything passes (M2 rehash is the only check).
+	if err := verifyEscrowSegment(seg); err != nil {
+		t.Fatalf("no pin should accept unsigned: %v", err)
+	}
+	// Pin present: legacy unsigned segment still passes.
+	k, err := loadOrCreateStoreKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyEscrowSegment(seg); err != nil {
+		t.Fatalf("pin + legacy unsigned should pass: %v", err)
+	}
+	// Pin present: a segment signed by a DIFFERENT key is refused.
+	other, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(seg)
+	signed := seg
+	signed.Signature = storesign.Encode(storesign.Sign(other.Priv, raw))
+	signed.Signer = storesign.EncodePub(other.Pub)
+	if err := verifyEscrowSegment(signed); err == nil || !strings.Contains(err.Error(), "not the pinned signer") {
+		t.Fatalf("foreign-signed segment = %v, want a signer refusal", err)
+	}
+	// A correctly-signed segment passes.
+	signed.Signature = storesign.Encode(storesign.Sign(k.Priv, raw))
+	signed.Signer = storesign.EncodePub(k.Pub)
+	if err := verifyEscrowSegment(signed); err != nil {
+		t.Fatalf("correctly-signed segment should pass: %v", err)
+	}
+}
+
+// TestLogUseQuotaTranslations covers logUseQuotas' error translation branches
+// directly (the concurrency-safe paths only fire under real contention).
+func TestLogUseQuotaTranslations(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	runArca(t, "v", "set", "API")
+	// Rate cap over quota: the refusal is recorded as op=ratelimit.
+	sec := &store.Secret{RateLimit: 1, RateWindow: "1h"}
+	q := []audit.Quota{{Kind: "rate", Ops: []string{"read"}, Since: time.Now().Add(-time.Hour), Max: 1}}
+	if err := logUseQuotas("read", "API", "", sec, q); err != nil {
+		t.Fatalf("first use should pass: %v", err)
+	}
+	err := logUseQuotas("read", "API", "", sec, q)
+	if err == nil || !strings.Contains(err.Error(), "rate limit reached") {
+		t.Fatalf("second use = %v, want a rate refusal", err)
+	}
+	// Grant cap over quota: refusal names the grant.
+	gq := []audit.Quota{{Kind: "grant", Ops: []string{"exec"}, Since: time.Now().Add(-time.Hour), Max: 1}}
+	if err := logUseQuotas("exec", "DEPLOY", "true", sec, gq); err != nil {
+		t.Fatalf("first exec should pass: %v", err)
+	}
+	err = logUseQuotas("exec", "DEPLOY", "true", sec, gq)
+	if err == nil || !strings.Contains(err.Error(), "grant") {
+		t.Fatalf("second exec = %v, want a grant refusal", err)
+	}
+}
+
+// TestSignerPinWritesAndShowMatches pins the shown key and re-reads it.
 func TestSignerPinWritesAndShowMatches(t *testing.T) {
 	sandbox(t)
 	runArca(t, "", "init")
@@ -71,8 +175,10 @@ func TestSignerPinWritesAndShowMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o600 {
-		t.Fatalf("pin mode = %o, want 0600", st.Mode().Perm())
+	if runtime.GOOS != "windows" { // Windows governs access by ACL, not 0600
+		if st.Mode().Perm() != 0o600 {
+			t.Fatalf("pin mode = %o, want 0600", st.Mode().Perm())
+		}
 	}
 }
 

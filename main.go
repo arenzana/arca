@@ -387,11 +387,8 @@ func logAuditQuota(op, name, caller string, quotas []audit.Quota) error {
 	return nil
 }
 
-// recordAudit opens the audit log and writes one event with the auto-detected identity.
-func recordAudit(op, name, caller string) error {
-	return recordAuditQuota(op, name, caller, nil)
-}
-
+// recordAuditQuota opens the audit log and writes one event with the auto-detected identity,
+// enforcing any quotas atomically with the append.
 func recordAuditQuota(op, name, caller string, quotas []audit.Quota) error {
 	// When the caller isn't set explicitly (exec/run_with_secrets pass the command), record the
 	// process that invoked arca — so `log` shows who ran a get/set, not a blank.
