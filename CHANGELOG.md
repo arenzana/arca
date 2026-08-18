@@ -32,6 +32,17 @@ All notable changes to arca are documented here. The format follows
   is pinned to it automatically; that is not Trust-On-First-Use from the network.
 
 ### Fixed
+- **Audit DB WAL/SHM sidecars are chmod'd 0600** (audit L1). They were left at
+  the process umask after `PRAGMA journal_mode=WAL`.
+- **A corrupt session signing key is refused, not regenerated** (audit L3).
+  Silent regeneration made every prior event for that session fail verify — a
+  permanent false tamper alarm. The write is now atomic too.
+- **`HOME`, `SHELL`, `TMPDIR`, and `XDG_*` cannot be used as secret names**
+  (audit L5). Same hijack class as the already-blocked `PATH` / `LD_*` set.
+- **`approve()` now shares `requireOperator`'s 5s input timeout** (audit L7).
+  A held-open pty no longer wedges `--require-approval` execs forever.
+- **Escrow segments sort numerically** (audit L9). Past seq 999999, lexical
+  sort put `"1000000.age"` before `"999999.age"` and broke continuity forever.
 - **`reencrypt` now names every recipient in the confirmation and runs the drift
   check before the operator answers** (audit M9). The payload step of a
   recipient-injection asked a bare yes/no; the one-line drift warning appeared

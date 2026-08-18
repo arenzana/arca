@@ -164,7 +164,11 @@ func Open(path string) (*Log, error) {
 		db.Close()
 		return nil, err
 	}
-	_ = os.Chmod(path, 0o600) // best-effort tighten in case the file pre-existed
+	// Tighten after WAL is created so the sidecars (which carry the event
+	// rows) are not left at the process umask (audit L1).
+	_ = os.Chmod(path, 0o600)
+	_ = os.Chmod(path+"-wal", 0o600)
+	_ = os.Chmod(path+"-shm", 0o600)
 	return &Log{db: db}, nil
 }
 

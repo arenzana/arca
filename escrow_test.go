@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 
@@ -516,6 +517,25 @@ func TestSyncResetEscrowFreshNoStore(t *testing.T) {
 
 // TestReseatEscrowIdentity unit-covers the reset helper: it rotates the id, clears the
 // cursor, and reports the change; a second call rotates again (fresh suffix each time).
+func TestEscrowSeqSortsNumerically(t *testing.T) {
+	keys := []string{
+		"audit/m/1000000.age",
+		"audit/m/000002.age",
+		"audit/m/999999.age",
+		"audit/m/000001.age",
+	}
+	sort.Slice(keys, func(i, j int) bool { return escrowSeq(keys[i]) < escrowSeq(keys[j]) })
+	want := []string{
+		"audit/m/000001.age",
+		"audit/m/000002.age",
+		"audit/m/999999.age",
+		"audit/m/1000000.age",
+	}
+	if strings.Join(keys, ",") != strings.Join(want, ",") {
+		t.Fatalf("numeric sort = %v, want %v", keys, want)
+	}
+}
+
 func TestReseatEscrowIdentity(t *testing.T) {
 	sandbox(t)
 	orig, err := machineID() // materialize an identity + a cursor

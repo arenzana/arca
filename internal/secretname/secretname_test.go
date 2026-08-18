@@ -28,6 +28,7 @@ func TestValidateRejectsReserved(t *testing.T) {
 		"PYTHONPATH", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT", "GEM_PATH",
 		"GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF", "EDITOR", "PAGER", "TERMINFO",
 		"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
+		"HOME", "SHELL", "TMPDIR", "XDG_CONFIG_HOME",
 	} {
 		if err := Validate(n); err == nil {
 			t.Errorf("Validate(%q) = nil, want a reserved-name error", n)
@@ -51,7 +52,7 @@ func TestReservedIsCaseInsensitive(t *testing.T) {
 // The linker prefixes are matched as prefixes, not as a fixed list, so a variable nobody
 // enumerated (a new LD_* knob) is still refused.
 func TestReservedCoversLinkerPrefixes(t *testing.T) {
-	for _, n := range []string{"LD_AUDIT", "LD_SOMETHING_NEW", "DYLD_FRAMEWORK_PATH"} {
+	for _, n := range []string{"LD_AUDIT", "LD_SOMETHING_NEW", "DYLD_FRAMEWORK_PATH", "XDG_DATA_HOME"} {
 		if !Reserved(n) {
 			t.Errorf("Reserved(%q) = false, want true (prefix match)", n)
 		}
@@ -65,7 +66,7 @@ func TestReservedCoversLinkerPrefixes(t *testing.T) {
 }
 
 func TestReservedAllowsOrdinaryNames(t *testing.T) {
-	for _, n := range []string{"API_KEY", "DATABASE_URL", "STRIPE_SECRET", "HOME_PAGE_TOKEN"} {
+	for _, n := range []string{"API_KEY", "DATABASE_URL", "STRIPE_SECRET", "HOMEPAGE_TOKEN"} {
 		if Reserved(n) {
 			t.Errorf("Reserved(%q) = true, want false", n)
 		}

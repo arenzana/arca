@@ -1,8 +1,11 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arenzana/arca/internal/secretname"
 	"github.com/arenzana/arca/internal/store"
@@ -101,6 +104,7 @@ func TestValidNameRejectsReserved(t *testing.T) {
 		"PATH", "path", "Path", "LD_PRELOAD", "ld_preload", "LD_LIBRARY_PATH",
 		"DYLD_INSERT_LIBRARIES", "IFS", "BASH_ENV", "ENV", "SHELLOPTS", "PROMPT_COMMAND",
 		"PS1", "PYTHONPATH", "NODE_OPTIONS", "PERL5LIB", "GIT_SSH_COMMAND", "EDITOR",
+		"HOME", "SHELL", "TMPDIR", "XDG_CONFIG_HOME",
 	}
 	for _, n := range reserved {
 		if err := secretname.Validate(n); err == nil {
@@ -232,5 +236,46 @@ func TestApproveRequiresTerminal(t *testing.T) {
 	withTTYResponse(t, "n")
 	if approve("X", "who") == nil {
 		t.Fatal("an 'n' at the terminal should decline")
+	}
+}
+
+// TestApproveTimesOut is audit L7: a silent terminal must fail closed, not hang.
+func TestApproveTimesOut(t *testing.T) {
+	sandbox(t)
+	old := operatorTimeout
+	operatorTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { operatorTimeout = old })
+	// A pipe that never answers: openTTY returns a reader with no data.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	prev := openTTY
+	t.Cleanup(func() { openTTY = prev })
+	openTTY = func() (in, out *os.File, err error) {
+		devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			return nil, nil, err
+		}
+		return r, devnull, nil
+	}
+	err = approve("X", "who")
+	if err == nil || !strings.Contains(err.Error(), "within") {
+		t.Fatalf("silent terminal = %v, want a timeout refusal", err)
+	}
+}
+
+// TestSessionSeedRefusesCorrupt is audit L3: a truncated session key must not
+// be silently regenerated (that would make every prior event fail verify).
+func TestSessionSeedRefusesCorrupt(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "sess.key")
+	if err := os.WriteFile(p, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadOrCreateSeed(p)
+	if err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("corrupt session seed = %v, want a refusal", err)
 	}
 }

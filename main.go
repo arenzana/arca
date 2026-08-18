@@ -748,12 +748,23 @@ func approve(name, who string) error {
 	// value cannot clear or redraw the prompt that is the load-bearing human
 	// gate (SEC-07 / audit M1).
 	fmt.Fprintf(out, "Release %q to %s? [y/N] ", sanitize(name), sanitize(who))
-	var resp string
-	_, _ = fmt.Fscanln(in, &resp)
-	if strings.EqualFold(strings.TrimSpace(resp), "y") {
-		return nil
+	// Same bounded read as requireOperator (audit L7): a held-open pty must
+	// not wedge --require-approval execs forever.
+	answered := make(chan string, 1)
+	go func() {
+		var resp string
+		_, _ = fmt.Fscanln(in, &resp)
+		answered <- resp
+	}()
+	select {
+	case resp := <-answered:
+		if strings.EqualFold(strings.TrimSpace(resp), "y") {
+			return nil
+		}
+		return fmt.Errorf("approval declined for %s", name)
+	case <-time.After(operatorTimeout):
+		return fmt.Errorf("%s was not approved on the terminal within %s — no answer was received, so it was refused", name, operatorTimeout)
 	}
-	return fmt.Errorf("approval declined for %s", name)
 }
 
 // approverWho returns a short human-readable descriptor of the requester for the prompt.

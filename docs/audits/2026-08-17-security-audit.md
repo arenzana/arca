@@ -242,4 +242,4 @@ in the prompt and run the drift check before `requireOperator` returns success.
 5. ~~**H1** — operator store signatures~~ **Fixed** (Unreleased): push signs; pull verifies against a locally pinned key; escrow segments are signed and verified when a pin exists.
    → [remediation plan](2026-08-remediation-plan-H1-H2.md)
 6. ~~**M2, M8, M9** — escrow authentication, unknown-field policy, reencrypt prompt~~ **Fixed** (Unreleased), except escrow *signing* (H1 follow-up).
-7. Low/Info hygiene batch (L1–L14 as time permits).
+7. Low/Info hygiene batch — **L1, L3, L5, L7, L9 Fixed** (Unreleased). L2, L4, L6, L8, L10–L14 remain.

@@ -286,6 +286,25 @@ func escrowKeyRegexp(machine string) *regexp.Regexp {
 	return regexp.MustCompile(`^` + regexp.QuoteMeta(remote.KeyAudit+machine+"/") + `\d{6,}\.age$`)
 }
 
+// escrowSeq is the numeric sequence in an escrow object key. Used to sort
+// segments by Seq rather than lexically, so "1000000.age" follows "999999.age"
+// instead of sorting before it (audit L9).
+func escrowSeq(key string) int {
+	base := key
+	if i := strings.LastIndex(key, "/"); i >= 0 {
+		base = key[i+1:]
+	}
+	base = strings.TrimSuffix(base, ".age")
+	n := 0
+	for _, c := range base {
+		if c < '0' || c > '9' {
+			return n
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
 // fetchEscrowedSegments pulls and decrypts this machine's segments, oldest first, and
 // checks their continuity (each segment's prev_anchor must equal its predecessor's
 // anchor). Returns the parsed segments.
@@ -298,7 +317,9 @@ func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, er
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool {
+		return escrowSeq(keys[i]) < escrowSeq(keys[j])
+	})
 	ids, err := loadIDs()
 	if err != nil {
 		return nil, err
