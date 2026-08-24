@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Adversarial review finding",
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim", "failure_scenario", "severity", "gate_level"],
+        "properties": {
+          "claim": {"type": "string", "description": "One sentence. The defect itself, no rationale."},
+          "failure_scenario": {"type": "string", "description": "Concrete inputs or state, then the wrong outcome."},
+          "severity": {"enum": ["high", "medium", "low"]},
+          "gate_level": {
+            "enum": ["requirement", "plan", "test", "code"],
+            "description": "The EARLIEST gate that could have caught this. The measurement that justifies the pipeline."
+          },
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "verdict": {"enum": ["CONFIRMED", "PLAUSIBLE"]}
+        }
+      }
+    }
+  }
+}
