@@ -116,7 +116,7 @@ func TestVerifyEscrowSegmentPaths(t *testing.T) {
 	signed := seg
 	signed.Signature = storesign.Encode(storesign.Sign(other.Priv, raw))
 	signed.Signer = storesign.EncodePub(other.Pub)
-	if err := verifyEscrowSegment(signed); err == nil || !strings.Contains(err.Error(), "not the pinned signer") {
+	if err := verifyEscrowSegment(signed); err == nil || !strings.Contains(err.Error(), "not one of this machine's trusted signers") {
 		t.Fatalf("foreign-signed segment = %v, want a signer refusal", err)
 	}
 	// A correctly-signed segment passes.
@@ -160,7 +160,7 @@ func TestSignerPinWritesAndShowMatches(t *testing.T) {
 	runArca(t, "", "init")
 	pub := strings.TrimSpace(runArca(t, "", "signer", "show"))
 	runArca(t, "", "signer", "pin", pub)
-	got, err := storesign.LoadPin(storeSignerPinPath())
+	got, err := storesign.LoadPinSet(storeSignerPinPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,8 +168,8 @@ func TestSignerPinWritesAndShowMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if storesign.EncodePub(got) != storesign.EncodePub(want) {
-		t.Fatalf("pin = %s, want %s", storesign.EncodePub(got), pub)
+	if !got.Contains(want) {
+		t.Fatalf("pin set = %s, want it to contain %s", got, pub)
 	}
 	st, err := os.Stat(storeSignerPinPath())
 	if err != nil {
@@ -199,12 +199,25 @@ func TestSignerRotateChangesTheKey(t *testing.T) {
 	if before == after {
 		t.Fatal("signer rotate left the public key unchanged")
 	}
-	pin, err := storesign.LoadPin(storeSignerPinPath())
+	set, err := storesign.LoadPinSet(storeSignerPinPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if storesign.EncodePub(pin) != after {
-		t.Fatalf("rotate did not re-pin: pin=%s show=%s", storesign.EncodePub(pin), after)
+	newPub, err := storesign.DecodePub(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.Contains(newPub) {
+		t.Fatalf("rotate did not trust the new key: set=%s show=%s", set, after)
+	}
+	// The outgoing key stays trusted: this machine's escrow history is signed
+	// with it, and dropping it would make its own past segments unverifiable.
+	oldPub, err := storesign.DecodePub(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.Contains(oldPub) {
+		t.Fatalf("rotate dropped the retired key %s from the set (%s)", before, set)
 	}
 }
 
@@ -299,7 +312,7 @@ func TestPullRefusesADifferentSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = runArcaErr("", "sync", "--pull")
-	if err == nil || !strings.Contains(err.Error(), "not the pinned signer") {
+	if err == nil || !strings.Contains(err.Error(), "not one of this machine's trusted signers") {
 		t.Fatalf("foreign signer = %v, want a rotation refusal", err)
 	}
 }
@@ -310,9 +323,14 @@ func TestPullUnsignedWithoutPinIsAWarning(t *testing.T) {
 	runArca(t, "", "init")
 	runArca(t, "v", "set", "API")
 	runArca(t, "", "sync")
-	// Drop the pin but leave the head unsigned — the migration window.
+	// The migration window is a machine that has never signed and trusts no
+	// one: drop both the pin and this machine's signing key. Holding a key is
+	// itself a trust decision, so leaving it would (correctly) refuse the pull.
 	fake.StripAuth()
-	if err := os.Remove(storeSignerPinPath()); err != nil {
+	if err := os.Remove(storeSignerPinPath()); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Remove(storeSigningKeyPath()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(xdg.StorePath()); err != nil {
@@ -320,5 +338,336 @@ func TestPullUnsignedWithoutPinIsAWarning(t *testing.T) {
 	}
 	if err := runArcaErr("", "sync", "--pull"); err != nil {
 		t.Fatalf("unsigned + no pin should still pull (migration): %v", err)
+	}
+}
+
+// TestCrossPinnedMachineStillVerifiesItsOwnEscrow is the regression for the
+// defect this set replaces.
+//
+// Every machine mints its own signing key, so a two-machine fleet has two
+// signers. Under the old single pin the only way to make store sync work was
+// for each machine to pin the OTHER — after which neither trusted itself.
+// fetchEscrowedSegments only ever reads audit/<this machine>/, so every segment
+// it verifies is self-signed: the machine refused its own escrow history,
+// reconcileEscrowCursor could never complete, and a behind cursor warned on
+// every invocation forever.
+func TestCrossPinnedMachineStillVerifiesItsOwnEscrow(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	mine, err := loadOrCreateStoreKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Trust ONLY the peer — the cross-pinned state a two-machine fleet is
+	// forced into.
+	peer, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "signer", "add", storesign.EncodePub(peer.Pub))
+	set, err := storesign.LoadPinSet(storeSignerPinPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Contains(mine.Pub) {
+		t.Fatal("precondition: the pin file must NOT list this machine's own key")
+	}
+
+	seg := segment{Seq: 1}
+	raw, _ := json.Marshal(seg)
+	seg.Signature = storesign.Encode(storesign.Sign(mine.Priv, raw))
+	seg.Signer = storesign.EncodePub(mine.Pub)
+	if err := verifyEscrowSegment(seg); err != nil {
+		t.Fatalf("machine refused its own escrow segment: %v", err)
+	}
+	// The peer's signature is still good, and an unrelated key is still refused.
+	peerSeg := segment{Seq: 1}
+	peerSeg.Signature = storesign.Encode(storesign.Sign(peer.Priv, raw))
+	peerSeg.Signer = storesign.EncodePub(peer.Pub)
+	if err := verifyEscrowSegment(peerSeg); err != nil {
+		t.Fatalf("trusted peer's segment refused: %v", err)
+	}
+	stranger, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := segment{Seq: 1}
+	bad.Signature = storesign.Encode(storesign.Sign(stranger.Priv, raw))
+	bad.Signer = storesign.EncodePub(stranger.Pub)
+	if err := verifyEscrowSegment(bad); err == nil {
+		t.Fatal("an untrusted key's segment was accepted")
+	}
+}
+
+// TestSignerAddIsAdditive: adding a peer must not evict what is already
+// trusted. The old `pin` replaced the single key, which is exactly how a fleet
+// ended up cross-pinned.
+func TestSignerAddIsAdditive(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	a, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "signer", "add", storesign.EncodePub(a.Pub), "--label", "daintree")
+	runArca(t, "", "signer", "add", storesign.EncodePub(b.Pub), "--label", "urbis")
+	set, err := storesign.LoadPinSet(storeSignerPinPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.Contains(a.Pub) || !set.Contains(b.Pub) {
+		t.Fatalf("add evicted an earlier key: %s", set)
+	}
+	if set.Labeled(a.Pub) != "daintree" || set.Labeled(b.Pub) != "urbis" {
+		t.Fatalf("labels not persisted: %s", set)
+	}
+	// A pull signed by EITHER trusted machine verifies.
+	for _, k := range []*storesign.Key{a, b} {
+		payload := []byte("store bytes")
+		rev := remote.Rev{
+			Signature: storesign.Encode(storesign.Sign(k.Priv, payload)),
+			Signer:    storesign.EncodePub(k.Pub),
+		}
+		if err := verifyPulledStore(payload, rev); err != nil {
+			t.Fatalf("store signed by a trusted machine was refused: %v", err)
+		}
+	}
+}
+
+// TestSignerRmRefusesTheLastKey: emptying the set would silently reopen the
+// window in which an unsigned store is accepted.
+func TestSignerRmRefusesTheLastKey(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	a, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "signer", "add", storesign.EncodePub(a.Pub))
+	if err := runArcaErr("", "signer", "rm", storesign.EncodePub(a.Pub)); err == nil {
+		t.Fatal("rm emptied the trusted signer set")
+	}
+	b, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "signer", "add", storesign.EncodePub(b.Pub))
+	runArca(t, "", "signer", "rm", storesign.EncodePub(a.Pub))
+	set, err := storesign.LoadPinSet(storeSignerPinPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Contains(a.Pub) || !set.Contains(b.Pub) {
+		t.Fatalf("rm removed the wrong key: %s", set)
+	}
+}
+
+// TestLegacySinglePinIsHonoredAndMigrated: an existing machine keeps its trust
+// decision across the upgrade, and the first write leaves exactly one
+// authoritative file.
+func TestLegacySinglePinIsHonoredAndMigrated(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if err := os.Remove(storeSigningKeyPath()); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	peer, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := storesign.SavePin(legacyStoreSignerPinPath(), peer.Pub); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("store bytes")
+	rev := remote.Rev{
+		Signature: storesign.Encode(storesign.Sign(peer.Priv, payload)),
+		Signer:    storesign.EncodePub(peer.Pub),
+	}
+	if err := verifyPulledStore(payload, rev); err != nil {
+		t.Fatalf("legacy single pin not honored: %v", err)
+	}
+	// Adding a second machine migrates the file; the superseded one is gone so
+	// two files can never disagree about who is trusted.
+	other, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "signer", "add", storesign.EncodePub(other.Pub))
+	set, err := storesign.LoadPinSet(storeSignerPinPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.Contains(peer.Pub) || !set.Contains(other.Pub) {
+		t.Fatalf("migration lost a key: %s", set)
+	}
+	if _, err := os.Stat(legacyStoreSignerPinPath()); !os.IsNotExist(err) {
+		t.Fatalf("legacy pin file survived migration: %v", err)
+	}
+}
+
+// TestHoldingASigningKeyClosesTheUnsignedWindow: a machine that has signed a
+// push must never accept an unsigned head back — stripping the signature would
+// otherwise be a silent downgrade.
+func TestHoldingASigningKeyClosesTheUnsignedWindow(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if _, err := loadOrCreateStoreKey(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(storeSignerPinPath()); !os.IsNotExist(err) {
+		t.Fatalf("minting a key should not write a pin file: %v", err)
+	}
+	err := verifyPulledStore([]byte("store bytes"), remote.Rev{})
+	if err == nil || !strings.Contains(err.Error(), "unsigned") {
+		t.Fatalf("unsigned head with a local signing key = %v, want a refusal", err)
+	}
+}
+
+// TestSignerListShowsTheSetAndMarksLocal keeps the read-only inspection path
+// headless: seeing the trust state must not need an operator ceremony.
+func TestSignerListShowsTheSetAndMarksLocal(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	withNoTTY(t)
+	mine := strings.TrimSpace(runArca(t, "", "signer", "show"))
+	out := runArca(t, "", "signer", "list")
+	if !strings.Contains(out, "* "+mine) {
+		t.Fatalf("list did not mark this machine's own key:\n%s", out)
+	}
+}
+
+// TestSignerAddIsIdempotent: re-adding a trusted key is a no-op, not a second
+// entry and not an operator prompt.
+func TestSignerAddIsIdempotent(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	k, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := storesign.EncodePub(k.Pub)
+	runArca(t, "", "signer", "add", pub)
+	withNoTTY(t) // a no-op must not need a terminal
+	runArca(t, "", "signer", "add", pub)
+	set, err := storesign.LoadPinSet(storeSignerPinPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set) != 1 {
+		t.Fatalf("re-adding duplicated the entry: %s", set)
+	}
+}
+
+// TestSignerRmUnknownKeyRefuses: rm must not silently succeed on a key that was
+// never trusted — that would read as "it's gone" when nothing changed.
+func TestSignerRmUnknownKeyRefuses(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	a, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArca(t, "", "signer", "add", storesign.EncodePub(a.Pub))
+	stranger, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runArcaErr("", "signer", "rm", storesign.EncodePub(stranger.Pub)); err == nil {
+		t.Fatal("rm of an untrusted key should refuse")
+	}
+	if err := runArcaErr("", "signer", "rm", "not-a-key"); err == nil {
+		t.Fatal("rm of a malformed key should refuse")
+	}
+}
+
+// TestCorruptPinRefusesEveryPath: a corrupt pin file is never auto-healed, and
+// it must fail closed on all four paths — pull, escrow, add and rm. Silently
+// treating it as "no pin" would reopen the unsigned window (audit L3).
+func TestCorruptPinRefusesEveryPath(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storeSignerPinPath(), []byte("not-a-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyPulledStore([]byte("x"), remote.Rev{}); err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("pull with a corrupt pin = %v, want a corruption refusal", err)
+	}
+	if err := verifyEscrowSegment(segment{Seq: 1, Signature: "x", Signer: "y"}); err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("escrow with a corrupt pin = %v, want a corruption refusal", err)
+	}
+	k, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runArcaErr("", "signer", "add", storesign.EncodePub(k.Pub)); err == nil {
+		t.Fatal("add over a corrupt pin should refuse rather than rewrite it")
+	}
+	if err := runArcaErr("", "signer", "rm", storesign.EncodePub(k.Pub)); err == nil {
+		t.Fatal("rm over a corrupt pin should refuse rather than rewrite it")
+	}
+}
+
+// TestCorruptLegacyPinRefuses: the same, for a machine still on the pre-0.12
+// single-key file. The migration read must not launder corruption into "no pin".
+func TestCorruptLegacyPinRefuses(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	if err := os.MkdirAll(storeStateDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyStoreSignerPinPath(), []byte("garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyPulledStore([]byte("x"), remote.Rev{}); err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("pull with a corrupt legacy pin = %v, want a corruption refusal", err)
+	}
+	k, err := storesign.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runArcaErr("", "signer", "add", storesign.EncodePub(k.Pub)); err == nil {
+		t.Fatal("add over a corrupt legacy pin should refuse")
+	}
+}
+
+// TestMalformedSignatureMetadataIsRefused: the signer name and signature travel
+// with the object, so both are attacker-controlled strings. Neither may reach a
+// verify with a claimed-but-unparseable value.
+func TestMalformedSignatureMetadataIsRefused(t *testing.T) {
+	sandbox(t)
+	runArca(t, "", "init")
+	k, err := loadOrCreateStoreKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("store bytes")
+	good := storesign.Encode(storesign.Sign(k.Priv, payload))
+
+	cases := []struct {
+		name, sig, signer, want string
+	}{
+		{"malformed signer", good, "!!!not-base64!!!", "Arca-Signer is malformed"},
+		{"malformed signature", "!!!not-base64!!!", storesign.EncodePub(k.Pub), "Arca-Signature is malformed"},
+		{"wrong signature bytes", storesign.Encode(make([]byte, 64)), storesign.EncodePub(k.Pub), "does not verify"},
+		{"signature only", good, "", "unsigned"},
+		{"signer only", "", storesign.EncodePub(k.Pub), "unsigned"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyPulledStore(payload, remote.Rev{Signature: tc.sig, Signer: tc.signer})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("= %v, want %q", err, tc.want)
+			}
+		})
 	}
 }

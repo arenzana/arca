@@ -29,8 +29,10 @@
 | `env` | Emit `export …` for `eval "$(arca env)"` | `--no-export` |
 | `sync` | Replicate the store through an S3-compatible backend (see [SYNC.md](SYNC.md)); envelope-encrypted, CAS-safe | `--pull`, `--push`, `--force`, `--admit-recipients`; `sync init URL`, `sync status`, `sync auto on\|off`, `sync reset-escrow` |
 | `signer show` | Print this machine's store-signing public key (headless-safe; generates the key on first use) | — |
-| `signer pin PUBKEY` | Accept a store-signing public key as this machine's expected signer — terminal-anchored | — |
-| `signer rotate` | Generate a new store-signing key and pin it here — terminal-anchored; other machines then need `signer pin` | — |
+| `signer add PUBKEY` | Trust another machine's store-signing public key here (additive; alias `pin`) — terminal-anchored | `--label NAME` |
+| `signer list` | List the store signers this machine accepts (`*` marks its own key) | — |
+| `signer rm PUBKEY` | Stop accepting a store-signing public key (refuses to empty the set) | — |
+| `signer rotate` | Generate a new store-signing key for this machine and trust it — terminal-anchored; other machines then need `signer add`. The outgoing key stays trusted so this machine's escrow history still verifies | — |
 | `log [NAME]` | Access history (agent/session/actor); `--verify` checks the log's integrity | `--limit N`, `--json`, `--verify`, `--require-signed`, `--anchor TOKEN`, `--remote`, `--print-anchor` |
 | `canary [NAME]` | Plant a decoy secret (any use trips a signed alert), or list canaries and their trips | `--template`, `--list`, `--tag`, `--desc` |
 | `grant SECRET` | Authorize a `--require-grant` secret for a command, a number of uses, and a window. `--agent` is advisory (env sniffing), not a containment boundary | `--command`, `--uses`, `--ttl`, `--agent` |

@@ -148,3 +148,94 @@ func TestDecodePubAcceptsPadded(t *testing.T) {
 		t.Fatal("short key should not decode")
 	}
 }
+
+func TestPinSetRoundTripWithLabels(t *testing.T) {
+	a, _ := Generate()
+	b, _ := Generate()
+	p := filepath.Join(t.TempDir(), "store-signers.pin")
+	set := PinSet{{Pub: a.Pub, Label: "om"}, {Pub: b.Pub}}
+	if err := SavePinSet(p, set); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+		t.Fatalf("pin set mode = %o, want 0600", st.Mode().Perm())
+	}
+	got, err := LoadPinSet(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Contains(a.Pub) || !got.Contains(b.Pub) {
+		t.Fatalf("round trip lost a key: %s", got)
+	}
+	if got.Labeled(a.Pub) != "om" || got.Labeled(b.Pub) != "" {
+		t.Fatalf("labels not preserved: %s", got)
+	}
+	c, _ := Generate()
+	if got.Contains(c.Pub) {
+		t.Fatal("Contains matched a key that was never added")
+	}
+}
+
+// A label can never smuggle extra entries in through a newline.
+func TestPinSetLabelCannotForgeEntries(t *testing.T) {
+	a, _ := Generate()
+	evil, _ := Generate()
+	p := filepath.Join(t.TempDir(), "store-signers.pin")
+	if err := SavePinSet(p, PinSet{{Pub: a.Pub, Label: "om\n" + EncodePub(evil.Pub) + " smuggled"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadPinSet(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Contains(evil.Pub) {
+		t.Fatalf("a newline in a label forged a trusted signer: %s", got)
+	}
+	if len(got) != 1 {
+		t.Fatalf("set has %d entries, want 1: %s", len(got), got)
+	}
+}
+
+// A pin file is never partially honored: dropping an unparseable line would
+// silently distrust a machine.
+func TestLoadPinSetRefusesCorruptAndEmpty(t *testing.T) {
+	a, _ := Generate()
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "bad.pin")
+	if err := os.WriteFile(bad, []byte(EncodePub(a.Pub)+"\nnot-a-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPinSet(bad); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("corrupt line = %v, want ErrCorrupt", err)
+	}
+	empty := filepath.Join(dir, "empty.pin")
+	if err := os.WriteFile(empty, []byte("# only a comment\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPinSet(empty); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("keyless file = %v, want ErrCorrupt", err)
+	}
+	if _, err := LoadPinSet(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file = %v, want os.ErrNotExist", err)
+	}
+	if err := SavePinSet(filepath.Join(dir, "out.pin"), nil); err == nil {
+		t.Fatal("SavePinSet(empty) should refuse — it would un-pin the machine")
+	}
+}
+
+func TestPinSetStringRendersLabels(t *testing.T) {
+	a, _ := Generate()
+	b, _ := Generate()
+	got := PinSet{{Pub: a.Pub, Label: "om"}, {Pub: b.Pub}}.String()
+	want := EncodePub(a.Pub) + " (om), " + EncodePub(b.Pub)
+	if got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+	if PinSet(nil).String() != "" {
+		t.Fatalf("empty set should render empty, got %q", PinSet(nil).String())
+	}
+}

@@ -6,6 +6,43 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A machine now trusts its own store signatures.** Every machine mints its own
+  Ed25519 signing key on first push, so a fleet of N machines has N signers — but the
+  trust file held exactly **one** key. A two-machine operator could only make sync work
+  by pinning the *peer* on each machine, after which neither machine trusted its own
+  signatures. That is invisible for the store head (usually the peer's) and fatal for
+  audit escrow: `fetchEscrowedSegments` only ever reads `audit/<this machine>/`, so every
+  segment it verifies is self-signed. A machine whose escrow cursor fell behind would
+  call `reconcileEscrowCursor`, refuse its own segment #1, and warn on **every**
+  invocation forever with no way out. This machine's own signing key is now always
+  trusted.
+
+### Changed
+- **The store-signer pin is a set, not a single key** (`store-signers.pin`, one
+  `<pubkey> [label]` per line). Verification accepts a signature by any key in the set,
+  which is what makes a multi-writer fleet expressible at all. A pre-existing
+  `store-signer.pin` is read as a one-element set and migrated on the first change; the
+  superseded file is removed so two files can never disagree about who is trusted.
+- **`arca signer pin` is now `arca signer add`, and it is additive** (`pin` and `trust`
+  remain aliases). The old `pin` *replaced* the trusted key, which is precisely how a
+  fleet ended up cross-pinned.
+- **`arca signer list`** shows the accepted set, marking this machine's own key with `*`.
+  Read-only and headless-safe: inspecting trust state should not need an operator
+  ceremony.
+- **`arca signer rm PUBKEY`** stops accepting a key. Not operator-anchored (removal only
+  restricts, the same reasoning `recipients rm` uses), but it refuses to remove the last
+  key — an empty set would silently reopen the window in which an unsigned store is
+  accepted.
+- **`arca signer rotate` keeps the outgoing key trusted**, labelled `(retired)`. This
+  machine's escrow history is signed with it, so dropping it would make its own past
+  segments unverifiable. `arca signer rm <old>` retires it once that history is gone.
+- **Holding a signing key closes the unsigned-migration window.** Previously minting a
+  key auto-wrote a pin, which had the same effect; now that minting writes no pin, the
+  check is explicit. A machine that has pushed a signed store still refuses an unsigned
+  head, so stripping the signature is never a silent downgrade. The window is only open
+  for a machine that has neither signed nor trusted anything.
+
 ## [0.11.0] - 2026-08-18
 
 The 2026-08-17 external-style audit, fully remediated: both High findings, all nine

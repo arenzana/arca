@@ -57,7 +57,7 @@ With that framing, the controls are:
 - **The control plane is terminal-anchored too, in the loosening direction.** The anchor above
   covers the commands that *release* a value; the commands that *change the rules* carry the same
   anchor. `arca grant`, `arca agent allow`, `arca enable`, `arca recipients add`, `arca reencrypt`,
-  `arca handle create`, `arca signer pin` and `arca signer rotate` refuse a detected agent outright, and require every other caller to
+  `arca handle create`, `arca signer add` and `arca signer rotate` refuse a detected agent outright, and require every other caller to
   confirm on the controlling terminal — so a headless agent cannot issue itself the grant a
   `--require-grant` secret needs, expose a secret to itself under a `--strict` MCP server, or add
   its own age key as a recipient and re-wrap the store. Each prompt names the scope being widened

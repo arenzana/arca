@@ -24,15 +24,43 @@ the store's recipient identities can open the envelope — which is exactly the
 multi-machine model.
 
 Age is confidentiality, not authentication. Each push also signs the store bytes
-with an operator-held Ed25519 key (`arca signer show`) and writes `Arca-Signature`
-/ `Arca-Signer` on the object. A pull verifies that signature against a **locally
-pinned** public key (`arca signer pin`). A backend that knows the (public)
-recipients can no longer fabricate a policy-stripped store that every machine
-will adopt. `--force` cannot override a pin mismatch; rotation is
-`arca signer rotate` on the signing machine, then `arca signer pin <new>` on the
-others. A machine with no pin still accepts an unsigned head (migration window,
-with a warning) but will refuse a signed head until the key is pinned
-out-of-band.
+with the machine's Ed25519 signing key (`arca signer show`) and writes
+`Arca-Signature` / `Arca-Signer` on the object. A pull verifies that signature
+against this machine's **trusted signer set** (`arca signer list`). A backend
+that knows the (public) recipients can no longer fabricate a policy-stripped
+store that every machine will adopt. `--force` cannot override a signer refusal.
+
+Every machine holds its own signing key, so a fleet of N machines has N signers
+and each machine must accept its peers **as well as itself**. Its own key is
+always trusted implicitly; peers are added out-of-band:
+
+```sh
+# on the joining machine
+arca signer show                                  # prints its public key
+# on each machine already in the fleet
+arca signer add <that pubkey> --label newmachine
+# and on the joining machine, for each existing machine
+arca signer add <their pubkey> --label daintree
+```
+
+`arca signer list` shows the set, marking this machine's own key with `*`.
+`arca signer rm` drops a key (it refuses to empty the set). Rotation is
+`arca signer rotate` on one machine, then `arca signer add <new>` on the others;
+the rotating machine keeps its outgoing key trusted, because its own escrow
+history is signed with it.
+
+A machine that has never signed and trusts no one still accepts an unsigned head
+(migration window, with a warning) but will refuse a signed head until the key is
+added out-of-band. Holding a signing key closes that window: a machine that has
+pushed a signed store refuses an unsigned head, so stripping the signature is not
+a silent downgrade.
+
+> Before 0.12 this was a single pinned key rather than a set. One trust slot
+> cannot describe a fleet whose every machine signs, so a two-machine operator
+> was forced to pin the *peer* on each — after which neither machine trusted its
+> own signatures, and neither could verify its own escrow segments (which are
+> only ever self-signed). An existing `store-signer.pin` is read as a
+> one-element set and migrated to `store-signers.pin` on the first change.
 
 ## Adding a machine to the fleet
 
