@@ -4,12 +4,17 @@
 // fabricate a policy-stripped store that every machine will pull silently.
 //
 // The key is store-scoped and operator-anchored, distinct from the per-session
-// audit signers in sign.go. The pin is this machine's memory of which public
-// key it expects: it never travels with the store, and a mismatch is a hard
-// refusal (not overrideable by --force).
+// audit signers in sign.go. The pin set is this machine's memory of which public
+// keys it accepts: it never travels with the store, and a signature by anything
+// outside it is a hard refusal (not overrideable by --force).
+//
+// It is a SET, not a single key, because every machine mints its own key: a
+// fleet of N machines has N signers, and each machine must accept its peers as
+// well as itself.
 package storesign
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -17,6 +22,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 
 	"github.com/arenzana/arca/internal/atomicfile"
 )
@@ -145,4 +151,123 @@ func trimNL(b []byte) []byte {
 		b = b[:len(b)-1]
 	}
 	return b
+}
+
+// PinEntry is one trusted signer: a public key and an optional operator label
+// ("om", "daintree", "laptop (retired)"). The label is a human aid only —
+// nothing verifies against it.
+type PinEntry struct {
+	Pub   ed25519.PublicKey
+	Label string
+}
+
+// PinSet is this machine's set of accepted store signers, in file order.
+//
+// It replaces the single pinned key. A fleet where every machine mints its own
+// signing key (which is what happens by default) has as many signers as
+// machines, and one trust slot cannot express that: the operator is forced to
+// pin a peer, at which point the machine no longer trusts its own signatures.
+type PinSet []PinEntry
+
+// Contains reports whether pub is one of the accepted signers.
+func (s PinSet) Contains(pub ed25519.PublicKey) bool {
+	for _, e := range s {
+		if bytes.Equal(e.Pub, pub) {
+			return true
+		}
+	}
+	return false
+}
+
+// Labeled returns the label recorded for pub, or "" if it is absent or unlabeled.
+func (s PinSet) Labeled(pub ed25519.PublicKey) string {
+	for _, e := range s {
+		if bytes.Equal(e.Pub, pub) {
+			return e.Label
+		}
+	}
+	return ""
+}
+
+// String renders the set for an error message: "KEY (label), KEY".
+func (s PinSet) String() string {
+	parts := make([]string, 0, len(s))
+	for _, e := range s {
+		p := EncodePub(e.Pub)
+		if e.Label != "" {
+			p += " (" + e.Label + ")"
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// LoadPinSet reads the multi-signer pin file: one "<pubkey> [label]" per line,
+// blank lines and #-comments ignored. A missing file is os.ErrNotExist; any
+// unparseable line is ErrCorrupt — a pin file is never partially honored,
+// because silently dropping a line would silently distrust a machine.
+func LoadPinSet(path string) (PinSet, error) {
+	b, err := os.ReadFile(path) //#nosec G304 -- path is the operator's state-dir file
+	if err != nil {
+		return nil, err
+	}
+	var set PinSet
+	for i, ln := range strings.Split(string(b), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		key, label, _ := strings.Cut(ln, " ")
+		pub, err := DecodePub(strings.TrimSpace(key))
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s:%d: %v", ErrCorrupt, path, i+1, err)
+		}
+		if set.Contains(pub) {
+			continue // a duplicate line is not corruption, just noise
+		}
+		set = append(set, PinEntry{Pub: pub, Label: strings.TrimSpace(label)})
+	}
+	if len(set) == 0 {
+		return nil, fmt.Errorf("%w: %s: no signer keys", ErrCorrupt, path)
+	}
+	return set, nil
+}
+
+// SavePinSet writes the set at 0600 via atomicfile. It refuses an empty set:
+// truncating the pin to nothing would silently reopen the migration window in
+// which an unsigned store is accepted. Use os.Remove for a deliberate reset.
+func SavePinSet(path string, set PinSet) error {
+	if len(set) == 0 {
+		return fmt.Errorf("refusing to write an empty signer set (that would un-pin this machine); remove %s deliberately instead", path)
+	}
+	var sb strings.Builder
+	sb.WriteString("# arca trusted store signers — one \"<pubkey> [label]\" per line.\n")
+	sb.WriteString("# Manage with `arca signer add|rm|list`.\n")
+	for _, e := range set {
+		if len(e.Pub) != ed25519.PublicKeySize {
+			return fmt.Errorf("refusing to pin an incomplete public key")
+		}
+		sb.WriteString(EncodePub(e.Pub))
+		if lbl := sanitizeLabel(e.Label); lbl != "" {
+			sb.WriteString(" " + lbl)
+		}
+		sb.WriteString("\n")
+	}
+	return atomicfile.Write(path, []byte(sb.String()), fs.FileMode(0o600))
+}
+
+// sanitizeLabel keeps a label to one printable line, so a label can never
+// forge extra pin entries by carrying a newline.
+func sanitizeLabel(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if len(s) > 64 {
+		s = s[:64]
+	}
+	return s
 }

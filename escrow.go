@@ -216,19 +216,33 @@ func escrowOnce(ctx context.Context, a *audit.Log, b remote.Backend, recipients 
 // would only advance this cursor — the tamper is still caught by `log --verify` and
 // `--remote`, which escrow never substitutes for.
 func reconcileEscrowCursor(ctx context.Context, a *audit.Log, b remote.Backend) error {
-	segs, err := fetchEscrowedSegments(ctx, b)
+	// Only the segments past the local cursor: this runs on every stuck sync, and
+	// re-auditing the whole history here is what made a machine with a few thousand
+	// segments unable to recover inside the sync deadline.
+	cur := loadEscrowState()
+	// A cursor at Seq N carries the anchor of segment N, which is the link the first
+	// fetched segment must extend. A cursor written before that field existed has no
+	// link to offer, so fall back to auditing the whole history — correctness first,
+	// and it happens at most once per machine.
+	after, from := cur.Seq, cur.PrevAnchor
+	if after > 0 && from == "" {
+		after = 0
+	}
+	segs, tailSeq, err := fetchEscrowSegmentsAfter(ctx, b, after, from)
 	if err != nil {
 		return fmt.Errorf("escrow cursor is behind the remote and reconciling it failed: %w", err)
 	}
-	if len(segs) == 0 {
+	if tailSeq == 0 {
 		return errors.New("escrow cursor is behind the remote but no readable segment history was found for this machine")
 	}
-	tail := segs[len(segs)-1]
-	if cur := loadEscrowState().Seq; tail.Seq <= cur {
-		// The occupied slot is not simply ahead of us — advancing wouldn't clear it
-		// (e.g. a concurrent writer already lost its CAS). Surface rather than loop.
-		return fmt.Errorf("escrow collision at segment #%d but the remote's newest segment is only #%d — not a behind-cursor; not reconciling", cur+1, tail.Seq)
+	// The occupied slot is not simply ahead of us — advancing wouldn't clear it
+	// (e.g. a concurrent writer already lost its CAS). Surface rather than loop.
+	// Guarded on tailSeq, not on len(segs), so the whole-history fallback above
+	// cannot smuggle a cursor backwards.
+	if tailSeq <= cur.Seq || len(segs) == 0 {
+		return fmt.Errorf("escrow collision at segment #%d but the remote's newest segment is only #%d — not a behind-cursor; not reconciling", cur.Seq+1, tailSeq)
 	}
+	tail := segs[len(segs)-1]
 	if tail.Anchor != "" {
 		n, h, err := audit.ParseAnchor(tail.Anchor)
 		if err != nil {
@@ -305,67 +319,95 @@ func escrowSeq(key string) int {
 	return n
 }
 
-// fetchEscrowedSegments pulls and decrypts this machine's segments, oldest first, and
-// checks their continuity (each segment's prev_anchor must equal its predecessor's
-// anchor). Returns the parsed segments.
+// fetchEscrowedSegments pulls and decrypts this machine's entire segment history,
+// oldest first, and checks its continuity from Seq 1 (each segment's prev_anchor must
+// equal its predecessor's anchor). This is the full off-machine tamper audit; it costs
+// one GET and one decrypt per segment, so only `log --verify --remote` uses it.
 func fetchEscrowedSegments(ctx context.Context, b remote.Backend) ([]segment, error) {
+	segs, _, err := fetchEscrowSegmentsAfter(ctx, b, 0, "")
+	return segs, err
+}
+
+// fetchEscrowSegmentsAfter returns this machine's segments with Seq > after, oldest
+// first, plus the highest Seq present under the prefix (which is free — it comes from
+// the key names — and lets a caller tell "no history at all" from "nothing past my
+// cursor"). Each returned segment is authenticated (signature + row rehash) and chained
+// to its predecessor; the first one must extend prevAnchor, which is the caller's record
+// of the anchor at segment `after`.
+//
+// after > 0 exists so the every-sync reconcile path does not re-download history this
+// machine already escrowed and already recorded a cursor for. That is not a weakening of
+// the continuity check, it is the same check applied from the cursor forward: the bytes
+// before the cursor were verified when they were written, and re-auditing them is what
+// `log --verify --remote` is for. Fetching all of them on every stuck sync made recovery
+// impossible once a machine had a few thousand segments — the reconcile could not finish
+// inside the sync deadline, so the cursor stayed behind forever.
+func fetchEscrowSegmentsAfter(ctx context.Context, b remote.Backend, after int, prevAnchor string) ([]segment, int, error) {
 	machine, err := machineID()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	keys, err := b.List(ctx, remote.KeyAudit+machine+"/")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		return escrowSeq(keys[i]) < escrowSeq(keys[j])
 	})
 	ids, err := loadIDs()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	tailSeq := 0
+	if len(keys) > 0 {
+		tailSeq = escrowSeq(keys[len(keys)-1])
 	}
 	// Only fetch/decrypt keys that match the exact segment shape (SEC-39): the backend is
 	// untrusted and List returns whatever it likes, so an injected key with a surprising name
-	// (or an unbounded count of them) shouldn't reach the decrypt path.
+	// (or an unbounded count of them) shouldn't reach the decrypt path. Every listed key is
+	// name-checked even when it is below the cursor and never fetched.
 	segKeyRe := escrowKeyRegexp(machine)
 	var segs []segment
 	for _, k := range keys {
 		if !segKeyRe.MatchString(k) {
-			return nil, fmt.Errorf("unexpected object under this machine's escrow prefix: %q — the backend injected a non-segment key", k)
+			return nil, 0, fmt.Errorf("unexpected object under this machine's escrow prefix: %q — the backend injected a non-segment key", k)
+		}
+		if escrowSeq(k) <= after {
+			continue
 		}
 		blob, err := b.Get(ctx, k)
 		if err != nil {
-			return nil, fmt.Errorf("fetch escrow %s: %w", k, err)
+			return nil, 0, fmt.Errorf("fetch escrow %s: %w", k, err)
 		}
 		plain, err := crypto.Decrypt(string(blob), ids)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt escrow %s: %w", k, err)
+			return nil, 0, fmt.Errorf("decrypt escrow %s: %w", k, err)
 		}
 		var s segment
 		if err := json.Unmarshal(plain, &s); err != nil {
-			return nil, fmt.Errorf("parse escrow %s: %w", k, err)
+			return nil, 0, fmt.Errorf("parse escrow %s: %w", k, err)
 		}
-		// Continuity is checked from Seq 1: a removed head, a gap, or a broken anchor
-		// link all mean the backend's "append-only" was violated.
+		// A removed head, a gap, or a broken anchor link all mean the backend's
+		// "append-only" was violated.
 		if len(segs) == 0 {
-			if s.Seq != 1 || s.PrevAnchor != "" {
-				return nil, fmt.Errorf("escrow continuity broken: history starts at segment %d — earlier segments were removed from the backend", s.Seq)
+			if s.Seq != after+1 || s.PrevAnchor != prevAnchor {
+				return nil, 0, fmt.Errorf("escrow continuity broken: history resumes at segment %d, expected %d — earlier segments were removed from the backend", s.Seq, after+1)
 			}
 		} else if prev := segs[len(segs)-1]; s.Seq != prev.Seq+1 || s.PrevAnchor != prev.Anchor {
-			return nil, fmt.Errorf("escrow continuity broken at segment %d: does not extend segment %d — segments were removed or replaced on the backend", s.Seq, prev.Seq)
+			return nil, 0, fmt.Errorf("escrow continuity broken at segment %d: does not extend segment %d — segments were removed or replaced on the backend", s.Seq, prev.Seq)
 		}
 		// Recompute each row's hash against the claimed chain. Continuity of
 		// PrevAnchor/Anchor alone is not authentication: anyone can encrypt a
 		// self-consistent segment to the public recipients (audit M2).
 		if err := audit.VerifyEscrowRows(s.Events, s.PrevAnchor, s.Anchor); err != nil {
-			return nil, fmt.Errorf("escrow %s: %w", k, err)
+			return nil, 0, fmt.Errorf("escrow %s: %w", k, err)
 		}
 		if err := verifyEscrowSegment(s); err != nil {
-			return nil, fmt.Errorf("escrow %s: %w", k, err)
+			return nil, 0, fmt.Errorf("escrow %s: %w", k, err)
 		}
 		segs = append(segs, s)
 	}
-	return segs, nil
+	return segs, tailSeq, nil
 }
 
 // verifyAgainstEscrow confirms the local log still extends the newest escrowed

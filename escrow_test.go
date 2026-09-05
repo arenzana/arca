@@ -374,11 +374,18 @@ func TestEscrowReconcileRefusesForeignChain(t *testing.T) {
 	}
 	runArca(t, "", "get", "A") // fresh 1-event log
 
-	// Force a collision with something to ship: cursor at the very start.
-	if err := saveEscrowState(escrowState{LastID: 0, Seq: 1}); err != nil {
+	// Force a collision with something to ship: rewind the cursor to segment 1. The
+	// anchor must be segment 1's own — a cursor at Seq N always carries the anchor of
+	// segment N, and the point of this test is the chain that DOES link up on the
+	// backend but does not describe the local log.
+	prior, err := fetchEscrowedSegments(context.Background(), fake)
+	if err != nil {
 		t.Fatal(err)
 	}
-	err := escrowAudit(context.Background(), fake, storeRecipients(t))
+	if err := saveEscrowState(escrowState{LastID: 0, Seq: 1, PrevAnchor: prior[0].Anchor}); err != nil {
+		t.Fatal(err)
+	}
+	err = escrowAudit(context.Background(), fake, storeRecipients(t))
 	if err == nil {
 		t.Fatal("reconcile must refuse a foreign chain rather than splice it")
 	}
@@ -585,4 +592,74 @@ func TestFetchEscrowAcceptsLargeSeq(t *testing.T) {
 		}
 	}
 	_ = fake
+}
+
+// getCountingBackend counts Get calls so a test can assert on how much of the
+// escrow history a code path actually downloads.
+type getCountingBackend struct {
+	remote.Backend
+	gets int
+}
+
+func (c *getCountingBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	c.gets++
+	return c.Backend.Get(ctx, key)
+}
+
+// TestReconcileFetchesOnlyPastTheCursor is the recovery-cost regression.
+//
+// reconcileEscrowCursor used to re-download and re-decrypt this machine's ENTIRE
+// escrow history on every stuck sync. Segments accumulate one per sync, so a
+// machine with a few thousand of them could not finish a reconcile inside the
+// sync deadline: the cursor stayed behind, the collision recurred, and the
+// warning became permanent — the failure got slower, not fixed. The reconcile
+// now starts at the cursor, so its cost is the size of the gap, not of history.
+func TestReconcileFetchesOnlyPastTheCursor(t *testing.T) {
+	sandbox(t)
+	fake := withFakeBackend(t)
+	runArca(t, "", "init")
+	// Ten segments of history, one per sync.
+	for i := range 10 {
+		runArca(t, fmt.Sprintf("v%d", i), "set", "A")
+		runArca(t, "", "sync")
+	}
+	full, err := fetchEscrowedSegments(context.Background(), fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) < 3 {
+		t.Fatalf("need a few segments of history to make this meaningful, got %d", len(full))
+	}
+
+	// Rewind the cursor by exactly one segment — the state a machine lands in when
+	// it is interrupted between PutIfAbsent and saveEscrowState.
+	behind := full[len(full)-2]
+	if err := saveEscrowState(escrowState{LastID: behind.LastID, Seq: behind.Seq, PrevAnchor: behind.Anchor}); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := audit.Open(auditPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	c := &getCountingBackend{Backend: fake}
+	if err := reconcileEscrowCursor(context.Background(), a, c); err != nil {
+		t.Fatalf("reconcile from a one-behind cursor: %v", err)
+	}
+	if c.gets > 1 {
+		t.Fatalf("reconcile fetched %d segments to close a one-segment gap; it must fetch only what is past the cursor", c.gets)
+	}
+	if st := loadEscrowState(); st.Seq != full[len(full)-1].Seq {
+		t.Fatalf("cursor = %d, want the remote tail %d", st.Seq, full[len(full)-1].Seq)
+	}
+	// The full off-machine audit still walks everything: cheapening reconcile must
+	// not cheapen `log --verify --remote`.
+	c2 := &getCountingBackend{Backend: fake}
+	if _, err := fetchEscrowedSegments(context.Background(), c2); err != nil {
+		t.Fatal(err)
+	}
+	if c2.gets != len(full) {
+		t.Fatalf("full audit fetched %d of %d segments — it must still verify the whole history", c2.gets, len(full))
+	}
 }

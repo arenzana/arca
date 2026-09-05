@@ -28,14 +28,14 @@ func withFakeBackend(t *testing.T) *remote.Fake {
 
 // switchMachine points the store/audit/state dirs at a fresh directory while KEEPING the
 // age identity — simulating a second machine owned by the same operator (a recipient).
-// The store-signer pin is copied too: joining a fleet requires pinning the operator
-// key out-of-band (`arca signer pin`), and these tests model that completed step,
-// not the unsigned-migration window.
+// The trusted-signer set is copied too: joining a fleet requires accepting the other
+// machines' keys out-of-band (`arca signer add`), and these tests model that completed
+// step, not the unsigned-migration window.
 func switchMachine(t *testing.T, base string) string {
 	t.Helper()
-	var pinPub []byte
-	if p, err := storesign.LoadPin(storeSignerPinPath()); err == nil {
-		pinPub = p
+	var pinSet storesign.PinSet
+	if p, err := storesign.LoadPinSet(storeSignerPinPath()); err == nil {
+		pinSet = p
 	}
 	// Same operator: the signing private key travels with the age identity.
 	// A machine that only pinned the pubkey (and does not hold the seed)
@@ -51,8 +51,8 @@ func switchMachine(t *testing.T, base string) string {
 	t.Setenv("ARCA_STORE", filepath.Join(dir, "store.json"))
 	t.Setenv("ARCA_AUDIT", filepath.Join(dir, "audit.db"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
-	if pinPub != nil {
-		if err := storesign.SavePin(storeSignerPinPath(), pinPub); err != nil {
+	if len(pinSet) > 0 {
+		if err := storesign.SavePinSet(storeSignerPinPath(), pinSet); err != nil {
 			t.Fatal(err)
 		}
 	}
