@@ -6,6 +6,13 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-06
+
+Multi-machine sync, fixed. The store-signer trust file held a single key while every
+machine signs with its own, so a two-machine fleet could only work by cross-pinning the
+peer — after which neither machine could verify its own audit escrow, and one behind
+cursor warned on every command forever.
+
 ### Fixed
 - **A machine now trusts its own store signatures.** Every machine mints its own
   Ed25519 signing key on first push, so a fleet of N machines has N signers — but the
@@ -938,7 +945,8 @@ broadens AI-agent detection, and expands the unit + e2e test suite.
 - Supply chain: reproducible static builds, cosign keyless signatures, SLSA build-provenance,
   CycloneDX SBOM, govulncheck, CodeQL, OpenSSF Scorecard, SHA-pinned actions.
 
-[Unreleased]: https://github.com/arenzana/arca/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/arenzana/arca/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/arenzana/arca/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/arenzana/arca/compare/v0.10.3...v0.11.0
 [0.10.3]: https://github.com/arenzana/arca/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/arenzana/arca/compare/v0.10.1...v0.10.2
