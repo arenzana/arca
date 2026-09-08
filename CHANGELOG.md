@@ -6,6 +6,37 @@ All notable changes to arca are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`github.com/mark3labs/mcp-go` 0.58.0 to 1.0.0.** The major version is upstream declaring
+  stability rather than a break for arca: the release adds the 2026-07-28 MCP specification and is
+  otherwise fixes. Verified rather than assumed, since `STABILITY.md` promises arca's MCP surface —
+  `tools/list` is byte-for-byte what 0.58.0 produced (4385 bytes, all six tools, same schemas and
+  annotations), a live `list_secrets` and `read_secret` pair returns the same results, and version
+  negotiation is unchanged: 2024-11-05, 2025-03-26 and 2025-06-18 each echo back, and an unknown
+  future version still lands on 2025-11-25. Adding the new spec did **not** move the version arca
+  offers. None of the release's individual fixes reach arca: they land in the SSE and
+  streamable-HTTP transports and in the stdio *client* that spawns a server subprocess, and arca
+  imports only `mcp` and `server` — it is the server, over stdio — while `ResourceLink` `_meta` and
+  `RequireIntSlice` are on APIs it never calls.
+- **`filippo.io/age` 1.3.1 to 1.3.2.** Hardening that narrows what is accepted: headers over 2 MiB,
+  more than 1024 recipients, malformed SSH keys in recipients files, and non-UTF-8 plaintext to a
+  terminal. None of it is reachable here — `internal/crypto` parses recipients with
+  `ParseX25519Recipient` and never the SSH types, the terminal check is in `cmd/age` rather than the
+  library, and a store with 1024 recipients is not a shape arca can reach.
+- **`modernc.org/sqlite` 1.57.0 to 1.58.0.** Moves to SQLite 3.53.4, which carries upstream's own
+  fix for the journal-rollback data-corruption bug that 0.9.2 took as a local patch when it moved to
+  1.56.0. That patch is now dropped because upstream shipped the real one; recovery behavior is
+  unchanged. The release also adds opt-in Linux OFD locking, which arca does not enable — it makes
+  no `OFDLocking` call and sets no `MODERNC_SQLITE_OFD_LOCK` — so audit-log locking stays
+  byte-for-byte what it was. `modernc.org/libc` moves to 1.75.6 with it: upstream requires
+  downstreams to pin the exact version its own `go.mod` names, and 1.58.0 names 1.75.6.
+- **`github.com/yuin/goldmark` 1.8.5 to 1.8.6** in `tools/docsgen`, for two `URLEscape` fixes — a
+  truncated UTF-8 leading byte was dropped, and the same hex digit was validated twice. It renders
+  the documentation site and is not compiled into the binary.
+- GitHub Actions pins refreshed: harden-runner 2.21.0 to 2.21.1, codeql-action 4.37.8 to 4.37.9,
+  sbom-action 0.24.0 to 0.24.2, and deploy-pages 5.0.0 to 5.0.1. CI only; none is compiled into the
+  binary.
+
 ## [0.12.0] - 2026-09-06
 
 Multi-machine sync, fixed. The store-signer trust file held a single key while every
