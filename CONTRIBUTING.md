@@ -1,5 +1,8 @@
 # Contributing to arca
 
+> **arca is no longer maintained.** The repository is archived and does not accept issues or
+> pull requests. This guide is kept for reference, and for anyone maintaining a fork.
+
 Thanks for your interest in arca. This covers how to build, test, and submit changes.
 
 ## Repositories

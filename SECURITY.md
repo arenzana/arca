@@ -1,13 +1,10 @@
 # Security Policy
 
-## Reporting a vulnerability
+## Supported versions
 
-Please report security issues **privately**:
-
-- GitHub Security Advisories: <https://github.com/arenzana/arca/security/advisories/new>, or
-- email <isma@arenzana.org>.
-
-Do **not** open public issues for vulnerabilities. We aim to acknowledge within 72 hours.
+**None.** arca is no longer maintained and the repository is archived, so no version receives
+security fixes and a reported vulnerability will not lead to a patched release. The rest of this
+document describes the security model as of the final release, v0.12.0, for anyone still running it.
 
 ## How arca handles secrets
 
