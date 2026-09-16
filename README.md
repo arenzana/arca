@@ -6,6 +6,11 @@
 
 > *arca* (Latin): a strongbox or chest for keeping valuables under lock.
 
+> [!WARNING]
+> **arca is no longer maintained.** The repository is archived: there will be no further
+> releases, bug fixes or security fixes. Existing releases stay available for anyone already
+> running arca, but choose an actively maintained tool for anything new.
+
 <p align="center">
   <a href="https://github.com/arenzana/arca/actions/workflows/ci.yml"><img src="https://github.com/arenzana/arca/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
   <a href="https://github.com/arenzana/arca/actions/workflows/codeql.yml"><img src="https://github.com/arenzana/arca/actions/workflows/codeql.yml/badge.svg" alt="codeql"></a>

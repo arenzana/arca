@@ -89,6 +89,10 @@ func shell(title, content string) string {
   footer a{font-weight:600}
   footer .heart{color:var(--coral)}
 
+  /* project status */
+  .notice{background:#fff6f3; border-bottom:2px solid var(--coral); color:var(--ink); text-align:center; padding:10px 22px; font-size:.95rem}
+  .notice b{color:var(--coral-deep)}
+
   @media (max-width:720px){
     .grid{grid-template-columns:1fr}
     .doc article{padding:24px 22px}
@@ -97,6 +101,8 @@ func shell(title, content string) string {
 </style>
 </head>
 <body>
+
+<div class="notice" role="note"><b>arca is no longer maintained.</b> The repository is archived and there will be no further releases or security fixes.</div>
 
 <nav>
   <a class="brand" href="index.html"><img src="arca-light.png" alt="">arca</a>
